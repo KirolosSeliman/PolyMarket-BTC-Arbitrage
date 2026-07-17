@@ -1,30 +1,26 @@
-# polymarket_BTC
+# polymarket-btc
 
-Read-only data collection utilities for Polymarket BTC markets.
+Read-only Polymarket BTC market data utilities.
 
-The first implemented component is Market Discovery for BTC Up/Down
-five-minute markets. It discovers and validates market metadata only. It does
-not trade, place orders, sign messages, use a wallet, calculate probability, or
+The current production surface is Market Discovery V1: one command that computes
+the current UTC five-minute BTC Up/Down slug, fetches that single Gamma market,
+validates it strictly, and returns a concise selected/no-match result.
+
+It does not trade, sign messages, use a wallet, place orders, calculate edge, or
 manage capital.
 
-## Market Discovery
-
-Default config:
-
-```text
-config/data_collection/market_discovery.yaml
-```
+## Commands
 
 Validate config:
 
 ```powershell
-python -m polymarket_btc.data_collection.market_discovery.cli --config config/data_collection/market_discovery.yaml --validate-config
+python -m polymarket_btc.data_collection.market_discovery.cli --validate-config --json
 ```
 
 Run one discovery cycle:
 
 ```powershell
-python -m polymarket_btc.data_collection.market_discovery.cli --config config/data_collection/market_discovery.yaml --once --json
+python -m polymarket_btc.data_collection.market_discovery.cli --json
 ```
 
 Run tests:
@@ -33,5 +29,11 @@ Run tests:
 python -m unittest
 ```
 
-See `docs/data_collection/market_discovery.md` for architecture, selection
-rules, endpoint rationale, CLI usage, tests, and limitations.
+Optional development-only CLOB token smoke check:
+
+```powershell
+python scripts/clob_token_smoke.py
+```
+
+See `docs/data_collection/market_discovery.md` for validation rules, failure
+behavior, live validation procedure, and known limits.

@@ -26,7 +26,7 @@ class HttpTransportError(RuntimeError):
 
 
 class JsonHttpClient:
-    def get_json(self, url: str, timeout_seconds: int) -> Any:
+    def get_json(self, url: str, timeout_seconds: float) -> Any:
         request = urllib.request.Request(
             url,
             headers={
@@ -43,7 +43,7 @@ class JsonHttpClient:
         except (TimeoutError, socket.timeout) as error:
             raise HttpTimeoutError("request timed out") from error
         except urllib.error.URLError as error:
-            if isinstance(error.reason, TimeoutError | socket.timeout):
+            if isinstance(error.reason, (TimeoutError, socket.timeout)):
                 raise HttpTimeoutError("request timed out") from error
             raise HttpTransportError(str(error.reason)) from error
 
