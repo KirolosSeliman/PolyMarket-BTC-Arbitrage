@@ -17,7 +17,9 @@ UTC clock
 
 The direct slug lookup follows Polymarket's documented Gamma slug lookup path:
 `GET /markets/slug/{slug}`. Broad search, watch mode, next-market preloading,
-and fixture mode are intentionally not production CLI behavior in V1.
+fixture mode, and multiple-candidate selection are intentionally not production
+CLI behavior in V1. The direct slug contract has only `selected`, `no_match`,
+and `provider_unavailable` statuses.
 
 ## Validation Rules
 
@@ -39,7 +41,14 @@ Discovery fails closed unless the payload satisfies all rules:
 
 ## Config
 
-Default path:
+Market Discovery uses built-in runtime defaults when `--config` is omitted:
+
+- Gamma base URL: `https://gamma-api.polymarket.com`
+- request timeout: `3.0` seconds
+- max retries: `1`
+- retry delay: `0.5` seconds
+
+The YAML file is an explicit optional override and a checked example artifact:
 
 ```text
 config/data_collection/market_discovery.yaml
@@ -61,22 +70,53 @@ Unknown keys are rejected at startup.
 
 ## CLI
 
-Validate config:
+Validate built-in defaults:
 
 ```powershell
 python -m polymarket_btc.data_collection.market_discovery.cli --validate-config --json
 ```
 
-Run discovery:
+Validate an explicit YAML override:
+
+```powershell
+python -m polymarket_btc.data_collection.market_discovery.cli --config config/data_collection/market_discovery.yaml --validate-config --json
+```
+
+Run discovery with built-in defaults:
 
 ```powershell
 python -m polymarket_btc.data_collection.market_discovery.cli --json
 ```
 
+Run discovery with an explicit YAML override:
+
+```powershell
+python -m polymarket_btc.data_collection.market_discovery.cli --config config/data_collection/market_discovery.yaml --json
+```
+
+Normalized selected output:
+
+```json
+{
+  "market": {
+    "condition_id": "0x...",
+    "down_token_id": "...",
+    "end_time_utc": "2026-07-17T19:55:00Z",
+    "market_id": "2951004",
+    "resolution_source": "https://data.chain.link/streams/btc-usd",
+    "slug": "btc-updown-5m-1784317800",
+    "start_time_utc": "2026-07-17T19:50:00Z",
+    "up_token_id": "..."
+  },
+  "reason": null,
+  "status": "selected"
+}
+```
+
 Exit codes:
 
 - `0`: selected current market.
-- `1`: no match or ambiguous payload.
+- `1`: no match.
 - `2`: invalid config or provider unavailable.
 
 ## Optional CLOB Smoke Check
@@ -87,6 +127,7 @@ the public CLOB order book endpoint for the discovered Up and Down token IDs:
 
 ```powershell
 python scripts/clob_token_smoke.py
+python scripts/clob_token_smoke.py --config config/data_collection/market_discovery.yaml
 ```
 
 The script verifies that each response is an object, that `asset_id` matches the
@@ -106,7 +147,6 @@ Offline tests cover:
 - outcome/token parsing from JSON strings and arrays;
 - reversed source outcome order;
 - unknown/duplicate outcomes, duplicate/empty tokens, and count mismatch;
-- ambiguous multiple-candidate handling;
 - concise CLI JSON and exit codes.
 
 ## Twelve-Window Live Validation
@@ -129,8 +169,8 @@ consecutive five-minute windows, covering one full hour:
    and Down token IDs are different.
 5. Optionally run `python scripts/clob_token_smoke.py` in the same window and
    record whether both token order books return matching `asset_id` values.
-6. Any `no_match`, `ambiguous`, provider outage, token mismatch, or timestamp
-   mismatch must be treated as a failed window and investigated before launch.
+6. Any `no_match`, provider outage, token mismatch, or timestamp mismatch must
+   be treated as a failed window and investigated before launch.
 
 With the default config, one Gamma discovery attempt can take up to about 6.5
 seconds in the worst case: two three-second HTTP attempts plus one 0.5-second

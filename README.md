@@ -11,16 +11,28 @@ manage capital.
 
 ## Commands
 
-Validate config:
+Validate built-in config defaults:
 
 ```powershell
 python -m polymarket_btc.data_collection.market_discovery.cli --validate-config --json
 ```
 
-Run one discovery cycle:
+Validate an explicit YAML override:
+
+```powershell
+python -m polymarket_btc.data_collection.market_discovery.cli --config config/data_collection/market_discovery.yaml --validate-config --json
+```
+
+Run one discovery lookup with built-in defaults:
 
 ```powershell
 python -m polymarket_btc.data_collection.market_discovery.cli --json
+```
+
+Run with an explicit YAML override:
+
+```powershell
+python -m polymarket_btc.data_collection.market_discovery.cli --config config/data_collection/market_discovery.yaml --json
 ```
 
 Run tests:
@@ -33,6 +45,7 @@ Optional development-only CLOB token smoke check:
 
 ```powershell
 python scripts/clob_token_smoke.py
+python scripts/clob_token_smoke.py --config config/data_collection/market_discovery.yaml
 ```
 
 See `docs/data_collection/market_discovery.md` for validation rules, failure

@@ -24,8 +24,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
 
-      - name: Validate config
+      - name: Validate built-in config defaults
         run: python -m polymarket_btc.data_collection.market_discovery.cli --validate-config --json
+
+      - name: Validate example config override
+        run: python -m polymarket_btc.data_collection.market_discovery.cli --config config/data_collection/market_discovery.yaml --validate-config --json
 
       - name: Run tests
         run: python -m unittest

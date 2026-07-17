@@ -14,11 +14,13 @@ from polymarket_btc.data_collection.common.http import (
     HttpTransportError,
     JsonHttpClient,
 )
-from polymarket_btc.data_collection.market_discovery.config import ConfigError, load_config
-from polymarket_btc.data_collection.market_discovery.discovery import (
-    DEFAULT_CONFIG_PATH,
-    discover_current_market,
+from polymarket_btc.data_collection.market_discovery.config import (
+    ConfigError,
+    MarketDiscoveryConfig,
+    default_config,
+    load_config,
 )
+from polymarket_btc.data_collection.market_discovery.discovery import discover_current_market
 from polymarket_btc.data_collection.market_discovery.models import DiscoveryStatus
 
 
@@ -40,7 +42,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None, stderr:
     args = _build_parser().parse_args(argv)
 
     try:
-        config = load_config(Path(args.config))
+        config = resolve_config(args.config)
     except (OSError, ConfigError) as error:
         print(f"config error: {error}", file=stderr)
         return 2
@@ -83,9 +85,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Development-only read-only CLOB smoke check for discovered BTC 5m outcome tokens."
     )
-    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="Path to market discovery YAML config.")
+    parser.add_argument("--config", default=None, help="Optional path to a Market Discovery YAML config override.")
     parser.add_argument("--timeout-seconds", type=float, default=3.0, help="Per-CLOB-request timeout.")
     return parser
+
+
+def resolve_config(config_path: str | None) -> MarketDiscoveryConfig:
+    return load_config(Path(config_path)) if config_path else default_config()
 
 
 def _fetch_book(http_client: JsonHttpClient, token_id: str, timeout_seconds: float) -> BookSummary:

@@ -8,7 +8,6 @@ from enum import Enum
 class DiscoveryStatus(str, Enum):
     SELECTED = "selected"
     NO_MATCH = "no_match"
-    AMBIGUOUS = "ambiguous"
     PROVIDER_UNAVAILABLE = "provider_unavailable"
 
 
@@ -17,8 +16,8 @@ class DiscoveredMarket:
     market_id: str
     condition_id: str
     slug: str
-    start_time_utc: datetime | str
-    end_time_utc: datetime | str
+    start_time_utc: datetime
+    end_time_utc: datetime
     up_token_id: str
     down_token_id: str
     resolution_source: str

@@ -10,11 +10,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, TextIO
 
-from polymarket_btc.data_collection.market_discovery.config import ConfigError, load_config
-from polymarket_btc.data_collection.market_discovery.discovery import (
-    DEFAULT_CONFIG_PATH,
-    discover_current_market,
+from polymarket_btc.data_collection.market_discovery.config import (
+    ConfigError,
+    MarketDiscoveryConfig,
+    default_config,
+    load_config,
 )
+from polymarket_btc.data_collection.market_discovery.discovery import discover_current_market
 from polymarket_btc.data_collection.market_discovery.models import DiscoveryResult, DiscoveryStatus
 
 
@@ -23,14 +25,14 @@ def main(
     *,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
-    discover: Callable[[], DiscoveryResult] | None = None,
+    discover: Callable[[MarketDiscoveryConfig], DiscoveryResult] | None = None,
 ) -> int:
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
     args = _build_parser().parse_args(argv)
 
     try:
-        config = load_config(Path(args.config))
+        config = load_config(Path(args.config)) if args.config else default_config()
     except (OSError, ConfigError) as error:
         print(f"config error: {error}", file=stderr)
         return 2
@@ -39,16 +41,15 @@ def main(
         _write({"status": "config_valid"}, as_json=args.json, stdout=stdout)
         return 0
 
-    result = discover() if discover is not None else discover_current_market(config=config)
+    result = discover(config) if discover is not None else discover_current_market(config=config)
     _write(result, as_json=args.json, stdout=stdout)
     return _exit_code_for_result(result)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Discover the current Polymarket BTC Up/Down 5m market.")
-    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="Path to market discovery YAML config.")
+    parser.add_argument("--config", default=None, help="Optional path to a Market Discovery YAML config override.")
     parser.add_argument("--validate-config", action="store_true", help="Validate configuration and exit.")
-    parser.add_argument("--once", action="store_true", help="Run one discovery cycle. This is the default.")
     parser.add_argument("--json", action="store_true", help="Write JSON output.")
     return parser
 

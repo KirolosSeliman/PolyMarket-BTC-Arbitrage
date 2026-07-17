@@ -93,6 +93,14 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result.reason, "timeout")
         self.assertIsNone(result.market)
 
+    def test_uses_builtin_default_config_when_no_config_is_supplied(self) -> None:
+        client = FakeClient({self.slug: btc_5m_payload(start=self.start)})
+
+        result = discover_current_market(self.now, gamma_client=client)
+
+        self.assertEqual(result.status, DiscoveryStatus.SELECTED)
+        self.assertEqual(client.slugs, [self.slug])
+
     def test_rejects_naive_datetime(self) -> None:
         with self.assertRaisesRegex(ValueError, "timezone-aware"):
             discover_current_market(datetime(2026, 7, 17, 19, 51), config=config(), gamma_client=FakeClient())
@@ -213,6 +221,12 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result.status, DiscoveryStatus.NO_MATCH)
         self.assertEqual(result.reason, "duplicate_outcome")
 
+    def test_rejects_missing_expected_outcome(self) -> None:
+        result = self.discover(btc_5m_payload(start=self.start, outcomes=["Up"], token_ids=["up"]))
+
+        self.assertEqual(result.status, DiscoveryStatus.NO_MATCH)
+        self.assertEqual(result.reason, "missing_expected_outcome")
+
     def test_rejects_duplicate_token(self) -> None:
         result = self.discover(btc_5m_payload(start=self.start, token_ids=["same", "same"]))
 
@@ -236,18 +250,6 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(result.status, DiscoveryStatus.NO_MATCH)
         self.assertEqual(result.reason, "invalid_timestamp")
-
-    def test_ambiguous_when_client_returns_multiple_candidates(self) -> None:
-        start = self.start
-
-        class MultiClient:
-            def get_market_by_slug(self, slug: str) -> list[dict[str, Any]]:
-                return [btc_5m_payload(start=start, market_id="one"), btc_5m_payload(start=start, market_id="two")]
-
-        result = discover_current_market(self.now, config=config(), gamma_client=MultiClient())
-
-        self.assertEqual(result.status, DiscoveryStatus.AMBIGUOUS)
-        self.assertEqual(result.reason, "multiple_markets_at_expected_slug")
 
 
 if __name__ == "__main__":

@@ -21,7 +21,12 @@ class MarketDiscoveryConfig:
     version: int = 1
 
 
-TOP_LEVEL_KEYS = frozenset({"version", "market_discovery"})
+DEFAULT_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 3.0
+DEFAULT_MAX_RETRIES = 1
+DEFAULT_RETRY_DELAY_SECONDS = 0.5
+MARKET_DISCOVERY_SECTION = "market_discovery"
+TOP_LEVEL_KEYS = frozenset({"version", MARKET_DISCOVERY_SECTION})
 MARKET_DISCOVERY_KEYS = frozenset(
     {
         "gamma_base_url",
@@ -30,6 +35,15 @@ MARKET_DISCOVERY_KEYS = frozenset(
         "retry_delay_seconds",
     }
 )
+
+
+def default_config() -> MarketDiscoveryConfig:
+    return MarketDiscoveryConfig(
+        gamma_base_url=DEFAULT_GAMMA_BASE_URL,
+        request_timeout_seconds=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        max_retries=DEFAULT_MAX_RETRIES,
+        retry_delay_seconds=DEFAULT_RETRY_DELAY_SECONDS,
+    )
 
 
 def load_config(path: Path) -> MarketDiscoveryConfig:
@@ -42,45 +56,29 @@ def load_config(path: Path) -> MarketDiscoveryConfig:
     if version != 1:
         raise ConfigError("version must be 1")
 
-    section = _required_mapping(raw, "market_discovery", "top-level")
-    _reject_unknown_keys(section, MARKET_DISCOVERY_KEYS, "market_discovery")
+    section = raw.get(MARKET_DISCOVERY_SECTION)
+    if not isinstance(section, Mapping):
+        raise ConfigError(f"top-level.{MARKET_DISCOVERY_SECTION} must be a mapping")
+    _reject_unknown_keys(section, MARKET_DISCOVERY_KEYS, MARKET_DISCOVERY_SECTION)
 
-    gamma_base_url = _required_str(section, "gamma_base_url", "market_discovery").rstrip("/")
-    _validate_https_url(gamma_base_url)
+    gamma_base_url = _required_str(section, "gamma_base_url").rstrip("/")
+    parsed = urlparse(gamma_base_url)
+    if parsed.scheme != "https":
+        raise ConfigError(f"{MARKET_DISCOVERY_SECTION}.gamma_base_url must use HTTPS")
+    if not parsed.netloc:
+        raise ConfigError(f"{MARKET_DISCOVERY_SECTION}.gamma_base_url must include a host")
 
-    request_timeout_seconds = _positive_number(
-        section,
-        "request_timeout_seconds",
-        "market_discovery",
-    )
-    max_retries = _required_int(section, "max_retries", "market_discovery")
+    max_retries = _required_int(section, "max_retries", MARKET_DISCOVERY_SECTION)
     if max_retries < 0:
-        raise ConfigError("market_discovery.max_retries must be non-negative")
-
-    retry_delay_seconds = _non_negative_number(
-        section,
-        "retry_delay_seconds",
-        "market_discovery",
-    )
+        raise ConfigError(f"{MARKET_DISCOVERY_SECTION}.max_retries must be non-negative")
 
     return MarketDiscoveryConfig(
         version=version,
         gamma_base_url=gamma_base_url,
-        request_timeout_seconds=request_timeout_seconds,
+        request_timeout_seconds=_number(section, "request_timeout_seconds", positive=True),
         max_retries=max_retries,
-        retry_delay_seconds=retry_delay_seconds,
+        retry_delay_seconds=_number(section, "retry_delay_seconds", positive=False),
     )
-
-
-load_market_discovery_config = load_config
-
-
-def _validate_https_url(value: str) -> None:
-    parsed = urlparse(value)
-    if parsed.scheme != "https":
-        raise ConfigError("market_discovery.gamma_base_url must use HTTPS")
-    if not parsed.netloc:
-        raise ConfigError("market_discovery.gamma_base_url must include a host")
 
 
 def _reject_unknown_keys(raw: Mapping[str, Any], allowed: frozenset[str], section: str) -> None:
@@ -89,17 +87,10 @@ def _reject_unknown_keys(raw: Mapping[str, Any], allowed: frozenset[str], sectio
         raise ConfigError(f"unknown {section} key: {unknown[0]}")
 
 
-def _required_mapping(raw: Mapping[str, Any], key: str, section: str) -> Mapping[str, Any]:
-    value = raw.get(key)
-    if not isinstance(value, Mapping):
-        raise ConfigError(f"{section}.{key} must be a mapping")
-    return value
-
-
-def _required_str(raw: Mapping[str, Any], key: str, section: str) -> str:
+def _required_str(raw: Mapping[str, Any], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"{section}.{key} must be a non-empty string")
+        raise ConfigError(f"{MARKET_DISCOVERY_SECTION}.{key} must be a non-empty string")
     return value.strip()
 
 
@@ -110,19 +101,12 @@ def _required_int(raw: Mapping[str, Any], key: str, section: str) -> int:
     return value
 
 
-def _positive_number(raw: Mapping[str, Any], key: str, section: str) -> float:
+def _number(raw: Mapping[str, Any], key: str, *, positive: bool) -> float:
     value = raw.get(key)
     if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise ConfigError(f"{section}.{key} must be a number")
-    if value <= 0:
-        raise ConfigError(f"{section}.{key} must be positive")
-    return float(value)
-
-
-def _non_negative_number(raw: Mapping[str, Any], key: str, section: str) -> float:
-    value = raw.get(key)
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise ConfigError(f"{section}.{key} must be a number")
-    if value < 0:
-        raise ConfigError(f"{section}.{key} must be non-negative")
+        raise ConfigError(f"{MARKET_DISCOVERY_SECTION}.{key} must be a number")
+    if positive and value <= 0:
+        raise ConfigError(f"{MARKET_DISCOVERY_SECTION}.{key} must be positive")
+    if not positive and value < 0:
+        raise ConfigError(f"{MARKET_DISCOVERY_SECTION}.{key} must be non-negative")
     return float(value)

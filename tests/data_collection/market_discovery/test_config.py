@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from polymarket_btc.data_collection.market_discovery.config import ConfigError, load_config
+from polymarket_btc.data_collection.market_discovery.config import ConfigError, default_config, load_config
 
 
 VALID_CONFIG = {
@@ -27,6 +27,14 @@ class ConfigTests(unittest.TestCase):
         path = Path(temp_dir.name) / "market_discovery.yaml"
         path.write_text(yaml.safe_dump(value), encoding="utf-8")
         return path
+
+    def test_default_config_contains_runtime_defaults(self) -> None:
+        config = default_config()
+
+        self.assertEqual(config.gamma_base_url, "https://gamma-api.polymarket.com")
+        self.assertEqual(config.request_timeout_seconds, 3.0)
+        self.assertEqual(config.max_retries, 1)
+        self.assertEqual(config.retry_delay_seconds, 0.5)
 
     def test_loads_minimal_runtime_config(self) -> None:
         config = load_config(self.write_config(VALID_CONFIG))
@@ -82,6 +90,18 @@ class ConfigTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ConfigError, "max_retries"):
+            load_config(self.write_config(invalid))
+
+    def test_rejects_invalid_retry_delay(self) -> None:
+        invalid = {
+            "version": 1,
+            "market_discovery": {
+                **VALID_CONFIG["market_discovery"],
+                "retry_delay_seconds": -0.1,
+            },
+        }
+
+        with self.assertRaisesRegex(ConfigError, "retry_delay_seconds"):
             load_config(self.write_config(invalid))
 
 

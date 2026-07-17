@@ -5,12 +5,11 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from polymarket_btc.data_collection.common.time import parse_utc_datetime, utc_now
-from polymarket_btc.data_collection.market_discovery.config import MarketDiscoveryConfig, load_config
+from polymarket_btc.data_collection.market_discovery.config import MarketDiscoveryConfig, default_config
 from polymarket_btc.data_collection.market_discovery.gamma_client import (
     GammaClient,
     GammaClientError,
@@ -22,7 +21,6 @@ from polymarket_btc.data_collection.market_discovery.models import (
 )
 
 
-DEFAULT_CONFIG_PATH = "config/data_collection/market_discovery.yaml"
 BTC_5M_SLUG_PREFIX = "btc-updown-5m"
 EXPECTED_DURATION = timedelta(minutes=5)
 EXPECTED_RESOLUTION_SOURCE = "https://data.chain.link/streams/btc-usd"
@@ -50,7 +48,7 @@ def discover_current_market(
     observed_at = _require_aware_utc(now_utc or utc_now())
     expected_start = floor_to_five_minute_start(observed_at)
     expected_slug = build_btc_5m_slug(expected_start)
-    resolved_config = config or load_config(Path(DEFAULT_CONFIG_PATH))
+    resolved_config = config or default_config()
     client = gamma_client or GammaClient(resolved_config)
 
     try:
@@ -64,38 +62,16 @@ def discover_current_market(
     if payload is None:
         return DiscoveryResult(DiscoveryStatus.NO_MATCH, reason="no_market_at_expected_slug")
 
-    if isinstance(payload, list):
-        return _select_from_candidates(payload, expected_slug, observed_at)
-
     if not isinstance(payload, Mapping):
-        return DiscoveryResult(DiscoveryStatus.NO_MATCH, reason="invalid_provider_payload")
+        return DiscoveryResult(
+            DiscoveryStatus.PROVIDER_UNAVAILABLE,
+            reason="Gamma market-by-slug response must be an object",
+        )
 
     validation = _validate_payload(payload, expected_slug, observed_at)
     if validation.market is None:
         return DiscoveryResult(DiscoveryStatus.NO_MATCH, reason=validation.reason)
     return DiscoveryResult(DiscoveryStatus.SELECTED, market=validation.market)
-
-
-def _select_from_candidates(
-    payloads: list[object],
-    expected_slug: str,
-    observed_at: datetime,
-) -> DiscoveryResult:
-    validations = [
-        _validate_payload(payload, expected_slug, observed_at)
-        for payload in payloads
-        if isinstance(payload, Mapping)
-    ]
-    markets = [validation.market for validation in validations if validation.market is not None]
-    if len(markets) > 1:
-        return DiscoveryResult(
-            DiscoveryStatus.AMBIGUOUS,
-            reason="multiple_markets_at_expected_slug",
-        )
-    if len(markets) == 1:
-        return DiscoveryResult(DiscoveryStatus.SELECTED, market=markets[0])
-    reason = validations[0].reason if validations else "invalid_provider_payload"
-    return DiscoveryResult(DiscoveryStatus.NO_MATCH, reason=reason)
 
 
 @dataclass(frozen=True)
@@ -201,8 +177,6 @@ def _extract_token_mapping(payload: Mapping[str, Any]) -> dict[str, str] | str:
         mapped[outcome] = token_id
         seen_tokens.add(token_id)
 
-    if tuple(mapped) != EXPECTED_OUTCOMES and set(mapped) != set(EXPECTED_OUTCOMES):
-        return "unknown_outcome"
     if set(mapped) != set(EXPECTED_OUTCOMES):
         return "missing_expected_outcome"
 
