@@ -1,0 +1,41 @@
+version: 1
+
+market_discovery:
+  provider:
+    name: polymarket
+    gamma_base_url: https://gamma-api.polymarket.com
+    slug_template: btc-updown-5m-{start_epoch}
+    search_query: bitcoin up down 5m
+
+  target:
+    asset: BTC
+    market_family: up_down
+    duration_seconds: 300
+    expected_outcomes:
+      - Up
+      - Down
+    resolution_source: https://data.chain.link/streams/btc-usd
+
+  polling:
+    interval_seconds: 15
+    request_timeout_seconds: 10
+    max_retries: 3
+    retry_base_delay_seconds: 1
+    retry_max_delay_seconds: 15
+    preload_next_market: true
+
+  selection:
+    require_unique_active_match: true
+    require_condition_id: true
+    require_token_ids: true
+    require_order_book: true
+    reject_missing_timestamps: true
+    reject_unknown_outcomes: true
+    reject_ambiguous_token_mapping: true
+    reject_closed: true
+    reject_archived: true
+
+  failure_policy:
+    no_match: retry
+    multiple_matches: reject
+    invalid_candidate: reject

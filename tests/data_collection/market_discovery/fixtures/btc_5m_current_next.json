@@ -1,0 +1,48 @@
+[
+  {
+    "id": "fixture-current",
+    "question": "Bitcoin Up or Down - July 17, 3:50PM-3:55PM ET",
+    "conditionId": "0xfixturecurrentcondition",
+    "slug": "btc-updown-5m-1784317800",
+    "resolutionSource": "https://data.chain.link/streams/btc-usd",
+    "endDate": "2026-07-17T19:55:00Z",
+    "active": true,
+    "closed": false,
+    "archived": false,
+    "enableOrderBook": true,
+    "questionID": "0xfixturecurrentquestion",
+    "outcomes": "[\"Up\", \"Down\"]",
+    "clobTokenIds": "[\"fixture-current-up-token\", \"fixture-current-down-token\"]",
+    "eventStartTime": "2026-07-17T19:50:00Z",
+    "events": [
+      {
+        "id": "fixture-current-event",
+        "slug": "btc-updown-5m-1784317800",
+        "title": "Bitcoin Up or Down - July 17, 3:50PM-3:55PM ET"
+      }
+    ]
+  },
+  {
+    "id": "fixture-next",
+    "question": "Bitcoin Up or Down - July 17, 3:55PM-4:00PM ET",
+    "conditionId": "0xfixturenextcondition",
+    "slug": "btc-updown-5m-1784318100",
+    "resolutionSource": "https://data.chain.link/streams/btc-usd",
+    "endDate": "2026-07-17T20:00:00Z",
+    "active": true,
+    "closed": false,
+    "archived": false,
+    "enableOrderBook": true,
+    "questionID": "0xfixturenextquestion",
+    "outcomes": "[\"Up\", \"Down\"]",
+    "clobTokenIds": "[\"fixture-next-up-token\", \"fixture-next-down-token\"]",
+    "eventStartTime": "2026-07-17T19:55:00Z",
+    "events": [
+      {
+        "id": "fixture-next-event",
+        "slug": "btc-updown-5m-1784318100",
+        "title": "Bitcoin Up or Down - July 17, 3:55PM-4:00PM ET"
+      }
+    ]
+  }
+]
