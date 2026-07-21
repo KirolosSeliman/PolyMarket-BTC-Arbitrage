@@ -29,6 +29,9 @@ class Response:
 
 
 class GammaClientTests(unittest.IsolatedAsyncioTestCase):
+    def test_http_timeout_is_exactly_one_second(self) -> None:
+        self.assertEqual(HTTP_TIMEOUT_SECONDS, 1.0)
+
     async def test_valid_object_uses_one_encoded_request_and_fixed_timeout(self) -> None:
         calls: list[tuple[object, float]] = []
 

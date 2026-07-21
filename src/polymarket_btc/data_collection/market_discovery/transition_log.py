@@ -8,7 +8,12 @@ from pathlib import Path
 from .models import TransitionResult
 
 
-TRANSITION_LOG_PATH = Path("data/market_discovery/transitions.jsonl")
+def default_transition_log_path() -> Path:
+    return Path.home() / ".polymarket-btc" / "market_discovery" / "transitions.jsonl"
+
+
+class TransitionLogError(RuntimeError):
+    pass
 
 
 def _timestamp(value: datetime | None) -> str | None:
@@ -18,8 +23,13 @@ def _timestamp(value: datetime | None) -> str | None:
 
 
 class TransitionLogger:
-    def __init__(self, path: Path = TRANSITION_LOG_PATH) -> None:
-        self._path = path
+    def __init__(self, path: Path | None = None) -> None:
+        selected = default_transition_log_path() if path is None else path
+        self._path = selected.expanduser().resolve()
+
+    @property
+    def path(self) -> Path:
+        return self._path
 
     def append(self, result: TransitionResult) -> None:
         new_market = result.new_market
@@ -39,9 +49,14 @@ class TransitionLogger:
             "down_token_id": new_market.down_token_id if new_market else None,
             "last_error": result.last_error,
         }
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(row, separators=(",", ":"), ensure_ascii=False))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(row, separators=(",", ":"), ensure_ascii=False))
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            raise TransitionLogError(
+                f"failed to persist transition log at {self._path}: {exc}"
+            ) from exc

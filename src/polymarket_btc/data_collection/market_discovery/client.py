@@ -11,14 +11,10 @@ from typing import Any
 
 
 GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
-HTTP_TIMEOUT_SECONDS = 0.45
+HTTP_TIMEOUT_SECONDS = 1.0
 
 
 class GammaClientError(RuntimeError):
-    pass
-
-
-class GammaNotFound(GammaClientError):
     pass
 
 

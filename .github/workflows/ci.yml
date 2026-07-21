@@ -31,5 +31,5 @@ jobs:
       - name: Reject legacy Market Discovery references
         run: >-
           ! rg -n
-          "preload_next_market|network-audit|clob_token_smoke|transition_detected|public-search|--once|--watch|--fixture|--validate-config"
+          "preload_next_market|network-audit|clob_token_smoke|transition_detected|public-search|--once|--watch|--fixture|--validate-config|GammaNotFound|HTTP_TIMEOUT_SECONDS = 0.45"
           src README.md docs pyproject.toml

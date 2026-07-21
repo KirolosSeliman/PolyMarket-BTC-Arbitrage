@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from polymarket_btc.data_collection.market_discovery import cli
 from polymarket_btc.data_collection.market_discovery.models import ResolveOutcome, ResolveResult, Timeframe
+from polymarket_btc.data_collection.market_discovery.transition_log import TransitionLogError
 from tests.data_collection.market_discovery.fixtures import market
 
 
@@ -93,3 +94,22 @@ class CliTests(unittest.TestCase):
             asyncio.run(cli._run(object()))
         row = json.loads(output.getvalue())
         self.assertEqual(row["timeframe"], "5m")
+
+    def test_run_returns_exit_code_three_on_transition_log_error(self) -> None:
+        def fail(coroutine: object) -> None:
+            coroutine.close()
+            raise TransitionLogError("failed to persist transition log")
+
+        stderr = io.StringIO()
+        with patch.object(cli.asyncio, "run", side_effect=fail), redirect_stderr(stderr):
+            code = cli.main(["run"])
+        self.assertEqual(code, 3)
+        self.assertIn("transition log error: failed to persist transition log", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_run_help_documents_home_log_path(self) -> None:
+        help_text = cli._parser()._subparsers._group_actions[0].choices["run"].format_help()
+        self.assertIn(
+            "~/.polymarket-btc/market_discovery/transitions.jsonl",
+            "".join(help_text.split()),
+        )

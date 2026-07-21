@@ -14,7 +14,7 @@ from .client import GammaClient
 from .models import ResolveOutcome, Timeframe
 from .resolver import MarketResolver
 from .transition import MarketDiscoveryRunner, TransitionController
-from .transition_log import TRANSITION_LOG_PATH, TransitionLogger
+from .transition_log import TransitionLogError, TransitionLogger
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -67,7 +67,15 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("current", help="resolve the current 5m and 15m markets")
     run_parser = subparsers.add_parser("run", help="run independent 5m and 15m transition workers")
-    run_parser.add_argument("--transition-log", type=Path, default=TRANSITION_LOG_PATH)
+    run_parser.add_argument(
+        "--transition-log",
+        type=Path,
+        default=None,
+        help=(
+            "append transitions to PATH "
+            "(default: ~/.polymarket-btc/market_discovery/transitions.jsonl)"
+        ),
+    )
     return parser
 
 
@@ -79,6 +87,9 @@ def main(argv: list[str] | None = None) -> int:
         logger = TransitionLogger(args.transition_log)
         asyncio.run(_run(logger))
         return 0
+    except TransitionLogError as exc:
+        print(f"transition log error: {exc}", file=sys.stderr)
+        return 3
     except KeyboardInterrupt:
         return 0
 
