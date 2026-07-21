@@ -1,195 +1,94 @@
-# Market Discovery V1
+# Market Discovery
 
-Market Discovery V1 is a read-only current-market resolver for Polymarket BTC
-Up/Down five-minute markets. It discovers metadata only. It does not trade,
-place orders, sign messages, use a wallet, calculate edge, or manage capital.
+Market Discovery resolves only the deterministic Polymarket BTC Up/Down
+markets for the 5-minute and 15-minute timeframes. It is read-only and uses
+the public Gamma market-by-slug endpoint.
 
-## Production Flow
+## Windows and slugs
 
-```text
-UTC clock
-  -> floor current time to five-minute boundary
-  -> build btc-updown-5m-{start_epoch}
-  -> GET https://gamma-api.polymarket.com/markets/slug/{slug}
-  -> strict payload validation
-  -> concise DiscoveryResult
-```
+UTC timestamps are floored to an exact timeframe boundary. The expected slugs
+are:
 
-The direct slug lookup follows Polymarket's documented Gamma slug lookup path:
-`GET /markets/slug/{slug}`. Broad search, watch mode, next-market preloading,
-fixture mode, and multiple-candidate selection are intentionally not production
-CLI behavior in V1. The direct slug contract has only `selected`, `no_match`,
-and `provider_unavailable` statuses.
+- `btc-updown-5m-{start_epoch}` for a 300-second window;
+- `btc-updown-15m-{start_epoch}` for a 900-second window.
 
-## Validation Rules
+Only these two timeframes exist. There is no YAML configuration, fuzzy search,
+candidate selection, or slug fallback.
 
-Discovery fails closed unless the payload satisfies all rules:
+## Strict validation
 
-- `slug` equals the expected current UTC slug.
-- `eventStartTime <= now_utc < endDate`.
-- `endDate - eventStartTime == 300 seconds`.
-- slug epoch equals `eventStartTime`.
-- `active` is true.
-- `closed` and `archived` are not true.
-- `enableOrderBook` is true.
-- `id` and `conditionId` are present.
-- `resolutionSource` equals `https://data.chain.link/streams/btc-usd`, allowing a trailing slash.
-- `outcomes` and `clobTokenIds` parse as arrays with equal length.
-- outcomes are exactly one `Up` and one `Down`.
-- token IDs are non-empty and unique.
-- outcome tokens are mapped by source index, not by assumed position.
+A Gamma response is accepted only when:
 
-## Config
+- `id` and `conditionId` are present and non-empty;
+- `slug` exactly matches the expected slug;
+- `active` and `enableOrderBook` are `true`;
+- `closed` and `archived` are not `true`;
+- `eventStartTime` equals the expected UTC boundary;
+- `endDate` is exactly 300 or 900 seconds later;
+- `resolutionSource` is the Chainlink BTC/USD stream;
+- outcomes contain exactly one Up and one Down;
+- the two non-empty, unique token IDs are mapped by outcome index.
 
-Market Discovery uses built-in runtime defaults when `--config` is omitted:
+The source may have a trailing slash, and only its scheme and hostname are
+case-normalized. Invalid business metadata is `not_found`. Timeouts, transport
+errors, non-404 HTTP errors, invalid JSON, and non-object JSON are `error`.
 
-- Gamma base URL: `https://gamma-api.polymarket.com`
-- request timeout: `3.0` seconds
-- max retries: `1`
-- retry delay: `0.5` seconds
+## Controlled transitions
 
-The YAML file is an explicit optional override and a checked example artifact:
+Each timeframe has an independent worker. It resolves its current market once
+at startup, then searches the next exact slug from T-5 seconds through T+5
+seconds. The target interval is 0.5 second, giving at most 21 theoretical
+attempts.
 
-```text
-config/data_collection/market_discovery.yaml
-```
+Requests never overlap within one timeframe. If a request overruns a slot,
+elapsed slots are skipped without a catch-up burst. A 5m request and a 15m
+request may run concurrently.
 
-Supported keys:
+A market found before T becomes `NEXT_READY`; the previous market remains
+current only until its end time. At T, the ready market becomes `ACTIVE` with
+zero delay. A market found from T through T+5 becomes `ACTIVE` immediately and
+records its transition delay.
 
-```yaml
-version: 1
+The expired market is never reused after T. If the expected market is still
+unavailable after the T+5 attempt, the worker emits one `TRANSITION_FAILED`,
+stores one failed transition, and schedules the next timeframe boundary. It
+does not continue searching the failed window.
 
-market_discovery:
-  gamma_base_url: https://gamma-api.polymarket.com
-  request_timeout_seconds: 3
-  max_retries: 1
-  retry_delay_seconds: 0.5
-```
+## Transition log
 
-Unknown keys are rejected at startup.
+Final transition results are appended to:
 
-## CLI
+`data/market_discovery/transitions.jsonl`
 
-Validate built-in defaults:
+Each line contains one success or failure, UTC timestamps, attempt count,
+delay, market IDs, condition ID, Up/Down token IDs, and the last error. The
+file never stores attempts, snapshots, or raw Gamma payloads. Writes are
+flushed and synchronized to disk.
+
+## Commands
+
+Resolve both current markets once:
 
 ```powershell
-python -m polymarket_btc.data_collection.market_discovery.cli --validate-config --json
+python -m polymarket_btc.data_collection.market_discovery.cli current
 ```
 
-Validate an explicit YAML override:
+Run both workers until interrupted:
 
 ```powershell
-python -m polymarket_btc.data_collection.market_discovery.cli --config config/data_collection/market_discovery.yaml --validate-config --json
+python -m polymarket_btc.data_collection.market_discovery.cli run
 ```
 
-Run discovery with built-in defaults:
+Choose another append-only log:
 
 ```powershell
-python -m polymarket_btc.data_collection.market_discovery.cli --json
+python -m polymarket_btc.data_collection.market_discovery.cli run \
+  --transition-log data/custom-transitions.jsonl
 ```
-
-Run discovery with an explicit YAML override:
-
-```powershell
-python -m polymarket_btc.data_collection.market_discovery.cli --config config/data_collection/market_discovery.yaml --json
-```
-
-Normalized selected output:
-
-```json
-{
-  "market": {
-    "condition_id": "0x...",
-    "down_token_id": "...",
-    "end_time_utc": "2026-07-17T19:55:00Z",
-    "market_id": "2951004",
-    "resolution_source": "https://data.chain.link/streams/btc-usd",
-    "slug": "btc-updown-5m-1784317800",
-    "start_time_utc": "2026-07-17T19:50:00Z",
-    "up_token_id": "..."
-  },
-  "reason": null,
-  "status": "selected"
-}
-```
-
-Exit codes:
-
-- `0`: selected current market.
-- `1`: no match.
-- `2`: invalid config or provider unavailable.
-
-## Optional CLOB Smoke Check
-
-The development-only smoke script first runs Market Discovery V1, then reads
-the public CLOB order book endpoint for the discovered Up and Down token IDs:
-`GET https://clob.polymarket.com/book?token_id={token_id}`.
-
-```powershell
-python scripts/clob_token_smoke.py
-python scripts/clob_token_smoke.py --config config/data_collection/market_discovery.yaml
-```
-
-The script verifies that each response is an object, that `asset_id` matches the
-requested token, and that `market`, `bids`, `asks`, and `hash` are present. It
-does not authenticate, sign, post, cancel, or trade.
-
-## Tests
-
-Offline tests cover:
-
-- config acceptance and strict unknown-key rejection;
-- Gamma direct slug success, 404, retry, timeout, malformed JSON, and no-retry 400 behavior;
-- UTC five-minute flooring and slug construction;
-- active/closed/archived/order-book guards;
-- exact start and end boundary behavior;
-- duration, slug/start, timestamp, and resolution-source validation;
-- outcome/token parsing from JSON strings and arrays;
-- reversed source outcome order;
-- unknown/duplicate outcomes, duplicate/empty tokens, and count mismatch;
-- concise CLI JSON and exit codes.
-
-## Twelve-Window Live Validation
-
-Before promoting V1 beyond read-only discovery, run this procedure for 12
-consecutive five-minute windows, covering one full hour:
-
-1. At each UTC five-minute boundary plus 5 to 30 seconds, run:
-
-   ```powershell
-   python -m polymarket_btc.data_collection.market_discovery.cli --json
-   ```
-
-2. Record the current UTC time, expected slug, exit code, selected market ID,
-   condition ID, Up token, Down token, and reason when no market is selected.
-3. For every selected market, confirm the slug epoch equals `eventStartTime`,
-   the window is exactly 300 seconds, the selected time is inside
-   `eventStartTime <= now_utc < endDate`, and the status flags are tradable.
-4. Confirm that outcomes and token IDs are mapped by source index and that Up
-   and Down token IDs are different.
-5. Optionally run `python scripts/clob_token_smoke.py` in the same window and
-   record whether both token order books return matching `asset_id` values.
-6. Any `no_match`, provider outage, token mismatch, or timestamp mismatch must
-   be treated as a failed window and investigated before launch.
-
-With the default config, one Gamma discovery attempt can take up to about 6.5
-seconds in the worst case: two three-second HTTP attempts plus one 0.5-second
-retry delay. The optional CLOB smoke check adds up to about six more seconds
-for two token book reads. The 12-window procedure takes one hour of wall-clock
-time by design.
 
 ## Limits
 
-- This module depends on the observed BTC five-minute slug format. If
-  Polymarket changes that format, discovery fails closed.
-- It validates market metadata only; it does not prove liquidity, fillability,
-  profitability, or trading safety.
-- The optional CLOB smoke check verifies token/order-book connectivity only.
-  It is not an order execution test.
-
-## References
-
-- Polymarket Fetching Markets: https://docs.polymarket.com/market-data/fetching-markets
-- Polymarket List Markets API reference: https://docs.polymarket.com/api-reference/markets/list-markets
-- Polymarket Get Order Book API reference: https://docs.polymarket.com/api-reference/market-data/get-order-book
-- Polymarket Orderbook guide: https://docs.polymarket.com/trading/orderbook
+Correct operation depends on the published slug format, Gamma availability,
+and an accurate server clock. Market Discovery does not collect the order
+book, DOM, limits, volumes, trades, BTC price, probabilities, orders,
+positions, or any trading data.

@@ -20,18 +20,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .
+        run: python -m pip install -e .
 
-      - name: Validate built-in config defaults
-        run: python -m polymarket_btc.data_collection.market_discovery.cli --validate-config --json
-
-      - name: Validate example config override
-        run: python -m polymarket_btc.data_collection.market_discovery.cli --config config/data_collection/market_discovery.yaml --validate-config --json
-
-      - name: Run tests
+      - name: Run offline tests
         run: python -m unittest
 
       - name: Compile Python sources
-        run: python -m compileall src tests scripts
+        run: python -m compileall src tests
+
+      - name: Reject legacy Market Discovery references
+        run: >-
+          ! rg -n
+          "preload_next_market|network-audit|clob_token_smoke|transition_detected|public-search|--once|--watch|--fixture|--validate-config"
+          src README.md docs pyproject.toml

@@ -1,97 +1,87 @@
-from __future__ import annotations
+"""Command-line interface for current resolution and continuous transitions."""
 
 import argparse
+import asyncio
 import json
 import sys
-from collections.abc import Callable
-from dataclasses import fields, is_dataclass
+from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 
-from polymarket_btc.data_collection.market_discovery.config import (
-    ConfigError,
-    MarketDiscoveryConfig,
-    default_config,
-    load_config,
-)
-from polymarket_btc.data_collection.market_discovery.discovery import discover_current_market
-from polymarket_btc.data_collection.market_discovery.models import DiscoveryResult, DiscoveryStatus
-
-
-def main(
-    argv: list[str] | None = None,
-    *,
-    stdout: TextIO | None = None,
-    stderr: TextIO | None = None,
-    discover: Callable[[MarketDiscoveryConfig], DiscoveryResult] | None = None,
-) -> int:
-    stdout = stdout or sys.stdout
-    stderr = stderr or sys.stderr
-    args = _build_parser().parse_args(argv)
-
-    try:
-        config = load_config(Path(args.config)) if args.config else default_config()
-    except (OSError, ConfigError) as error:
-        print(f"config error: {error}", file=stderr)
-        return 2
-
-    if args.validate_config:
-        _write({"status": "config_valid"}, as_json=args.json, stdout=stdout)
-        return 0
-
-    result = discover(config) if discover is not None else discover_current_market(config=config)
-    _write(result, as_json=args.json, stdout=stdout)
-    return _exit_code_for_result(result)
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Discover the current Polymarket BTC Up/Down 5m market.")
-    parser.add_argument("--config", default=None, help="Optional path to a Market Discovery YAML config override.")
-    parser.add_argument("--validate-config", action="store_true", help="Validate configuration and exit.")
-    parser.add_argument("--json", action="store_true", help="Write JSON output.")
-    return parser
-
-
-def _exit_code_for_result(result: DiscoveryResult) -> int:
-    if result.status == DiscoveryStatus.SELECTED:
-        return 0
-    if result.status == DiscoveryStatus.PROVIDER_UNAVAILABLE:
-        return 2
-    return 1
-
-
-def _write(value: Any, *, as_json: bool, stdout: TextIO) -> None:
-    if as_json:
-        print(json.dumps(_to_jsonable(value), sort_keys=True), file=stdout)
-        return
-
-    if isinstance(value, DiscoveryResult):
-        market_id = value.market.market_id if value.market else "none"
-        reason = value.reason or "none"
-        print(f"status={value.status.value} market={market_id} reason={reason}", file=stdout)
-        return
-
-    print(value, file=stdout)
+from .client import GammaClient
+from .models import ResolveOutcome, Timeframe
+from .resolver import MarketResolver
+from .transition import MarketDiscoveryRunner, TransitionController
+from .transition_log import TRANSITION_LOG_PATH, TransitionLogger
 
 
 def _to_jsonable(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if is_dataclass(value):
-        return {
-            field.name: _to_jsonable(getattr(value, field.name))
-            for field in fields(value)
-        }
+        return {key: _to_jsonable(item) for key, item in asdict(value).items()}
     if isinstance(value, dict):
         return {str(key): _to_jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (tuple, list)):
         return [_to_jsonable(item) for item in value]
     return value
 
 
+async def _current() -> int:
+    resolver = MarketResolver(GammaClient())
+    results = await asyncio.gather(*(resolver.resolve_current_market(timeframe) for timeframe in Timeframe))
+    payload = {
+        result.timeframe.value: {
+            "outcome": result.outcome.value,
+            "expected_start_utc": _to_jsonable(result.expected_start_utc),
+            "market": _to_jsonable(result.market),
+            "error": result.error,
+        }
+        for result in results
+    }
+    print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+    if any(result.outcome is ResolveOutcome.ERROR for result in results):
+        return 2
+    if any(result.outcome is ResolveOutcome.NOT_FOUND for result in results):
+        return 1
+    return 0
+
+
+async def _run(logger: TransitionLogger) -> None:
+    resolver = MarketResolver(GammaClient())
+    controller = TransitionController(resolver)
+
+    def print_snapshot(snapshot: object) -> None:
+        print(json.dumps(_to_jsonable(snapshot), separators=(",", ":"), ensure_ascii=False), flush=True)
+
+    runner = MarketDiscoveryRunner(resolver, controller, logger, print_snapshot)
+    await runner.run_forever()
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="market-discovery")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("current", help="resolve the current 5m and 15m markets")
+    run_parser = subparsers.add_parser("run", help="run independent 5m and 15m transition workers")
+    run_parser.add_argument("--transition-log", type=Path, default=TRANSITION_LOG_PATH)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        if args.command == "current":
+            return asyncio.run(_current())
+        logger = TransitionLogger(args.transition_log)
+        asyncio.run(_run(logger))
+        return 0
+    except KeyboardInterrupt:
+        return 0
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

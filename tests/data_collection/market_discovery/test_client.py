@@ -1,115 +1,81 @@
-from __future__ import annotations
-
+import json
+import http.client
+import socket
 import unittest
-from typing import Any
+from io import BytesIO
+from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
-from polymarket_btc.data_collection.common.http import HttpStatusError, HttpTimeoutError, HttpTransportError
-from polymarket_btc.data_collection.market_discovery.config import MarketDiscoveryConfig
-from polymarket_btc.data_collection.market_discovery.gamma_client import (
+from polymarket_btc.data_collection.market_discovery.client import (
     GammaClient,
-    ProviderRequestError,
-    ProviderUnavailableError,
+    GammaInvalidResponse,
+    GammaUnavailable,
+    HTTP_TIMEOUT_SECONDS,
 )
 
 
-class FakeTransport:
-    def __init__(self, responses: list[Any]) -> None:
-        self.responses = responses
-        self.calls: list[tuple[str, float]] = []
+class Response:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
 
-    def get_json(self, url: str, timeout_seconds: float) -> Any:
-        self.calls.append((url, timeout_seconds))
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
+    def __enter__(self) -> "Response":
+        return self
 
+    def __exit__(self, *args: object) -> None:
+        return None
 
-def config() -> MarketDiscoveryConfig:
-    return MarketDiscoveryConfig(
-        gamma_base_url="https://gamma-api.polymarket.com",
-        request_timeout_seconds=3,
-        max_retries=1,
-        retry_delay_seconds=0.5,
-    )
+    def read(self) -> bytes:
+        return self.payload
 
 
-class ClientTests(unittest.TestCase):
-    def make_client(self, responses: list[Any], sleeps: list[float] | None = None) -> tuple[GammaClient, FakeTransport]:
-        transport = FakeTransport(responses)
-        sleep = sleeps.append if sleeps is not None else (lambda _: None)
-        client = GammaClient(config(), http_client=transport, sleep=sleep)
-        return client, transport
+class GammaClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_valid_object_uses_one_encoded_request_and_fixed_timeout(self) -> None:
+        calls: list[tuple[object, float]] = []
 
-    def test_successful_market_response(self) -> None:
-        client, transport = self.make_client([{"id": "1"}])
+        def open_request(request: object, timeout: float) -> Response:
+            calls.append((request, timeout))
+            return Response(json.dumps({"id": "1"}).encode())
 
-        result = client.get_market_by_slug("btc-updown-5m-1")
-
+        with patch("urllib.request.urlopen", side_effect=open_request):
+            result = await GammaClient().get_market_by_slug("slug with/slash")
         self.assertEqual(result, {"id": "1"})
-        self.assertIn("/markets/slug/btc-updown-5m-1", transport.calls[0][0])
-        self.assertEqual(transport.calls[0][1], 3)
+        self.assertEqual(len(calls), 1)
+        request, timeout = calls[0]
+        self.assertEqual(timeout, HTTP_TIMEOUT_SECONDS)
+        self.assertTrue(request.full_url.endswith("slug%20with%2Fslash"))
+        self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertEqual(request.get_header("User-agent"), "polymarket-btc-market-discovery/1.0")
 
-    def test_404_returns_none(self) -> None:
-        client, transport = self.make_client([HttpStatusError(404, "missing")])
+    async def test_404_returns_none(self) -> None:
+        error = HTTPError("url", 404, "missing", {}, BytesIO())
+        with patch("urllib.request.urlopen", side_effect=error):
+            self.assertIsNone(await GammaClient().get_market_by_slug("slug"))
 
-        self.assertIsNone(client.get_market_by_slug("missing"))
-        self.assertEqual(len(transport.calls), 1)
+    async def test_http_errors_are_classified_without_retry(self) -> None:
+        for status, expected in ((400, GammaInvalidResponse), (429, GammaInvalidResponse), (500, GammaUnavailable)):
+            with self.subTest(status=status):
+                error = HTTPError("url", status, "failure", {}, BytesIO())
+                with patch("urllib.request.urlopen", side_effect=error) as opener:
+                    with self.assertRaises(expected):
+                        await GammaClient().get_market_by_slug("slug")
+                    self.assertEqual(opener.call_count, 1)
 
-    def test_429_retries_then_succeeds(self) -> None:
-        sleeps: list[float] = []
-        client, transport = self.make_client([HttpStatusError(429, "rate"), {"id": "ok"}], sleeps)
+    async def test_transport_and_timeout_are_unavailable(self) -> None:
+        for error in (
+            URLError("offline"),
+            socket.timeout("slow"),
+            TimeoutError("slow"),
+            http.client.IncompleteRead(b"partial"),
+            http.client.BadStatusLine("bad status"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                with patch("urllib.request.urlopen", side_effect=error):
+                    with self.assertRaises(GammaUnavailable):
+                        await GammaClient().get_market_by_slug("slug")
 
-        self.assertEqual(client.get_market_by_slug("slug"), {"id": "ok"})
-        self.assertEqual(len(transport.calls), 2)
-        self.assertEqual(sleeps, [0.5])
-
-    def test_500_retries_then_succeeds(self) -> None:
-        sleeps: list[float] = []
-        client, transport = self.make_client([HttpStatusError(500, "server"), {"id": "ok"}], sleeps)
-
-        self.assertEqual(client.get_market_by_slug("slug"), {"id": "ok"})
-        self.assertEqual(len(transport.calls), 2)
-        self.assertEqual(sleeps, [0.5])
-
-    def test_timeout_retries_then_succeeds(self) -> None:
-        sleeps: list[float] = []
-        client, transport = self.make_client([HttpTimeoutError("timeout"), {"id": "ok"}], sleeps)
-
-        self.assertEqual(client.get_market_by_slug("slug"), {"id": "ok"})
-        self.assertEqual(len(transport.calls), 2)
-        self.assertEqual(sleeps, [0.5])
-
-    def test_exhausted_retry_returns_provider_unavailable(self) -> None:
-        client, transport = self.make_client([HttpTimeoutError("timeout"), HttpTimeoutError("timeout")])
-
-        with self.assertRaises(ProviderUnavailableError):
-            client.get_market_by_slug("slug")
-
-        self.assertEqual(len(transport.calls), 2)
-
-    def test_400_is_not_retried(self) -> None:
-        client, transport = self.make_client([HttpStatusError(400, "bad")])
-
-        with self.assertRaises(ProviderRequestError):
-            client.get_market_by_slug("bad")
-
-        self.assertEqual(len(transport.calls), 1)
-
-    def test_malformed_json_transport_error_is_provider_unavailable_after_retry(self) -> None:
-        client, transport = self.make_client([HttpTransportError("not json"), HttpTransportError("not json")])
-
-        with self.assertRaises(ProviderUnavailableError):
-            client.get_market_by_slug("slug")
-
-        self.assertEqual(len(transport.calls), 2)
-
-    def test_invalid_response_type_is_provider_request_error(self) -> None:
-        client, _ = self.make_client([["not", "a", "market"]])
-
-        with self.assertRaises(ProviderRequestError):
-            client.get_market_by_slug("slug")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    async def test_invalid_json_or_non_object_is_invalid_response(self) -> None:
+        for payload in (b"not json", b"[]"):
+            with self.subTest(payload=payload):
+                with patch("urllib.request.urlopen", return_value=Response(payload)):
+                    with self.assertRaises(GammaInvalidResponse):
+                        await GammaClient().get_market_by_slug("slug")

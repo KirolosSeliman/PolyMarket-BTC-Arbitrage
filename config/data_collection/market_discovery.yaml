@@ -1,7 +1,0 @@
-version: 1
-
-market_discovery:
-  gamma_base_url: https://gamma-api.polymarket.com
-  request_timeout_seconds: 3
-  max_retries: 1
-  retry_delay_seconds: 0.5
