@@ -1,0 +1,13 @@
+services:
+  market-data:
+    build:
+      context: .
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

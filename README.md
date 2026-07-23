@@ -1,46 +1,46 @@
 # polymarket-btc
 
-Read-only discovery of the current Polymarket BTC Up/Down markets for the
-5-minute and 15-minute timeframes.
+Read-only discovery and durable collection of public BTC market data from
+Polymarket and Binance.
 
-Startup resolves each timeframe up to three times, 0.5 second apart. Gamma
-requests use a fixed 1.0-second timeout. During transitions, the expired market
-is removed exactly at its end time even when a Gamma request is still running.
+## Installation
 
-## Install
+Python 3.11 or 3.13 is supported.
 
-```powershell
+```shell
 python -m pip install -e .
+python -m polymarket_btc.data_collection.market_data.cli validate-config --config config/market_data.toml
 ```
 
-## Resolve current markets
+## Market Discovery
 
-```powershell
+```shell
 python -m polymarket_btc.data_collection.market_discovery.cli current
-```
-
-## Run continuously
-
-```powershell
 python -m polymarket_btc.data_collection.market_discovery.cli run
 ```
 
-## Use another transition log
+See [Market Discovery](docs/data_collection/market_discovery.md).
 
-By default, transitions are durably appended to
-`~/.polymarket-btc/market_discovery/transitions.jsonl`. A persistence failure
-stops both workers and exits with code 3; transition loss is never ignored.
+## Market Data Gateway
 
-```powershell
-python -m polymarket_btc.data_collection.market_discovery.cli run \
-  --transition-log data/custom-transitions.jsonl
+```shell
+python -m polymarket_btc.data_collection.market_data.cli run --config config/market_data.toml
+```
+
+The gateway is read-only. It publishes immutable in-process snapshots and
+persists raw JSONL/Zstandard events plus Parquet snapshots. See
+[Market Data Gateway](docs/data_collection/market_data.md).
+
+## Docker
+
+```shell
+docker compose up --build -d
+docker compose down
 ```
 
 ## Tests
 
-```powershell
+```shell
 python -m unittest
+python -m compileall src tests
 ```
-
-See `docs/data_collection/market_discovery.md` for the exact discovery and
-transition contract.

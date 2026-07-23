@@ -33,3 +33,14 @@ jobs:
           ! rg -n
           "preload_next_market|network-audit|clob_token_smoke|transition_detected|public-search|--once|--watch|--fixture|--validate-config|GammaNotFound|HTTP_TIMEOUT_SECONDS = 0.45"
           src README.md docs pyproject.toml
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Compose configuration
+        run: docker compose config
+
+      - name: Build production image
+        run: docker build -t polymarket-btc-market-data:test .
