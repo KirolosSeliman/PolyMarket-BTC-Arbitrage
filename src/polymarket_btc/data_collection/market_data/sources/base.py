@@ -25,4 +25,3 @@ class ExponentialBackoff:
         self._current = base
         jitter = base * self.jitter_fraction
         return max(0.0, base + random.uniform(-jitter, jitter))
-

@@ -161,7 +161,6 @@ class RawEventStorage:
             del self._segments[key]
         return list(self._manifests)
 
-
 def recover_partial_files(data_dir: Path, *, zstd_level: int) -> list[Path]:
     manifests: list[Path] = []
     quarantine = Path(data_dir) / "quarantine"
@@ -325,4 +324,3 @@ class ParquetSnapshotWriter:
         if self._rows:
             self._manifests.append(self._finalize())
         return list(self._manifests)
-

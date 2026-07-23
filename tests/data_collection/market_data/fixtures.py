@@ -17,7 +17,6 @@ def chainlink_update() -> dict[str, object]:
         },
     }
 
-
 def agg_trade(*, maker: bool = True) -> dict[str, object]:
     return {
         "stream": "btcusdt@aggTrade",
@@ -78,4 +77,3 @@ def clob_book(asset_id: str = "up-token") -> dict[str, object]:
         "timestamp": str(NOW_MS),
         "hash": "book-hash",
     }
-

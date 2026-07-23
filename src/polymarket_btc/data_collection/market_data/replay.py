@@ -37,4 +37,3 @@ def read_raw_events(raw_dir: Path):
                 f"ingest sequence gap: {previous.ingest_sequence} -> {current.ingest_sequence}"
             )
     yield from events
-

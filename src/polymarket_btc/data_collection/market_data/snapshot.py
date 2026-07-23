@@ -77,4 +77,3 @@ class SnapshotPublisher:
             except asyncio.QueueFull:
                 pass
         self._subscribers.clear()
-
