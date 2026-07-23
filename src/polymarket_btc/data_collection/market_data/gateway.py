@@ -86,9 +86,30 @@ class MarketDataGateway:
         self._entered = False
         self._fatal: BaseException | None = None
         self.health = initial_health()
-        self.chainlink = ChainlinkRtdsSource(config, self._publish_source, lambda: 0)
-        self.binance = BinanceSpotSource(config, self._publish_source, lambda: 0)
-        self.clob = PolymarketClobSource(config, self._publish_source, lambda: 0)
+        self.chainlink = ChainlinkRtdsSource(
+            config,
+            self._publish_source,
+            lambda: 0,
+            lambda connected: self.state.set_connected(
+                EventSource.CHAINLINK_RTDS, connected
+            ),
+        )
+        self.binance = BinanceSpotSource(
+            config,
+            self._publish_source,
+            lambda: 0,
+            lambda connected: self.state.set_connected(
+                EventSource.BINANCE_SPOT, connected
+            ),
+        )
+        self.clob = PolymarketClobSource(
+            config,
+            self._publish_source,
+            lambda: 0,
+            lambda connected: self.state.set_connected(
+                EventSource.POLYMARKET_CLOB, connected
+            ),
+        )
         resolver = MarketResolver(GammaClient())
         controller = TransitionController(resolver)
         transition_log = config.storage.data_dir / "market_discovery" / "transitions.jsonl"

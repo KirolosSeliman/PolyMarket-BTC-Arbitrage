@@ -209,6 +209,7 @@ class BinanceSpotSource:
         config: MarketDataConfig,
         publish: Callable[[MarketDataEvent], Awaitable[None]],
         next_sequence: Callable[[], int],
+        on_connection: Callable[[bool], None] | None = None,
     ) -> None:
         self._config = config
         self._publish = publish
@@ -217,6 +218,11 @@ class BinanceSpotSource:
         self.reconnect_count = 0
         self.invalid_count = 0
         self.connected = False
+        self._on_connection = on_connection or (lambda _connected: None)
+
+    def _set_connected(self, connected: bool) -> None:
+        self.connected = connected
+        self._on_connection(connected)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -241,7 +247,7 @@ class BinanceSpotSource:
                     build_combined_url(self._config.binance.url, microseconds),
                     max_size=4 * 1024 * 1024,
                 ) as websocket:
-                    self.connected = True
+                    self._set_connected(True)
                     deadline = time.monotonic() + reconnect_after
                     while not self._stop.is_set() and time.monotonic() < deadline:
                         timeout = max(0.1, deadline - time.monotonic())
@@ -267,4 +273,4 @@ class BinanceSpotSource:
                     break
                 await asyncio.sleep(backoff.next_delay())
             finally:
-                self.connected = False
+                self._set_connected(False)

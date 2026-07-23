@@ -141,6 +141,10 @@ class StateStoreTests(unittest.TestCase):
         snapshot = self.store.snapshot(NOW_NS + 1_000_000, 1)
         self.assertTrue(snapshot.ready_for_strategy)
         self.assertEqual(snapshot.not_ready_reasons, ())
+        self.store.set_connected(EventSource.BINANCE_SPOT, False)
+        disconnected = self.store.snapshot(NOW_NS + 2_000_000, 2)
+        self.assertFalse(disconnected.ready_for_strategy)
+        self.assertIn("binance_disconnected", disconnected.not_ready_reasons)
 
 
 if __name__ == "__main__":

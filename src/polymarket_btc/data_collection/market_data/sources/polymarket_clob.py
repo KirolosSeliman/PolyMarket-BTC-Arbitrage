@@ -300,6 +300,7 @@ class PolymarketClobSource:
         config: MarketDataConfig,
         publish: Callable[[MarketDataEvent], Awaitable[None]],
         next_sequence: Callable[[], int],
+        on_connection: Callable[[bool], None] | None = None,
     ) -> None:
         self._config = config
         self._publish = publish
@@ -314,6 +315,11 @@ class PolymarketClobSource:
         self.invalid_count = 0
         self.divergence_count = 0
         self.connected = False
+        self._on_connection = on_connection or (lambda _connected: None)
+
+    def _set_connected(self, connected: bool) -> None:
+        self.connected = connected
+        self._on_connection(connected)
 
     def on_market_snapshot(self, snapshot: object) -> None:
         from polymarket_btc.data_collection.market_discovery import TimeframeSnapshot
@@ -409,7 +415,7 @@ class PolymarketClobSource:
                     max_size=4 * 1024 * 1024,
                     ping_interval=None,
                 ) as websocket:
-                    self.connected = True
+                    self._set_connected(True)
                     await websocket.send(json.dumps(
                         initial_subscription(initial), separators=(",", ":")
                     ))
@@ -445,7 +451,7 @@ class PolymarketClobSource:
                     break
                 await asyncio.sleep(backoff.next_delay())
             finally:
-                self.connected = False
+                self._set_connected(False)
                 for task in (heartbeat, subscriptions):
                     if task is not None:
                         task.cancel()

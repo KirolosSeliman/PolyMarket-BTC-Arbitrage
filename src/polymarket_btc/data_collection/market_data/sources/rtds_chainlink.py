@@ -98,6 +98,7 @@ class ChainlinkRtdsSource:
         config: MarketDataConfig,
         publish: Callable[[MarketDataEvent], Awaitable[None]],
         next_sequence: Callable[[], int],
+        on_connection: Callable[[bool], None] | None = None,
     ) -> None:
         self._config = config
         self._publish = publish
@@ -107,6 +108,11 @@ class ChainlinkRtdsSource:
         self.reconnect_count = 0
         self.invalid_count = 0
         self.connected = False
+        self._on_connection = on_connection or (lambda _connected: None)
+
+    def _set_connected(self, connected: bool) -> None:
+        self.connected = connected
+        self._on_connection(connected)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -131,7 +137,7 @@ class ChainlinkRtdsSource:
                     max_size=4 * 1024 * 1024,
                     ping_interval=None,
                 ) as websocket:
-                    self.connected = True
+                    self._set_connected(True)
                     await websocket.send(json.dumps(SUBSCRIPTION, separators=(",", ":")))
                     heartbeat = asyncio.create_task(self._heartbeat(websocket))
                     connected_at = time.monotonic()
@@ -167,7 +173,7 @@ class ChainlinkRtdsSource:
                 if self.reconnect_count < 0:
                     raise SourceConnectionError(str(exc)) from exc
             finally:
-                self.connected = False
+                self._set_connected(False)
                 if heartbeat is not None:
                     heartbeat.cancel()
                     await asyncio.gather(heartbeat, return_exceptions=True)
