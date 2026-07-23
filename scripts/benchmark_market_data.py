@@ -7,6 +7,7 @@ import asyncio
 from collections import deque
 from decimal import Decimal
 import json
+import os
 from pathlib import Path
 import statistics
 import sys
@@ -39,10 +40,10 @@ RATES = {
 }
 
 
-def percentile_99(values: list[float]) -> float:
+def percentile(values: list[float], percent: int) -> float:
     if not values:
         return 0.0
-    return statistics.quantiles(values, n=100, method="inclusive")[98]
+    return statistics.quantiles(values, n=100, method="inclusive")[percent - 1]
 
 
 def process_rss_bytes() -> int:
@@ -168,6 +169,9 @@ async def run_benchmark(duration_seconds: float) -> dict[str, object]:
     stored = 0
     stop = asyncio.Event()
     warmup_memory = 0
+    benchmark_file_count = 0
+    benchmark_storage_bytes = 0
+    process_cpu_start = time.process_time()
     with tempfile.TemporaryDirectory() as directory:
         storage = RawEventStorage(
             Path(directory), zstd_level=3, rotate_seconds=300, rotate_bytes=1 << 30
@@ -262,12 +266,23 @@ async def run_benchmark(duration_seconds: float) -> dict[str, object]:
             await asyncio.gather(*tasks, return_exceptions=True)
             storage.flush(fsync=True)
             storage.close()
+            files = [path for path in Path(directory).rglob("*") if path.is_file()]
+            benchmark_file_count = len(files)
+            benchmark_storage_bytes = sum(path.stat().st_size for path in files)
         final_memory = process_rss_bytes()
 
     elapsed_total = time.monotonic() - start
-    latency_p99 = percentile_99(list(latencies_ms))
-    jitter_p99 = percentile_99(list(jitter_ms))
+    latency_values = list(latencies_ms)
+    jitter_values = list(jitter_ms)
+    latency_p50 = percentile(latency_values, 50)
+    latency_p95 = percentile(latency_values, 95)
+    latency_p99 = percentile(latency_values, 99)
+    jitter_p50 = percentile(jitter_values, 50)
+    jitter_p95 = percentile(jitter_values, 95)
+    jitter_p99 = percentile(jitter_values, 99)
     memory_growth = max(0, final_memory - warmup_memory)
+    process_cpu_seconds = time.process_time() - process_cpu_start
+    average_cpu_percent = process_cpu_seconds / elapsed_total * 100
     expected_rate = sum(RATES.values())
     throughput = produced / duration_seconds
     passed = (
@@ -286,10 +301,19 @@ async def run_benchmark(duration_seconds: float) -> dict[str, object]:
         "produced": produced,
         "reduced": reduced,
         "stored": stored,
+        "event_to_state_p50_ms": round(latency_p50, 3),
+        "event_to_state_p95_ms": round(latency_p95, 3),
         "event_to_state_p99_ms": round(latency_p99, 3),
+        "snapshot_jitter_p50_ms": round(jitter_p50, 3),
+        "snapshot_jitter_p95_ms": round(jitter_p95, 3),
         "snapshot_jitter_p99_ms": round(jitter_p99, 3),
         "memory_growth_after_warmup_bytes": memory_growth,
         "peak_rss_bytes": peak_memory,
+        "process_cpu_seconds": round(process_cpu_seconds, 3),
+        "average_process_cpu_percent": round(average_cpu_percent, 2),
+        "logical_cpu_count": os.cpu_count(),
+        "storage_file_count": benchmark_file_count,
+        "storage_bytes": benchmark_storage_bytes,
         "passed": passed,
     }
 
