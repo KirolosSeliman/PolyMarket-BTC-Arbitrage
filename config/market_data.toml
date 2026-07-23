@@ -1,0 +1,53 @@
+[service]
+snapshot_interval_ms = 250
+shutdown_timeout_seconds = 20
+log_level = "INFO"
+
+[queues]
+state_capacity = 50000
+storage_capacity = 100000
+market_state_capacity = 100
+subscriber_capacity = 1000
+put_timeout_seconds = 1.0
+
+[rtds]
+url = "wss://ws-live-data.polymarket.com"
+heartbeat_seconds = 5.0
+stale_after_ms = 10000
+
+[binance]
+url = "wss://stream.binance.com:9443/stream"
+symbol = "btcusdt"
+agg_trade_stream = "btcusdt@aggTrade"
+book_ticker_stream = "btcusdt@bookTicker"
+depth_stream = "btcusdt@depth20@100ms"
+stale_depth_after_ms = 1000
+stale_trade_after_ms = 5000
+proactive_reconnect_seconds = 85800
+
+[clob]
+url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+heartbeat_seconds = 10.0
+subscription_timeout_seconds = 5.0
+unsubscribe_grace_seconds = 10.0
+
+[reconnect]
+initial_delay_seconds = 0.5
+maximum_delay_seconds = 10.0
+multiplier = 2.0
+jitter_fraction = 0.2
+
+[storage]
+data_dir = "data"
+raw_rotate_seconds = 300
+raw_rotate_bytes = 134217728
+raw_flush_interval_ms = 250
+raw_flush_events = 1000
+raw_fsync_interval_ms = 1000
+snapshot_rotate_seconds = 60
+snapshot_rotate_rows = 10000
+zstd_level = 6
+
+[health]
+health_file = "data/runtime/health.json"
+update_interval_seconds = 1.0

@@ -1,0 +1,475 @@
+"""Immutable canonical models for the market data gateway."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, fields, is_dataclass
+from decimal import Decimal, InvalidOperation
+from enum import Enum
+import json
+from pathlib import Path
+from typing import TypeAlias
+
+from polymarket_btc.data_collection.market_discovery import Timeframe
+
+
+class MarketDataError(Exception):
+    """Base class for market data failures."""
+
+
+class ConfigurationError(MarketDataError):
+    """Configuration is invalid."""
+
+
+class SourceConnectionError(MarketDataError):
+    """A source connection failed."""
+
+
+class SourceProtocolError(MarketDataError):
+    """A provider violated its documented protocol."""
+
+
+class InvalidEventError(MarketDataError):
+    """An external event failed validation."""
+
+
+class BackpressureFatalError(MarketDataError):
+    """A required bounded queue could not accept data."""
+
+
+class StorageFatalError(MarketDataError):
+    """Durable storage cannot continue safely."""
+
+
+class ReplayIntegrityError(MarketDataError):
+    """Replay input failed an integrity check."""
+
+
+class GatewayInvariantError(MarketDataError):
+    """An internal gateway invariant was violated."""
+
+
+class ShutdownTimeoutError(MarketDataError):
+    """The gateway did not shut down before its deadline."""
+
+
+class EventSource(str, Enum):
+    MARKET_DISCOVERY = "market_discovery"
+    CHAINLINK_RTDS = "chainlink_rtds"
+    BINANCE_SPOT = "binance_spot"
+    POLYMARKET_CLOB = "polymarket_clob"
+
+
+class EventStream(str, Enum):
+    MARKET_WINDOW_STATE = "market_window_state"
+    CHAINLINK_PRICE = "chainlink_price"
+    BINANCE_AGG_TRADE = "binance_agg_trade"
+    BINANCE_BOOK_TICKER = "binance_book_ticker"
+    BINANCE_DEPTH20 = "binance_depth20"
+    POLYMARKET_BOOK = "polymarket_book"
+    POLYMARKET_PRICE_CHANGE = "polymarket_price_change"
+    POLYMARKET_BEST_BID_ASK = "polymarket_best_bid_ask"
+    POLYMARKET_LAST_TRADE = "polymarket_last_trade"
+    POLYMARKET_TICK_SIZE_CHANGE = "polymarket_tick_size_change"
+    POLYMARKET_MARKET_RESOLVED = "polymarket_market_resolved"
+
+
+class TakerSide(str, Enum):
+    BUY = "buy"
+    SELL = "sell"
+
+
+class Outcome(str, Enum):
+    UP = "up"
+    DOWN = "down"
+
+
+def parse_decimal(
+    value: str | Decimal,
+    field_name: str,
+    *,
+    allow_zero: bool = False,
+    strictly_positive: bool = False,
+) -> Decimal:
+    if not isinstance(value, (str, Decimal)) or isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a decimal string")
+    try:
+        parsed = Decimal(value)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field_name} is not a valid decimal") from exc
+    if not parsed.is_finite():
+        raise ValueError(f"{field_name} must be finite")
+    if parsed < 0:
+        raise ValueError(f"{field_name} cannot be negative")
+    if strictly_positive and parsed <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    if parsed == 0 and not allow_zero and not strictly_positive:
+        return parsed
+    return parsed
+
+
+@dataclass(frozen=True, slots=True)
+class PriceLevel:
+    price: Decimal
+    quantity: Decimal
+
+    def __post_init__(self) -> None:
+        parse_decimal(self.price, "price", strictly_positive=True)
+        parse_decimal(self.quantity, "quantity", allow_zero=True)
+
+
+@dataclass(frozen=True, slots=True)
+class ChainlinkPricePayload:
+    symbol: str
+    price: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceAggTradePayload:
+    symbol: str
+    aggregate_trade_id: int
+    price: Decimal
+    quantity: Decimal
+    first_trade_id: int
+    last_trade_id: int
+    trade_timestamp_ns: int
+    taker_side: TakerSide
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceBookTickerPayload:
+    symbol: str
+    update_id: int
+    best_bid_price: Decimal
+    best_bid_quantity: Decimal
+    best_ask_price: Decimal
+    best_ask_quantity: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceDepth20Payload:
+    symbol: str
+    last_update_id: int
+    bids: tuple[PriceLevel, ...]
+    asks: tuple[PriceLevel, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PolymarketBookPayload:
+    bids: tuple[PriceLevel, ...]
+    asks: tuple[PriceLevel, ...]
+    book_hash: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PolymarketPriceChangePayload:
+    side: str
+    price: Decimal
+    quantity: Decimal
+    best_bid: Decimal | None
+    best_ask: Decimal | None
+    change_hash: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PolymarketBestBidAskPayload:
+    best_bid: Decimal | None
+    best_ask: Decimal | None
+    spread: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class PolymarketLastTradePayload:
+    price: Decimal
+    quantity: Decimal
+    side: str
+    fee_rate_bps: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class PolymarketTickSizePayload:
+    old_tick_size: Decimal
+    new_tick_size: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class PolymarketResolvedPayload:
+    winning_asset_id: str | None
+    winning_outcome: Outcome | None
+
+
+@dataclass(frozen=True, slots=True)
+class MarketWindowStatePayload:
+    state: str
+    start_timestamp_ns: int | None
+    end_timestamp_ns: int | None
+    up_token_id: str | None
+    down_token_id: str | None
+
+
+EventPayload: TypeAlias = (
+    ChainlinkPricePayload
+    | BinanceAggTradePayload
+    | BinanceBookTickerPayload
+    | BinanceDepth20Payload
+    | PolymarketBookPayload
+    | PolymarketPriceChangePayload
+    | PolymarketBestBidAskPayload
+    | PolymarketLastTradePayload
+    | PolymarketTickSizePayload
+    | PolymarketResolvedPayload
+    | MarketWindowStatePayload
+)
+
+
+@dataclass(frozen=True, slots=True)
+class MarketDataEvent:
+    schema_version: int
+    ingest_sequence: int
+    event_id: str
+    source: EventSource
+    stream: EventStream
+    instrument: str
+    source_timestamp_ns: int | None
+    server_timestamp_ns: int | None
+    received_wall_timestamp_ns: int
+    received_monotonic_ns: int
+    source_sequence: str | None
+    timeframe: Timeframe | None
+    market_id: str | None
+    condition_id: str | None
+    asset_id: str | None
+    outcome: Outcome | None
+    payload: EventPayload
+
+
+@dataclass(frozen=True, slots=True)
+class SourceHealthSnapshot:
+    connected: bool
+    stale: bool
+    last_message_timestamp_ns: int | None
+    age_ms: int | None
+    reconnect_count: int
+    invalid_count: int
+    duplicate_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChainlinkSnapshot:
+    price: Decimal | None
+    source_timestamp_ns: int | None
+    received_timestamp_ns: int | None
+    age_ms: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceSnapshot:
+    last_price: Decimal | None
+    taker_side: TakerSide | None
+    best_bid: Decimal | None
+    best_ask: Decimal | None
+    best_bid_quantity: Decimal | None
+    best_ask_quantity: Decimal | None
+    depth_bids: tuple[PriceLevel, ...]
+    depth_asks: tuple[PriceLevel, ...]
+    mid_price: Decimal | None
+    spread: Decimal | None
+    spread_bps: Decimal | None
+    microprice: Decimal | None
+    top1_imbalance: Decimal | None
+    top20_bid_notional: Decimal | None
+    top20_ask_notional: Decimal | None
+    top20_depth_imbalance: Decimal | None
+    rolling_windows: tuple["RollingWindowSnapshot", ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RollingWindowSnapshot:
+    window_seconds: int
+    buy_volume: Decimal
+    sell_volume: Decimal
+    vwap: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class OrderBookSnapshot:
+    bids: tuple[PriceLevel, ...]
+    asks: tuple[PriceLevel, ...]
+    best_bid: Decimal | None
+    best_ask: Decimal | None
+    last_trade_price: Decimal | None
+    tick_size: Decimal | None
+    initialized: bool
+    coherent: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PolymarketTimeframeSnapshot:
+    timeframe: Timeframe
+    market_id: str | None
+    condition_id: str | None
+    start_timestamp_ns: int | None
+    end_timestamp_ns: int | None
+    remaining_ms: int | None
+    up: OrderBookSnapshot | None
+    down: OrderBookSnapshot | None
+    resolved: bool
+    ready: bool
+    not_ready_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PolymarketSnapshot:
+    five_minutes: PolymarketTimeframeSnapshot | None
+    fifteen_minutes: PolymarketTimeframeSnapshot | None
+
+
+@dataclass(frozen=True, slots=True)
+class MarketDataSnapshot:
+    schema_version: int
+    snapshot_sequence: int
+    snapshot_timestamp_ns: int
+    market_5m: PolymarketTimeframeSnapshot | None
+    market_15m: PolymarketTimeframeSnapshot | None
+    chainlink: ChainlinkSnapshot
+    binance: BinanceSnapshot
+    polymarket: PolymarketSnapshot
+    health: tuple[tuple[EventSource, SourceHealthSnapshot], ...]
+    ready_for_strategy: bool
+    not_ready_reasons: tuple[str, ...]
+
+
+def _jsonable(value: object) -> object:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value):
+        return {
+            field.name: _jsonable(getattr(value, field.name))
+            for field in fields(value)
+        }
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def json_dumps(value: object) -> str:
+    return json.dumps(
+        _jsonable(value),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _level_from_dict(value: dict[str, object]) -> PriceLevel:
+    return PriceLevel(Decimal(str(value["price"])), Decimal(str(value["quantity"])))
+
+
+def event_from_dict(value: dict[str, object]) -> MarketDataEvent:
+    stream = EventStream(str(value["stream"]))
+    raw_payload = value["payload"]
+    if not isinstance(raw_payload, dict):
+        raise ValueError("payload must be an object")
+    payload: EventPayload
+    if stream is EventStream.CHAINLINK_PRICE:
+        payload = ChainlinkPricePayload(
+            str(raw_payload["symbol"]),
+            Decimal(str(raw_payload["price"])),
+        )
+    elif stream is EventStream.BINANCE_AGG_TRADE:
+        payload = BinanceAggTradePayload(
+            str(raw_payload["symbol"]),
+            int(raw_payload["aggregate_trade_id"]),
+            Decimal(str(raw_payload["price"])),
+            Decimal(str(raw_payload["quantity"])),
+            int(raw_payload["first_trade_id"]),
+            int(raw_payload["last_trade_id"]),
+            int(raw_payload["trade_timestamp_ns"]),
+            TakerSide(str(raw_payload["taker_side"])),
+        )
+    elif stream is EventStream.BINANCE_BOOK_TICKER:
+        payload = BinanceBookTickerPayload(
+            str(raw_payload["symbol"]),
+            int(raw_payload["update_id"]),
+            Decimal(str(raw_payload["best_bid_price"])),
+            Decimal(str(raw_payload["best_bid_quantity"])),
+            Decimal(str(raw_payload["best_ask_price"])),
+            Decimal(str(raw_payload["best_ask_quantity"])),
+        )
+    elif stream is EventStream.BINANCE_DEPTH20:
+        payload = BinanceDepth20Payload(
+            str(raw_payload["symbol"]),
+            int(raw_payload["last_update_id"]),
+            tuple(_level_from_dict(item) for item in raw_payload["bids"]),  # type: ignore[union-attr]
+            tuple(_level_from_dict(item) for item in raw_payload["asks"]),  # type: ignore[union-attr]
+        )
+    elif stream is EventStream.POLYMARKET_BOOK:
+        payload = PolymarketBookPayload(
+            tuple(_level_from_dict(item) for item in raw_payload["bids"]),  # type: ignore[union-attr]
+            tuple(_level_from_dict(item) for item in raw_payload["asks"]),  # type: ignore[union-attr]
+            raw_payload.get("book_hash") if isinstance(raw_payload.get("book_hash"), str) else None,
+        )
+    elif stream is EventStream.POLYMARKET_PRICE_CHANGE:
+        payload = PolymarketPriceChangePayload(
+            str(raw_payload["side"]),
+            Decimal(str(raw_payload["price"])),
+            Decimal(str(raw_payload["quantity"])),
+            None if raw_payload.get("best_bid") is None else Decimal(str(raw_payload["best_bid"])),
+            None if raw_payload.get("best_ask") is None else Decimal(str(raw_payload["best_ask"])),
+            raw_payload.get("change_hash") if isinstance(raw_payload.get("change_hash"), str) else None,
+        )
+    elif stream is EventStream.POLYMARKET_BEST_BID_ASK:
+        payload = PolymarketBestBidAskPayload(
+            None if raw_payload.get("best_bid") is None else Decimal(str(raw_payload["best_bid"])),
+            None if raw_payload.get("best_ask") is None else Decimal(str(raw_payload["best_ask"])),
+            None if raw_payload.get("spread") is None else Decimal(str(raw_payload["spread"])),
+        )
+    elif stream is EventStream.POLYMARKET_LAST_TRADE:
+        payload = PolymarketLastTradePayload(
+            Decimal(str(raw_payload["price"])),
+            Decimal(str(raw_payload["quantity"])),
+            str(raw_payload["side"]),
+            None if raw_payload.get("fee_rate_bps") is None else Decimal(str(raw_payload["fee_rate_bps"])),
+        )
+    elif stream is EventStream.POLYMARKET_TICK_SIZE_CHANGE:
+        payload = PolymarketTickSizePayload(
+            Decimal(str(raw_payload["old_tick_size"])),
+            Decimal(str(raw_payload["new_tick_size"])),
+        )
+    elif stream is EventStream.POLYMARKET_MARKET_RESOLVED:
+        payload = PolymarketResolvedPayload(
+            raw_payload.get("winning_asset_id") if isinstance(raw_payload.get("winning_asset_id"), str) else None,
+            None if raw_payload.get("winning_outcome") is None else Outcome(str(raw_payload["winning_outcome"])),
+        )
+    else:
+        payload = MarketWindowStatePayload(
+            str(raw_payload["state"]),
+            None if raw_payload.get("start_timestamp_ns") is None else int(raw_payload["start_timestamp_ns"]),
+            None if raw_payload.get("end_timestamp_ns") is None else int(raw_payload["end_timestamp_ns"]),
+            raw_payload.get("up_token_id") if isinstance(raw_payload.get("up_token_id"), str) else None,
+            raw_payload.get("down_token_id") if isinstance(raw_payload.get("down_token_id"), str) else None,
+        )
+    return MarketDataEvent(
+        schema_version=int(value["schema_version"]),
+        ingest_sequence=int(value["ingest_sequence"]),
+        event_id=str(value["event_id"]),
+        source=EventSource(str(value["source"])),
+        stream=stream,
+        instrument=str(value["instrument"]),
+        source_timestamp_ns=None if value.get("source_timestamp_ns") is None else int(value["source_timestamp_ns"]),
+        server_timestamp_ns=None if value.get("server_timestamp_ns") is None else int(value["server_timestamp_ns"]),
+        received_wall_timestamp_ns=int(value["received_wall_timestamp_ns"]),
+        received_monotonic_ns=int(value["received_monotonic_ns"]),
+        source_sequence=value.get("source_sequence") if isinstance(value.get("source_sequence"), str) else None,
+        timeframe=None if value.get("timeframe") is None else Timeframe(str(value["timeframe"])),
+        market_id=value.get("market_id") if isinstance(value.get("market_id"), str) else None,
+        condition_id=value.get("condition_id") if isinstance(value.get("condition_id"), str) else None,
+        asset_id=value.get("asset_id") if isinstance(value.get("asset_id"), str) else None,
+        outcome=None if value.get("outcome") is None else Outcome(str(value["outcome"])),
+        payload=payload,
+    )
