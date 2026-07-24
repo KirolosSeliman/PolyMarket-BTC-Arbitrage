@@ -42,15 +42,7 @@ from .models import (
     SourceStatusPayload,
     TakerSide,
 )
-
-
-@dataclass(slots=True)
-class _Health:
-    connected: bool = False
-    last_message_ns: int | None = None
-    reconnect_count: int = 0
-    invalid_count: int = 0
-    duplicate_count: int = 0
+from .health import HealthRegistry
 
 
 @dataclass(slots=True)
@@ -138,11 +130,12 @@ class StateStore:
         chainlink_stale_after_ms: int = 10_000,
         binance_depth_stale_after_ms: int = 1_000,
         binance_trade_stale_after_ms: int = 5_000,
+        health_registry: HealthRegistry | None = None,
     ) -> None:
         self._chainlink_stale_after_ms = chainlink_stale_after_ms
         self._binance_depth_stale_after_ms = binance_depth_stale_after_ms
         self._binance_trade_stale_after_ms = binance_trade_stale_after_ms
-        self._health = {source: _Health() for source in EventSource}
+        self.health_registry = health_registry or HealthRegistry()
         self._chainlink: MarketDataEvent | None = None
         self._agg_trade: MarketDataEvent | None = None
         self._book_ticker: MarketDataEvent | None = None
@@ -157,13 +150,16 @@ class StateStore:
         self.clob_delta_before_snapshot_count = 0
 
     def set_connected(self, source: EventSource, connected: bool) -> None:
-        self._health[source].connected = connected
+        if connected:
+            self.health_registry.record_connection(source, None, 0)
+        else:
+            self.health_registry.record_disconnection(source, None, "connection_closed")
 
     def record_reconnect(self, source: EventSource) -> None:
-        self._health[source].reconnect_count += 1
+        self.health_registry.record_reconnect(source)
 
     def record_invalid(self, source: EventSource) -> None:
-        self._health[source].invalid_count += 1
+        self.health_registry.record_invalid(source)
 
     def apply_market_snapshot(self, snapshot: TimeframeSnapshot) -> None:
         def window(market: object) -> MarketWindowPayload | None:
@@ -195,8 +191,9 @@ class StateStore:
             snapshot.attempt_count,
             snapshot.last_error,
         ))
-        self._health[EventSource.MARKET_DISCOVERY].connected = True
-        self._health[EventSource.MARKET_DISCOVERY].last_message_ns = updated_ns
+        self.health_registry.record_connection(
+            EventSource.MARKET_DISCOVERY, None, updated_ns
+        )
 
     @staticmethod
     def _context_window(
@@ -259,12 +256,19 @@ class StateStore:
             book.source_session_id = None
 
     def apply(self, event: MarketDataEvent) -> None:
-        health = self._health[event.source]
-        health.last_message_ns = event.received_wall_timestamp_ns
+        self.health_registry.record_message(
+            event.source, event.received_wall_timestamp_ns
+        )
         if event.stream is EventStream.SOURCE_STATUS:
             status = cast(SourceStatusPayload, event.payload)
-            health.connected = status.connected
-            health.reconnect_count = status.reconnect_count
+            if status.connected:
+                self.health_registry.record_connection(
+                    status.source, status.session_id, event.received_wall_timestamp_ns
+                )
+            else:
+                self.health_registry.record_disconnection(
+                    status.source, status.session_id, status.reason
+                )
             if status.source is EventSource.POLYMARKET_CLOB:
                 if (
                     not status.connected
@@ -274,13 +278,13 @@ class StateStore:
                 if status.connected:
                     self._current_clob_session_id = status.session_id
             return
-        health.connected = True
         if (
             event.source is EventSource.POLYMARKET_CLOB
             and self._current_clob_session_id is not None
             and event.source_session_id != self._current_clob_session_id
         ):
             self.stale_session_count += 1
+            self.health_registry.record_stale_session(EventSource.POLYMARKET_CLOB)
             return
         if event.stream is EventStream.MARKET_WINDOW_STATE:
             self._apply_market_state(cast(MarketWindowStatePayload, event.payload))
@@ -349,6 +353,7 @@ class StateStore:
                 best_ask = min(book.asks, default=None)
                 if best_bid != payload.best_bid or best_ask != payload.best_ask:
                     book.divergence_count += 1
+                    self.health_registry.record_divergence(EventSource.POLYMARKET_CLOB)
                     if book.divergence_count >= 3:
                         book.coherent = False
                 elif book.coherent:
@@ -512,14 +517,14 @@ class StateStore:
         market_5m = self._timeframe_snapshot(Timeframe.FIVE_MINUTES, now_ns)
         market_15m = self._timeframe_snapshot(Timeframe.FIFTEEN_MINUTES, now_ns)
         reasons: list[str] = []
-        if not self._health[EventSource.CHAINLINK_RTDS].connected:
+        if not self.health_registry.source_snapshot(EventSource.CHAINLINK_RTDS, now_ns).connected:
             reasons.append("chainlink_disconnected")
         if (
             chainlink_age is None
             or chainlink_age > self._chainlink_stale_after_ms
         ):
             reasons.append("chainlink_stale")
-        if not self._health[EventSource.BINANCE_SPOT].connected:
+        if not self.health_registry.source_snapshot(EventSource.BINANCE_SPOT, now_ns).connected:
             reasons.append("binance_disconnected")
         depth_age = self._age_ms(self._depth, now_ns)
         trade_age = self._age_ms(self._agg_trade, now_ns)
@@ -535,33 +540,14 @@ class StateStore:
             reasons.append("binance_trade_stale")
         if self._book_ticker is None:
             reasons.append("binance_book_ticker_missing")
-        if not self._health[EventSource.POLYMARKET_CLOB].connected:
+        if not self.health_registry.source_snapshot(EventSource.POLYMARKET_CLOB, now_ns).connected:
             reasons.append("clob_disconnected")
         markets = [market for market in (market_5m, market_15m) if market is not None]
         if not markets:
             reasons.append("no_active_market")
         for market in markets:
             reasons.extend(market.not_ready_reasons)
-        health_rows = []
-        for source in EventSource:
-            row = self._health[source]
-            age = (
-                None if row.last_message_ns is None
-                else max(0, (now_ns - row.last_message_ns) // 1_000_000)
-            )
-            health_rows.append((source, SourceHealthSnapshot(
-                connected=row.connected,
-                stale=not row.connected,
-                current_session_id=None,
-                last_message_timestamp_ns=row.last_message_ns,
-                age_ms=age,
-                reconnect_count=row.reconnect_count,
-                invalid_count=row.invalid_count,
-                duplicate_count=row.duplicate_count,
-                stale_session_count=0,
-                divergence_count=0,
-                protocol_error_count=0,
-            )))
+        health_rows = self.health_registry.all_source_snapshots(now_ns)
         return MarketDataSnapshot(
             1,
             snapshot_sequence,
@@ -571,7 +557,7 @@ class StateStore:
             chainlink,
             binance,
             PolymarketSnapshot(market_5m, market_15m),
-            tuple(health_rows),
+            health_rows,
             not reasons,
             tuple(dict.fromkeys(reasons)),
         )

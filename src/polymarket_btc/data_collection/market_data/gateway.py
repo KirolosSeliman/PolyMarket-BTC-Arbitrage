@@ -19,7 +19,7 @@ from polymarket_btc.data_collection.market_discovery import (
 
 from .config import MarketDataConfig
 from .event_bus import EventBus
-from .health import initial_health, write_health_file
+from .health import HealthRegistry, write_health_file
 from .models import (
     EventSource,
     EventStream,
@@ -55,10 +55,12 @@ class MarketDataGateway:
             config.queues.market_state_capacity,
             put_timeout_seconds=config.queues.put_timeout_seconds,
         )
+        self.health_registry = HealthRegistry()
         self.state = StateStore(
             chainlink_stale_after_ms=config.rtds.stale_after_ms,
             binance_depth_stale_after_ms=config.binance.stale_depth_after_ms,
             binance_trade_stale_after_ms=config.binance.stale_trade_after_ms,
+            health_registry=self.health_registry,
         )
         self.raw_storage = RawEventStorage(
             config.storage.data_dir,
@@ -86,30 +88,27 @@ class MarketDataGateway:
         self._tasks: list[asyncio.Task[object]] = []
         self._entered = False
         self._fatal: BaseException | None = None
-        self.health = initial_health()
+        self.health: dict[str, object] = self.health_registry.to_health_file_payload(time.time_ns())
         self.chainlink = ChainlinkRtdsSource(
             config,
             self._publish_source,
             lambda: 0,
-            lambda connected: self.state.set_connected(
-                EventSource.CHAINLINK_RTDS, connected
-            ),
+            None,
+            self.health_registry,
         )
         self.binance = BinanceSpotSource(
             config,
             self._publish_source,
             lambda: 0,
-            lambda connected: self.state.set_connected(
-                EventSource.BINANCE_SPOT, connected
-            ),
+            None,
+            self.health_registry,
         )
         self.clob = PolymarketClobSource(
             config,
             self._publish_source,
             lambda: 0,
-            lambda connected: self.state.set_connected(
-                EventSource.POLYMARKET_CLOB, connected
-            ),
+            None,
+            self.health_registry,
         )
         resolver = MarketResolver(GammaClient())
         controller = TransitionController(resolver)
@@ -298,7 +297,10 @@ class MarketDataGateway:
                 + self.binance.invalid_count
                 + self.clob.invalid_count
             ),
-            "duplicate_count": self.bus.duplicate_count,
+            "duplicate_count": sum(
+                row.duplicate_count
+                for _source, row in self.health_registry.all_source_snapshots(time.time_ns())
+            ),
             "divergence_count": self.clob.divergence_count,
             "queue_size": {
                 "state": self.bus.state_queue.qsize(),
@@ -315,6 +317,8 @@ class MarketDataGateway:
             "snapshots_written": self._snapshots_written,
             "active_token_ids": sorted(self.clob.assets),
         })
+        self.health_registry.update_runtime(**self.health)
+        self.health = self.health_registry.to_health_file_payload(time.time_ns())
 
     def _spawn(self, coroutine: object, name: str) -> None:
         task = asyncio.create_task(coroutine, name=name)  # type: ignore[arg-type]

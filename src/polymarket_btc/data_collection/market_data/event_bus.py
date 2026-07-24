@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import replace
 import time
 
-from .models import BackpressureFatalError, EventStream, MarketDataEvent
+from .models import BackpressureFatalError, MarketDataEvent
 
 
 class EventBus:
@@ -19,29 +18,14 @@ class EventBus:
         market_state_capacity: int,
         *,
         put_timeout_seconds: float,
-        deduplication_capacity: int = 100_000,
     ) -> None:
         self.state_queue: asyncio.Queue[MarketDataEvent] = asyncio.Queue(state_capacity)
         self.storage_queue: asyncio.Queue[MarketDataEvent] = asyncio.Queue(storage_capacity)
         self.market_state_queue: asyncio.Queue[object] = asyncio.Queue(market_state_capacity)
         self.put_timeout_seconds = put_timeout_seconds
-        self.deduplication_capacity = deduplication_capacity
-        self.duplicate_count = 0
         self.high_water = {"state": 0, "storage": 0, "market_state": 0}
-        self._seen: dict[EventStream, OrderedDict[str, None]] = {}
         self._publish_lock = asyncio.Lock()
         self.closed = False
-
-    def _is_duplicate(self, event: MarketDataEvent) -> bool:
-        seen = self._seen.setdefault(event.stream, OrderedDict())
-        if event.event_id in seen:
-            seen.move_to_end(event.event_id)
-            self.duplicate_count += 1
-            return True
-        seen[event.event_id] = None
-        while len(seen) > self.deduplication_capacity:
-            seen.popitem(last=False)
-        return False
 
     async def publish(
         self,
@@ -51,14 +35,11 @@ class EventBus:
         if self.closed:
             raise BackpressureFatalError("event bus is closed")
         async with self._publish_lock:
-            if self._is_duplicate(event):
-                return False
             if sequence_allocator is not None:
                 event = replace(event, ingest_sequence=sequence_allocator())
             deadline = time.monotonic() + self.put_timeout_seconds
             while self.state_queue.full() or self.storage_queue.full():
                 if time.monotonic() >= deadline:
-                    self._seen[event.stream].pop(event.event_id, None)
                     raise BackpressureFatalError(
                         "state or storage queue remained full past the deadline"
                     )

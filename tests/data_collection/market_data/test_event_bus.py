@@ -32,19 +32,18 @@ class EventBusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await bus.storage_queue.get()).ingest_sequence, 1)
         self.assertEqual((await bus.state_queue.get()).ingest_sequence, 2)
 
-    async def test_duplicate_is_not_published_twice(self) -> None:
+    async def test_event_bus_has_no_generic_seen_cache(self) -> None:
         bus = EventBus(10, 10, 2, put_timeout_seconds=0.1)
         self.assertTrue(await bus.publish(event(1, "same")))
-        self.assertFalse(await bus.publish(replace(event(2), event_id="same")))
-        self.assertEqual(bus.duplicate_count, 1)
-        self.assertEqual(bus.state_queue.qsize(), 1)
-        self.assertEqual(bus.storage_queue.qsize(), 1)
+        self.assertTrue(await bus.publish(replace(event(2), event_id="same")))
+        self.assertFalse(hasattr(bus, "_seen"))
+        self.assertEqual(bus.state_queue.qsize(), 2)
+        self.assertEqual(bus.storage_queue.qsize(), 2)
 
-    async def test_duplicate_does_not_consume_an_ingest_sequence(self) -> None:
+    async def test_bus_allocates_every_accepted_event_sequence(self) -> None:
         bus = EventBus(10, 10, 2, put_timeout_seconds=0.1)
         next_value = iter((10, 11)).__next__
         self.assertTrue(await bus.publish(event(0, "first"), next_value))
-        self.assertFalse(await bus.publish(event(0, "first"), next_value))
         self.assertTrue(await bus.publish(event(0, "second"), next_value))
         first = await bus.state_queue.get()
         second = await bus.state_queue.get()

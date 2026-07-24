@@ -12,6 +12,7 @@ from decimal import Decimal
 from websockets.asyncio.client import connect
 
 from ..config import MarketDataConfig
+from ..health import HealthRegistry
 from ..models import (
     BinanceAggTradePayload,
     BinanceBookTickerPayload,
@@ -210,19 +211,33 @@ class BinanceSpotSource:
         publish: Callable[[MarketDataEvent], Awaitable[None]],
         next_sequence: Callable[[], int],
         on_connection: Callable[[bool], None] | None = None,
+        health_registry: HealthRegistry | None = None,
     ) -> None:
         self._config = config
         self._publish = publish
         self._next_sequence = next_sequence
         self._stop = asyncio.Event()
-        self.reconnect_count = 0
-        self.invalid_count = 0
-        self.connected = False
+        self.health_registry = health_registry or HealthRegistry()
         self._on_connection = on_connection or (lambda _connected: None)
 
     def _set_connected(self, connected: bool) -> None:
-        self.connected = connected
+        if connected:
+            self.health_registry.record_connection(EventSource.BINANCE_SPOT, None, time.time_ns())
+        else:
+            self.health_registry.record_disconnection(EventSource.BINANCE_SPOT, None, "connection_closed")
         self._on_connection(connected)
+
+    @property
+    def connected(self) -> bool:
+        return self.health_registry.source_snapshot(EventSource.BINANCE_SPOT, time.time_ns()).connected
+
+    @property
+    def reconnect_count(self) -> int:
+        return self.health_registry.source_snapshot(EventSource.BINANCE_SPOT, time.time_ns()).reconnect_count
+
+    @property
+    def invalid_count(self) -> int:
+        return self.health_registry.source_snapshot(EventSource.BINANCE_SPOT, time.time_ns()).invalid_count
 
     async def stop(self) -> None:
         self._stop.set()
@@ -262,13 +277,13 @@ class BinanceSpotSource:
                                 now_ns=wall_ns,
                             )
                         except (json.JSONDecodeError, InvalidEventError):
-                            self.invalid_count += 1
+                            self.health_registry.record_invalid(EventSource.BINANCE_SPOT)
                             continue
                         await self._publish(event)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self.reconnect_count += 1
+                self.health_registry.record_reconnect(EventSource.BINANCE_SPOT)
                 if self._stop.is_set():
                     break
                 await asyncio.sleep(backoff.next_delay())

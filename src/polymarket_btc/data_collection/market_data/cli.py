@@ -155,7 +155,10 @@ async def _run_gateway(config_path: Path, duration: float | None) -> dict[str, o
                 + gateway.binance.invalid_count
                 + gateway.clob.invalid_count
             ),
-            "duplicate_count": gateway.bus.duplicate_count,
+            "duplicate_count": sum(
+                row.duplicate_count
+                for _source, row in gateway.health_registry.all_source_snapshots(time.time_ns())
+            ),
             "maximum_queue_usage": dict(gateway.bus.high_water),
             "generated_files": generated_files,
             "disk_bytes": disk_bytes,

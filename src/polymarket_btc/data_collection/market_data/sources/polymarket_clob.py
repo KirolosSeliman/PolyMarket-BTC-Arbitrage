@@ -9,6 +9,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from collections import OrderedDict
 
 from websockets.asyncio.client import connect
 
@@ -30,6 +31,7 @@ from ..models import (
     SourceStatusPayload,
     parse_decimal,
 )
+from ..health import HealthRegistry
 from ..config import MarketDataConfig
 from .base import ExponentialBackoff
 
@@ -317,6 +319,7 @@ class PolymarketClobSource:
         publish: Callable[[MarketDataEvent], Awaitable[None]],
         next_sequence: Callable[[], int],
         on_connection: Callable[[bool], None] | None = None,
+        health_registry: HealthRegistry | None = None,
     ) -> None:
         self._config = config
         self._publish = publish
@@ -327,16 +330,37 @@ class PolymarketClobSource:
         self._subscribed: set[str] = set()
         self._retire_at: dict[str, float] = {}
         self.assets: dict[str, ClobAssetMetadata] = {}
-        self.reconnect_count = 0
-        self.invalid_count = 0
-        self.divergence_count = 0
-        self.connected = False
+        self.health_registry = health_registry or HealthRegistry()
         self.current_session_id: str | None = None
+        self._deduplication: dict[str, OrderedDict[str, None]] = {}
         self._on_connection = on_connection or (lambda _connected: None)
 
     def _set_connected(self, connected: bool) -> None:
-        self.connected = connected
+        if connected:
+            self.health_registry.record_connection(
+                EventSource.POLYMARKET_CLOB, self.current_session_id, time.time_ns()
+            )
+        else:
+            self.health_registry.record_disconnection(
+                EventSource.POLYMARKET_CLOB, self.current_session_id, "connection_closed"
+            )
         self._on_connection(connected)
+
+    @property
+    def connected(self) -> bool:
+        return self.health_registry.source_snapshot(EventSource.POLYMARKET_CLOB, time.time_ns()).connected
+
+    @property
+    def reconnect_count(self) -> int:
+        return self.health_registry.source_snapshot(EventSource.POLYMARKET_CLOB, time.time_ns()).reconnect_count
+
+    @property
+    def invalid_count(self) -> int:
+        return self.health_registry.source_snapshot(EventSource.POLYMARKET_CLOB, time.time_ns()).invalid_count
+
+    @property
+    def divergence_count(self) -> int:
+        return self.health_registry.source_snapshot(EventSource.POLYMARKET_CLOB, time.time_ns()).divergence_count
 
     def on_market_snapshot(self, snapshot: object) -> None:
         from polymarket_btc.data_collection.market_discovery import TimeframeSnapshot
@@ -379,6 +403,7 @@ class PolymarketClobSource:
         for asset in expired:
             self._desired.discard(asset)
             self.assets.pop(asset, None)
+            self._deduplication.pop(asset, None)
             del self._retire_at[asset]
 
     async def stop(self) -> None:
@@ -501,15 +526,26 @@ class PolymarketClobSource:
                                     session_id,
                                 )
                                 for event in events:
+                                    cache = self._deduplication.setdefault(
+                                        event.asset_id or "", OrderedDict()
+                                    )
+                                    if event.event_id in cache:
+                                        self.health_registry.record_duplicate(
+                                            EventSource.POLYMARKET_CLOB
+                                        )
+                                        continue
+                                    cache[event.event_id] = None
+                                    while len(cache) > 10_000:
+                                        cache.popitem(last=False)
                                     await self._publish(event)
                         except (json.JSONDecodeError, InvalidEventError, TypeError):
-                            self.invalid_count += 1
+                            self.health_registry.record_invalid(EventSource.POLYMARKET_CLOB)
                             continue
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 disconnect_reason = str(exc)
-                self.reconnect_count += 1
+                self.health_registry.record_reconnect(EventSource.POLYMARKET_CLOB)
                 self._subscribed.clear()
                 if self._stop.is_set():
                     break

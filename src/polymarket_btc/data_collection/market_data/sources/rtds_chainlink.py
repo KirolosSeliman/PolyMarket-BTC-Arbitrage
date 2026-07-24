@@ -6,11 +6,13 @@ import asyncio
 import json
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 
 from websockets.asyncio.client import connect
 
 from ..config import MarketDataConfig
+from ..health import HealthRegistry
 from ..models import (
     ChainlinkPricePayload,
     EventSource,
@@ -99,20 +101,35 @@ class ChainlinkRtdsSource:
         publish: Callable[[MarketDataEvent], Awaitable[None]],
         next_sequence: Callable[[], int],
         on_connection: Callable[[bool], None] | None = None,
+        health_registry: HealthRegistry | None = None,
     ) -> None:
         self._config = config
         self._publish = publish
         self._next_sequence = next_sequence
         self._stop = asyncio.Event()
         self._last_source_ns: int | None = None
-        self.reconnect_count = 0
-        self.invalid_count = 0
-        self.connected = False
+        self.health_registry = health_registry or HealthRegistry()
+        self._seen: OrderedDict[str, None] = OrderedDict()
         self._on_connection = on_connection or (lambda _connected: None)
 
     def _set_connected(self, connected: bool) -> None:
-        self.connected = connected
+        if connected:
+            self.health_registry.record_connection(EventSource.CHAINLINK_RTDS, None, time.time_ns())
+        else:
+            self.health_registry.record_disconnection(EventSource.CHAINLINK_RTDS, None, "connection_closed")
         self._on_connection(connected)
+
+    @property
+    def connected(self) -> bool:
+        return self.health_registry.source_snapshot(EventSource.CHAINLINK_RTDS, time.time_ns()).connected
+
+    @property
+    def reconnect_count(self) -> int:
+        return self.health_registry.source_snapshot(EventSource.CHAINLINK_RTDS, time.time_ns()).reconnect_count
+
+    @property
+    def invalid_count(self) -> int:
+        return self.health_registry.source_snapshot(EventSource.CHAINLINK_RTDS, time.time_ns()).invalid_count
 
     async def stop(self) -> None:
         self._stop.set()
@@ -156,9 +173,15 @@ class ChainlinkRtdsSource:
                                 last_source_timestamp_ns=self._last_source_ns,
                             )
                         except (json.JSONDecodeError, InvalidEventError):
-                            self.invalid_count += 1
+                            self.health_registry.record_invalid(EventSource.CHAINLINK_RTDS)
                             logging.getLogger(__name__).warning("invalid Chainlink message")
                             continue
+                        if event.event_id in self._seen:
+                            self.health_registry.record_duplicate(EventSource.CHAINLINK_RTDS)
+                            continue
+                        self._seen[event.event_id] = None
+                        while len(self._seen) > 4096:
+                            self._seen.popitem(last=False)
                         self._last_source_ns = event.source_timestamp_ns
                         await self._publish(event)
                     if time.monotonic() - connected_at >= 30:
@@ -166,12 +189,10 @@ class ChainlinkRtdsSource:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self.reconnect_count += 1
+                self.health_registry.record_reconnect(EventSource.CHAINLINK_RTDS)
                 if self._stop.is_set():
                     break
                 await asyncio.sleep(backoff.next_delay())
-                if self.reconnect_count < 0:
-                    raise SourceConnectionError(str(exc)) from exc
             finally:
                 self._set_connected(False)
                 if heartbeat is not None:
