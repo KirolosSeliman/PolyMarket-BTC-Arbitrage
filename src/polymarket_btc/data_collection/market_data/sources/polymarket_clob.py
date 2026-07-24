@@ -7,6 +7,7 @@ import hashlib
 import json
 import asyncio
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 
 from websockets.asyncio.client import connect
@@ -26,6 +27,7 @@ from ..models import (
     PolymarketResolvedPayload,
     PolymarketTickSizePayload,
     PriceLevel,
+    SourceStatusPayload,
     parse_decimal,
 )
 from ..config import MarketDataConfig
@@ -329,6 +331,7 @@ class PolymarketClobSource:
         self.invalid_count = 0
         self.divergence_count = 0
         self.connected = False
+        self.current_session_id: str | None = None
         self._on_connection = on_connection or (lambda _connected: None)
 
     def _set_connected(self, connected: bool) -> None:
@@ -382,6 +385,41 @@ class PolymarketClobSource:
         self._stop.set()
         self._assets_changed.set()
 
+    async def _publish_status(
+        self,
+        *,
+        connected: bool,
+        session_id: str,
+        reason: str | None,
+    ) -> None:
+        wall_ns = time.time_ns()
+        await self._publish(MarketDataEvent(
+            schema_version=2,
+            ingest_sequence=self._next_sequence(),
+            event_id=f"clob:status:{session_id}:{connected}:{wall_ns}",
+            source=EventSource.POLYMARKET_CLOB,
+            stream=EventStream.SOURCE_STATUS,
+            instrument="POLYMARKET_CLOB",
+            source_timestamp_ns=wall_ns,
+            server_timestamp_ns=None,
+            received_wall_timestamp_ns=wall_ns,
+            received_monotonic_ns=time.monotonic_ns(),
+            source_sequence=None,
+            timeframe=None,
+            market_id=None,
+            condition_id=None,
+            asset_id=None,
+            outcome=None,
+            payload=SourceStatusPayload(
+                EventSource.POLYMARKET_CLOB,
+                connected,
+                session_id,
+                self.reconnect_count,
+                reason,
+            ),
+            source_session_id=session_id,
+        ))
+
     async def _heartbeat(self, websocket: object) -> None:
         while not self._stop.is_set():
             await asyncio.sleep(self._config.clob.heartbeat_seconds)
@@ -423,6 +461,8 @@ class PolymarketClobSource:
                     return
             heartbeat: asyncio.Task[None] | None = None
             subscriptions: asyncio.Task[None] | None = None
+            disconnect_reason: str | None = None
+            session_id: str | None = None
             try:
                 initial = sorted(self._desired)
                 async with connect(
@@ -430,7 +470,14 @@ class PolymarketClobSource:
                     max_size=4 * 1024 * 1024,
                     ping_interval=None,
                 ) as websocket:
+                    session_id = uuid.uuid4().hex
+                    self.current_session_id = session_id
                     self._set_connected(True)
+                    await self._publish_status(
+                        connected=True,
+                        session_id=session_id,
+                        reason=None,
+                    )
                     await websocket.send(json.dumps(
                         initial_subscription(initial), separators=(",", ":")
                     ))
@@ -451,6 +498,7 @@ class PolymarketClobSource:
                                     wall_ns,
                                     monotonic_ns,
                                     self._next_sequence(),
+                                    session_id,
                                 )
                                 for event in events:
                                     await self._publish(event)
@@ -459,7 +507,8 @@ class PolymarketClobSource:
                             continue
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                disconnect_reason = str(exc)
                 self.reconnect_count += 1
                 self._subscribed.clear()
                 if self._stop.is_set():
@@ -467,6 +516,12 @@ class PolymarketClobSource:
                 await asyncio.sleep(backoff.next_delay())
             finally:
                 self._set_connected(False)
+                if session_id is not None:
+                    await self._publish_status(
+                        connected=False,
+                        session_id=session_id,
+                        reason=disconnect_reason or "connection_closed",
+                    )
                 for task in (heartbeat, subscriptions):
                     if task is not None:
                         task.cancel()

@@ -39,6 +39,7 @@ from .models import (
     PriceLevel,
     RollingWindowSnapshot,
     SourceHealthSnapshot,
+    SourceStatusPayload,
     TakerSide,
 )
 
@@ -151,6 +152,9 @@ class StateStore:
         )
         self._contexts: dict[Timeframe, _TimeframeContext] = {}
         self._books_by_asset: dict[str, _Book] = {}
+        self._current_clob_session_id: str | None = None
+        self.stale_session_count = 0
+        self.clob_delta_before_snapshot_count = 0
 
     def set_connected(self, source: EventSource, connected: bool) -> None:
         self._health[source].connected = connected
@@ -245,10 +249,39 @@ class StateStore:
             for context in self._contexts.values()
         )
 
+    def _invalidate_clob_books(self) -> None:
+        for book in self._books_by_asset.values():
+            book.bids.clear()
+            book.asks.clear()
+            book.initialized = False
+            book.coherent = False
+            book.divergence_count = 0
+            book.source_session_id = None
+
     def apply(self, event: MarketDataEvent) -> None:
         health = self._health[event.source]
-        health.connected = True
         health.last_message_ns = event.received_wall_timestamp_ns
+        if event.stream is EventStream.SOURCE_STATUS:
+            status = cast(SourceStatusPayload, event.payload)
+            health.connected = status.connected
+            health.reconnect_count = status.reconnect_count
+            if status.source is EventSource.POLYMARKET_CLOB:
+                if (
+                    not status.connected
+                    or status.session_id != self._current_clob_session_id
+                ):
+                    self._invalidate_clob_books()
+                if status.connected:
+                    self._current_clob_session_id = status.session_id
+            return
+        health.connected = True
+        if (
+            event.source is EventSource.POLYMARKET_CLOB
+            and self._current_clob_session_id is not None
+            and event.source_session_id != self._current_clob_session_id
+        ):
+            self.stale_session_count += 1
+            return
         if event.stream is EventStream.MARKET_WINDOW_STATE:
             self._apply_market_state(cast(MarketWindowStatePayload, event.payload))
         elif event.stream is EventStream.CHAINLINK_PRICE:
@@ -298,6 +331,9 @@ class StateStore:
                 book.divergence_count = 0
                 book.source_session_id = event.source_session_id
             elif event.stream is EventStream.POLYMARKET_PRICE_CHANGE:
+                if not book.initialized:
+                    self.clob_delta_before_snapshot_count += 1
+                    return
                 payload = cast(PolymarketPriceChangePayload, event.payload)
                 levels = book.bids if payload.side == "BUY" else book.asks
                 if payload.quantity == 0:
@@ -306,11 +342,17 @@ class StateStore:
                     levels[payload.price] = payload.quantity
                 book.coherent = self._coherent(book)
             elif event.stream is EventStream.POLYMARKET_BEST_BID_ASK:
+                if not book.initialized:
+                    return
                 payload = cast(PolymarketBestBidAskPayload, event.payload)
                 best_bid = max(book.bids, default=None)
                 best_ask = min(book.asks, default=None)
                 if best_bid != payload.best_bid or best_ask != payload.best_ask:
                     book.divergence_count += 1
+                    if book.divergence_count >= 3:
+                        book.coherent = False
+                elif book.coherent:
+                    book.divergence_count = 0
             elif event.stream is EventStream.POLYMARKET_LAST_TRADE:
                 book.last_trade_price = cast(PolymarketLastTradePayload, event.payload).price
             elif event.stream is EventStream.POLYMARKET_TICK_SIZE_CHANGE:

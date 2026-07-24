@@ -22,7 +22,10 @@ from polymarket_btc.data_collection.market_data.models import (
     PolymarketBookPayload,
     PriceLevel,
     PolymarketResolvedPayload,
+    PolymarketBestBidAskPayload,
+    PolymarketPriceChangePayload,
     TakerSide,
+    SourceStatusPayload,
 )
 from polymarket_btc.data_collection.market_data.state import StateStore
 
@@ -209,6 +212,7 @@ class StateStoreTests(unittest.TestCase):
         outcome: Outcome,
         price: str,
         sequence: int,
+        session_id: str | None = None,
     ) -> MarketDataEvent:
         suffix = asset.removesuffix("-up").removesuffix("-down")
         return MarketDataEvent(
@@ -233,6 +237,40 @@ class StateStoreTests(unittest.TestCase):
                 (PriceLevel(Decimal(price) + Decimal(".02"), Decimal("10")),),
                 f"hash-{sequence}",
             ),
+            session_id,
+        )
+
+    def _clob_status(
+        self,
+        connected: bool,
+        session_id: str,
+        sequence: int,
+    ) -> MarketDataEvent:
+        return MarketDataEvent(
+            2,
+            sequence,
+            f"clob-status:{session_id}:{connected}",
+            EventSource.POLYMARKET_CLOB,
+            EventStream.SOURCE_STATUS,
+            "POLYMARKET_CLOB",
+            NOW_NS,
+            None,
+            NOW_NS,
+            sequence,
+            str(sequence),
+            None,
+            None,
+            None,
+            None,
+            None,
+            SourceStatusPayload(
+                EventSource.POLYMARKET_CLOB,
+                connected,
+                session_id,
+                1,
+                None if connected else "socket closed",
+            ),
+            session_id,
         )
 
     def test_next_ready_books_do_not_replace_current_books(self) -> None:
@@ -308,6 +346,92 @@ class StateStoreTests(unittest.TestCase):
         self.assertFalse(current.resolved)
         self.assertNotIn("a-up", store._books_by_asset)
         self.assertNotIn("a-down", store._books_by_asset)
+
+    def test_reconnect_rejects_old_session_and_requires_new_full_books(self) -> None:
+        timeframe = Timeframe.FIVE_MINUTES
+        store = StateStore()
+        store.apply(self._market_state_event(timeframe, current_suffix="a"))
+        store.apply(self._clob_status(True, "session-1", 1))
+        for outcome in (Outcome.UP, Outcome.DOWN):
+            store.apply(self._clob_book_event(
+                timeframe,
+                f"a-{outcome.value}",
+                outcome,
+                ".40",
+                2,
+                "session-1",
+            ))
+        self.assertTrue(store.snapshot(NOW_NS, 1).market_5m.ready)
+
+        store.apply(self._clob_status(False, "session-1", 4))
+        disconnected = store.snapshot(NOW_NS, 2)
+        self.assertFalse(disconnected.market_5m.ready)
+        self.assertFalse(disconnected.market_5m.up.initialized)
+        self.assertEqual(disconnected.market_5m.up.bids, ())
+
+        store.apply(self._clob_status(True, "session-2", 5))
+        store.apply(self._clob_book_event(
+            timeframe, "a-up", Outcome.UP, ".80", 6, "session-1"
+        ))
+        stale = store.snapshot(NOW_NS, 3)
+        self.assertFalse(stale.market_5m.up.initialized)
+
+        delta = MarketDataEvent(
+            2, 7, "delta:new", EventSource.POLYMARKET_CLOB,
+            EventStream.POLYMARKET_PRICE_CHANGE, "a-up", NOW_NS, None,
+            NOW_NS, 7, "7", timeframe, "market-a", "condition-a",
+            "a-up", Outcome.UP,
+            PolymarketPriceChangePayload(
+                "BUY", Decimal(".80"), Decimal("1"), Decimal(".80"), Decimal(".82"), None
+            ),
+            "session-2",
+        )
+        store.apply(delta)
+        self.assertFalse(store.snapshot(NOW_NS, 4).market_5m.up.initialized)
+
+        store.apply(self._clob_book_event(
+            timeframe, "a-up", Outcome.UP, ".50", 8, "session-2"
+        ))
+        self.assertFalse(store.snapshot(NOW_NS, 5).market_5m.ready)
+        store.apply(self._clob_book_event(
+            timeframe, "a-down", Outcome.DOWN, ".50", 9, "session-2"
+        ))
+        restored = store.snapshot(NOW_NS, 6)
+        self.assertTrue(restored.market_5m.ready)
+        self.assertEqual(restored.market_5m.up.source_session_id, "session-2")
+
+    def test_third_divergence_invalidates_until_new_full_book(self) -> None:
+        timeframe = Timeframe.FIVE_MINUTES
+        store = StateStore()
+        store.apply(self._market_state_event(timeframe, current_suffix="a"))
+        store.apply(self._clob_status(True, "session-1", 1))
+        store.apply(self._clob_book_event(
+            timeframe, "a-up", Outcome.UP, ".40", 2, "session-1"
+        ))
+
+        def best(sequence: int, bid: str, ask: str) -> MarketDataEvent:
+            return MarketDataEvent(
+                2, sequence, f"best:{sequence}", EventSource.POLYMARKET_CLOB,
+                EventStream.POLYMARKET_BEST_BID_ASK, "a-up", NOW_NS, None,
+                NOW_NS, sequence, str(sequence), timeframe, "market-a",
+                "condition-a", "a-up", Outcome.UP,
+                PolymarketBestBidAskPayload(
+                    Decimal(bid), Decimal(ask), Decimal(ask) - Decimal(bid)
+                ),
+                "session-1",
+            )
+
+        for sequence in (3, 4):
+            store.apply(best(sequence, ".10", ".90"))
+            self.assertTrue(store.snapshot(NOW_NS, sequence).market_5m.up.coherent)
+        store.apply(best(5, ".10", ".90"))
+        self.assertFalse(store.snapshot(NOW_NS, 5).market_5m.up.coherent)
+        store.apply(best(6, ".40", ".42"))
+        self.assertFalse(store.snapshot(NOW_NS, 6).market_5m.up.coherent)
+        store.apply(self._clob_book_event(
+            timeframe, "a-up", Outcome.UP, ".45", 7, "session-1"
+        ))
+        self.assertTrue(store.snapshot(NOW_NS, 7).market_5m.up.coherent)
 
 
 if __name__ == "__main__":
