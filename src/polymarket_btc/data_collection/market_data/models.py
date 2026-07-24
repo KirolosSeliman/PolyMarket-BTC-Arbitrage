@@ -197,6 +197,9 @@ class PolymarketTickSizePayload:
 class PolymarketResolvedPayload:
     winning_asset_id: str | None
     winning_outcome: Outcome | None
+    affected_asset_ids: tuple[str, ...] = ()
+    market_id: str | None = None
+    condition_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +336,11 @@ class RollingWindowSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class OrderBookSnapshot:
+    asset_id: str
+    market_id: str
+    condition_id: str
+    outcome: Outcome
+    source_session_id: str | None
     bids: tuple[PriceLevel, ...]
     asks: tuple[PriceLevel, ...]
     best_bid: Decimal | None
@@ -341,6 +349,8 @@ class OrderBookSnapshot:
     tick_size: Decimal | None
     initialized: bool
     coherent: bool
+    resolved: bool
+    last_event_timestamp_ns: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -533,6 +543,9 @@ def event_from_dict(value: dict[str, object]) -> MarketDataEvent:
         payload = PolymarketResolvedPayload(
             raw_payload.get("winning_asset_id") if isinstance(raw_payload.get("winning_asset_id"), str) else None,
             None if raw_payload.get("winning_outcome") is None else Outcome(str(raw_payload["winning_outcome"])),
+            tuple(str(item) for item in raw_payload.get("affected_asset_ids", ())),
+            raw_payload.get("market_id") if isinstance(raw_payload.get("market_id"), str) else None,
+            raw_payload.get("condition_id") if isinstance(raw_payload.get("condition_id"), str) else None,
         )
     elif stream is EventStream.SOURCE_STATUS:
         payload = SourceStatusPayload(

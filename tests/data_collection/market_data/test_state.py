@@ -16,9 +16,12 @@ from polymarket_btc.data_collection.market_data.models import (
     EventSource,
     EventStream,
     MarketDataEvent,
+    MarketWindowPayload,
+    MarketWindowStatePayload,
     Outcome,
     PolymarketBookPayload,
     PriceLevel,
+    PolymarketResolvedPayload,
     TakerSide,
 )
 from polymarket_btc.data_collection.market_data.state import StateStore
@@ -145,6 +148,166 @@ class StateStoreTests(unittest.TestCase):
         disconnected = self.store.snapshot(NOW_NS + 2_000_000, 2)
         self.assertFalse(disconnected.ready_for_strategy)
         self.assertIn("binance_disconnected", disconnected.not_ready_reasons)
+
+    def _market_state_event(
+        self,
+        timeframe: Timeframe,
+        *,
+        current_suffix: str,
+        next_suffix: str | None = None,
+        state: str = "active",
+        sequence: int = 100,
+    ) -> MarketDataEvent:
+        duration_ns = timeframe.duration_seconds * 1_000_000_000
+
+        def window(suffix: str, start_ns: int) -> MarketWindowPayload:
+            return MarketWindowPayload(
+                timeframe,
+                f"market-{suffix}",
+                f"condition-{suffix}",
+                f"slug-{suffix}",
+                start_ns,
+                start_ns + duration_ns,
+                f"{suffix}-up",
+                f"{suffix}-down",
+                "chainlink",
+            )
+
+        return MarketDataEvent(
+            2,
+            sequence,
+            f"market:{timeframe.value}:{sequence}",
+            EventSource.MARKET_DISCOVERY,
+            EventStream.MARKET_WINDOW_STATE,
+            f"BTC-{timeframe.value}",
+            NOW_NS,
+            None,
+            NOW_NS,
+            sequence,
+            str(sequence),
+            timeframe,
+            None,
+            None,
+            None,
+            None,
+            MarketWindowStatePayload(
+                state,
+                timeframe,
+                window(current_suffix, NOW_NS),
+                None if next_suffix is None else window(next_suffix, NOW_NS + duration_ns),
+                NOW_NS + duration_ns,
+                NOW_NS,
+                0,
+                None,
+            ),
+        )
+
+    def _clob_book_event(
+        self,
+        timeframe: Timeframe,
+        asset: str,
+        outcome: Outcome,
+        price: str,
+        sequence: int,
+    ) -> MarketDataEvent:
+        suffix = asset.removesuffix("-up").removesuffix("-down")
+        return MarketDataEvent(
+            2,
+            sequence,
+            f"book:{asset}:{sequence}",
+            EventSource.POLYMARKET_CLOB,
+            EventStream.POLYMARKET_BOOK,
+            asset,
+            NOW_NS,
+            None,
+            NOW_NS,
+            sequence,
+            str(sequence),
+            timeframe,
+            f"market-{suffix}",
+            f"condition-{suffix}",
+            asset,
+            outcome,
+            PolymarketBookPayload(
+                (PriceLevel(Decimal(price), Decimal("10")),),
+                (PriceLevel(Decimal(price) + Decimal(".02"), Decimal("10")),),
+                f"hash-{sequence}",
+            ),
+        )
+
+    def test_next_ready_books_do_not_replace_current_books(self) -> None:
+        for timeframe in (Timeframe.FIVE_MINUTES, Timeframe.FIFTEEN_MINUTES):
+            with self.subTest(timeframe=timeframe):
+                store = StateStore()
+                store.apply(self._market_state_event(
+                    timeframe,
+                    current_suffix=f"{timeframe.value}-a",
+                    next_suffix=f"{timeframe.value}-b",
+                    state="next_ready",
+                ))
+                for sequence, suffix, price in (
+                    (1, f"{timeframe.value}-a", ".40"),
+                    (2, f"{timeframe.value}-b", ".70"),
+                ):
+                    store.apply(self._clob_book_event(
+                        timeframe, f"{suffix}-up", Outcome.UP, price, sequence
+                    ))
+                    store.apply(self._clob_book_event(
+                        timeframe, f"{suffix}-down", Outcome.DOWN, price, sequence + 10
+                    ))
+
+                before = store.snapshot(NOW_NS, 1)
+                market = before.market_5m if timeframe is Timeframe.FIVE_MINUTES else before.market_15m
+                self.assertEqual(market.market_id, f"market-{timeframe.value}-a")
+                self.assertEqual(market.up.asset_id, f"{timeframe.value}-a-up")
+                self.assertEqual(market.up.best_bid, Decimal(".40"))
+
+                store.apply(self._market_state_event(
+                    timeframe,
+                    current_suffix=f"{timeframe.value}-b",
+                    state="active",
+                    sequence=101,
+                ))
+                after = store.snapshot(NOW_NS, 2)
+                market = after.market_5m if timeframe is Timeframe.FIVE_MINUTES else after.market_15m
+                self.assertEqual(market.market_id, f"market-{timeframe.value}-b")
+                self.assertEqual(market.up.asset_id, f"{timeframe.value}-b-up")
+                self.assertEqual(market.up.best_bid, Decimal(".70"))
+
+    def test_resolved_and_retired_assets_are_isolated_by_asset(self) -> None:
+        timeframe = Timeframe.FIVE_MINUTES
+        store = StateStore()
+        store.apply(self._market_state_event(
+            timeframe,
+            current_suffix="a",
+            next_suffix="b",
+            state="next_ready",
+        ))
+        for sequence, suffix in ((1, "a"), (2, "b")):
+            for outcome in (Outcome.UP, Outcome.DOWN):
+                asset = f"{suffix}-{outcome.value}"
+                store.apply(self._clob_book_event(timeframe, asset, outcome, ".40", sequence))
+        store.apply(MarketDataEvent(
+            2, 20, "resolved:a-up", EventSource.POLYMARKET_CLOB,
+            EventStream.POLYMARKET_MARKET_RESOLVED, "a-up", NOW_NS, None,
+            NOW_NS, 20, "20", timeframe, "market-a", "condition-a",
+            "a-up", Outcome.UP,
+            PolymarketResolvedPayload(
+                "a-up", Outcome.UP, ("a-up", "a-down"), "market-a", "condition-a"
+            ),
+        ))
+        self.assertTrue(store.snapshot(NOW_NS, 1).market_5m.resolved)
+
+        store.apply(self._market_state_event(
+            timeframe,
+            current_suffix="b",
+            state="active",
+            sequence=101,
+        ))
+        current = store.snapshot(NOW_NS, 2).market_5m
+        self.assertFalse(current.resolved)
+        self.assertNotIn("a-up", store._books_by_asset)
+        self.assertNotIn("a-down", store._books_by_asset)
 
 
 if __name__ == "__main__":

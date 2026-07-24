@@ -1,9 +1,8 @@
-"""Polymarket CLOB market-channel parsing and local order books."""
+"""Polymarket CLOB connection, subscriptions, and pure message parsing."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from decimal import Decimal
+from dataclasses import dataclass
 import hashlib
 import json
 import asyncio
@@ -33,25 +32,13 @@ from ..config import MarketDataConfig
 from .base import ExponentialBackoff
 
 
-@dataclass(slots=True)
-class ClobBookState:
+@dataclass(frozen=True, slots=True)
+class ClobAssetMetadata:
     asset_id: str
-    bids: dict[Decimal, Decimal] = field(default_factory=dict)
-    asks: dict[Decimal, Decimal] = field(default_factory=dict)
-    best_bid: Decimal | None = None
-    best_ask: Decimal | None = None
-    last_trade: PolymarketLastTradePayload | None = None
-    tick_size: Decimal | None = None
-    initialized: bool = False
-    coherent: bool = True
-    resolved: bool = False
-    divergence_count: int = 0
-    last_event_timestamp_ns: int | None = None
-    timeframe: Timeframe | None = None
-    market_id: str | None = None
-    condition_id: str | None = None
-    outcome: Outcome | None = None
-    book_hash: str | None = None
+    timeframe: Timeframe
+    market_id: str
+    condition_id: str
+    outcome: Outcome
 
 
 def initial_subscription(asset_ids: list[str]) -> dict[str, object]:
@@ -93,10 +80,10 @@ def _event_id(message: dict[str, object], asset_id: str, event_type: str, timest
     return f"polymarket:{event_type}:{asset_id}:{digest}"
 
 
-def _book_levels(value: object, name: str) -> dict[Decimal, Decimal]:
+def _book_levels(value: object, name: str) -> tuple[PriceLevel, ...]:
     if not isinstance(value, list):
         raise InvalidEventError(f"{name} must be a list")
-    result: dict[Decimal, Decimal] = {}
+    result: dict[object, object] = {}
     for row in value:
         if not isinstance(row, dict):
             raise InvalidEventError(f"{name} level must be an object")
@@ -109,18 +96,12 @@ def _book_levels(value: object, name: str) -> dict[Decimal, Decimal]:
             raise InvalidEventError(f"duplicate {name} price")
         if quantity:
             result[price] = quantity
-    return result
-
-
-def _refresh(book: ClobBookState) -> None:
-    book.best_bid = max(book.bids, default=None)
-    book.best_ask = min(book.asks, default=None)
-    if book.best_bid is not None and book.best_ask is not None and book.best_bid >= book.best_ask:
-        book.coherent = False
+    prices = sorted(result, reverse=name == "bids")
+    return tuple(PriceLevel(price, result[price]) for price in prices)  # type: ignore[arg-type]
 
 
 def _make_event(
-    book: ClobBookState,
+    metadata: ClobAssetMetadata,
     event_type: str,
     stream: EventStream,
     payload: object,
@@ -129,41 +110,106 @@ def _make_event(
     wall_ns: int,
     monotonic_ns: int,
     sequence: int,
+    source_session_id: str | None,
 ) -> MarketDataEvent:
     return MarketDataEvent(
         schema_version=2,
         ingest_sequence=sequence,
-        event_id=_event_id(message, book.asset_id, event_type, timestamp_ns),
+        event_id=_event_id(message, metadata.asset_id, event_type, timestamp_ns),
         source=EventSource.POLYMARKET_CLOB,
         stream=stream,
-        instrument=book.asset_id,
+        instrument=metadata.asset_id,
         source_timestamp_ns=timestamp_ns,
         server_timestamp_ns=None,
         received_wall_timestamp_ns=wall_ns,
         received_monotonic_ns=monotonic_ns,
         source_sequence=message.get("hash") if isinstance(message.get("hash"), str) else None,
-        timeframe=book.timeframe,
-        market_id=book.market_id,
-        condition_id=book.condition_id or (
-            str(message["market"]) if message.get("market") is not None else None
-        ),
-        asset_id=book.asset_id,
-        outcome=book.outcome,
+        timeframe=metadata.timeframe,
+        market_id=metadata.market_id,
+        condition_id=metadata.condition_id,
+        asset_id=metadata.asset_id,
+        outcome=metadata.outcome,
         payload=payload,  # type: ignore[arg-type]
+        source_session_id=source_session_id,
     )
 
 
 def apply_clob_message(
     message: object,
-    books: dict[str, ClobBookState],
+    assets: dict[str, ClobAssetMetadata],
     received_wall_timestamp_ns: int,
     received_monotonic_ns: int,
     ingest_sequence_start: int,
+    source_session_id: str | None = None,
 ) -> tuple[MarketDataEvent, ...]:
     if not isinstance(message, dict):
         raise InvalidEventError("CLOB message must be an object")
     event_type = message.get("event_type")
     timestamp_ns = _timestamp(message)
+    if event_type == "market_resolved":
+        raw_asset_ids = message.get("assets_ids")
+        if raw_asset_ids is not None and (
+            not isinstance(raw_asset_ids, list)
+            or not all(isinstance(item, str) and item for item in raw_asset_ids)
+        ):
+            raise InvalidEventError("market_resolved assets_ids is invalid")
+        market = message.get("market")
+        condition = message.get("condition_id")
+        affected = (
+            tuple(raw_asset_ids)
+            if isinstance(raw_asset_ids, list)
+            else tuple(
+                asset_id
+                for asset_id, metadata in assets.items()
+                if (
+                    isinstance(market, str)
+                    and market in {metadata.market_id, metadata.condition_id}
+                )
+                or (
+                    isinstance(condition, str)
+                    and metadata.condition_id == condition
+                )
+            )
+        )
+        if not affected or any(asset_id not in assets for asset_id in affected):
+            raise InvalidEventError("unknown CLOB market resolution")
+        winning_asset = (
+            message.get("winning_asset_id")
+            if isinstance(message.get("winning_asset_id"), str)
+            else None
+        )
+        outcome_value = message.get("winning_outcome")
+        winning_outcome = None
+        if isinstance(outcome_value, str) and outcome_value.lower() in {"up", "down"}:
+            winning_outcome = Outcome(outcome_value.lower())
+        elif winning_asset in assets:
+            winning_outcome = assets[winning_asset].outcome
+        payload = PolymarketResolvedPayload(
+            winning_asset,
+            winning_outcome,
+            affected,
+            str(market) if isinstance(market, str) else assets[affected[0]].market_id,
+            (
+                str(condition)
+                if isinstance(condition, str)
+                else assets[affected[0]].condition_id
+            ),
+        )
+        return tuple(
+            _make_event(
+                assets[asset_id],
+                "market_resolved",
+                EventStream.POLYMARKET_MARKET_RESOLVED,
+                payload,
+                message,
+                timestamp_ns,
+                received_wall_timestamp_ns,
+                received_monotonic_ns,
+                ingest_sequence_start + offset,
+                source_session_id,
+            )
+            for offset, asset_id in enumerate(affected)
+        )
     if event_type == "price_change":
         changes = message.get("price_changes")
         if not isinstance(changes, list) or not changes:
@@ -173,8 +219,8 @@ def apply_clob_message(
             if not isinstance(change, dict):
                 raise InvalidEventError("price change must be an object")
             asset_id = str(change.get("asset_id", ""))
-            book = books.get(asset_id)
-            if book is None:
+            metadata = assets.get(asset_id)
+            if metadata is None:
                 raise InvalidEventError("unknown CLOB asset")
             side = change.get("side")
             if side not in {"BUY", "SELL"}:
@@ -190,13 +236,6 @@ def apply_clob_message(
                 )
             except ValueError as exc:
                 raise InvalidEventError(str(exc)) from exc
-            levels = book.bids if side == "BUY" else book.asks
-            if quantity == 0:
-                levels.pop(price, None)
-            else:
-                levels[price] = quantity
-            _refresh(book)
-            book.last_event_timestamp_ns = timestamp_ns
             change_message = dict(message)
             change_message.update(change)
             payload = PolymarketPriceChangePayload(
@@ -204,34 +243,28 @@ def apply_clob_message(
                 change.get("hash") if isinstance(change.get("hash"), str) else None,
             )
             events.append(_make_event(
-                book, "price_change", EventStream.POLYMARKET_PRICE_CHANGE,
+                metadata, "price_change", EventStream.POLYMARKET_PRICE_CHANGE,
                 payload, change_message, timestamp_ns,
                 received_wall_timestamp_ns, received_monotonic_ns,
                 ingest_sequence_start + offset,
+                source_session_id,
             ))
         return tuple(events)
 
     asset_id = str(message.get("asset_id", ""))
-    book = books.get(asset_id)
-    if book is None:
+    metadata = assets.get(asset_id)
+    if metadata is None:
         raise InvalidEventError("unknown CLOB asset")
-    book.last_event_timestamp_ns = timestamp_ns
 
     if event_type == "book":
         bids = _book_levels(message.get("bids"), "bids")
         asks = _book_levels(message.get("asks"), "asks")
-        book.bids, book.asks = bids, asks
-        book.initialized = True
-        book.coherent = True
-        book.divergence_count = 0
-        book.book_hash = message.get("hash") if isinstance(message.get("hash"), str) else None
-        _refresh(book)
-        if not book.coherent:
+        if bids and asks and bids[0].price >= asks[0].price:
             raise InvalidEventError("CLOB book is crossed")
         payload = PolymarketBookPayload(
-            tuple(PriceLevel(p, bids[p]) for p in sorted(bids, reverse=True)[:20]),
-            tuple(PriceLevel(p, asks[p]) for p in sorted(asks)[:20]),
-            book.book_hash,
+            bids,
+            asks,
+            message.get("hash") if isinstance(message.get("hash"), str) else None,
         )
         stream = EventStream.POLYMARKET_BOOK
     elif event_type == "best_bid_ask":
@@ -241,12 +274,6 @@ def apply_clob_message(
             spread = parse_decimal(str(message["spread"]), "spread", allow_zero=True)
         except (KeyError, ValueError) as exc:
             raise InvalidEventError("invalid best bid/ask") from exc
-        if best_bid != book.best_bid or best_ask != book.best_ask:
-            book.divergence_count += 1
-            if book.divergence_count >= 3:
-                book.coherent = False
-        else:
-            book.divergence_count = 0
         payload = PolymarketBestBidAskPayload(best_bid, best_ask, spread)
         stream = EventStream.POLYMARKET_BEST_BID_ASK
     elif event_type == "last_trade_price":
@@ -261,7 +288,6 @@ def apply_clob_message(
             )
         except (KeyError, ValueError) as exc:
             raise InvalidEventError("invalid last trade") from exc
-        book.last_trade = payload
         stream = EventStream.POLYMARKET_LAST_TRADE
     elif event_type == "tick_size_change":
         try:
@@ -271,26 +297,14 @@ def apply_clob_message(
             )
         except (KeyError, ValueError) as exc:
             raise InvalidEventError("invalid tick size") from exc
-        book.tick_size = payload.new_tick_size
         stream = EventStream.POLYMARKET_TICK_SIZE_CHANGE
-    elif event_type == "market_resolved":
-        winning_asset = message.get("winning_asset_id")
-        outcome_value = message.get("winning_outcome")
-        outcome = None
-        if isinstance(outcome_value, str) and outcome_value.lower() in {"up", "down"}:
-            outcome = Outcome(outcome_value.lower())
-        payload = PolymarketResolvedPayload(
-            str(winning_asset) if winning_asset is not None else None,
-            outcome,
-        )
-        book.resolved = True
-        stream = EventStream.POLYMARKET_MARKET_RESOLVED
     else:
         raise InvalidEventError("unknown CLOB event type")
 
     return (_make_event(
-        book, str(event_type), stream, payload, message, timestamp_ns,
+        metadata, str(event_type), stream, payload, message, timestamp_ns,
         received_wall_timestamp_ns, received_monotonic_ns, ingest_sequence_start,
+        source_session_id,
     ),)
 
 
@@ -310,7 +324,7 @@ class PolymarketClobSource:
         self._desired: set[str] = set()
         self._subscribed: set[str] = set()
         self._retire_at: dict[str, float] = {}
-        self.books: dict[str, ClobBookState] = {}
+        self.assets: dict[str, ClobAssetMetadata] = {}
         self.reconnect_count = 0
         self.invalid_count = 0
         self.divergence_count = 0
@@ -334,14 +348,16 @@ class PolymarketClobSource:
                 (market.down_token_id, Outcome.DOWN),
             ):
                 required.add(asset_id)
-                book = self.books.setdefault(asset_id, ClobBookState(asset_id))
-                book.timeframe = snapshot.timeframe
-                book.market_id = market.market_id
-                book.condition_id = market.condition_id
-                book.outcome = outcome
+                self.assets[asset_id] = ClobAssetMetadata(
+                    asset_id,
+                    snapshot.timeframe,
+                    market.market_id,
+                    market.condition_id,
+                    outcome,
+                )
         owned = {
-            asset_id for asset_id, book in self.books.items()
-            if book.timeframe is snapshot.timeframe
+            asset_id for asset_id, metadata in self.assets.items()
+            if metadata.timeframe is snapshot.timeframe
         }
         now = time.monotonic()
         for asset_id in owned - required:
@@ -359,6 +375,7 @@ class PolymarketClobSource:
         expired = [asset for asset, deadline in self._retire_at.items() if now >= deadline]
         for asset in expired:
             self._desired.discard(asset)
+            self.assets.pop(asset, None)
             del self._retire_at[asset]
 
     async def stop(self) -> None:
@@ -407,8 +424,6 @@ class PolymarketClobSource:
             heartbeat: asyncio.Task[None] | None = None
             subscriptions: asyncio.Task[None] | None = None
             try:
-                for book in self.books.values():
-                    book.initialized = False
                 initial = sorted(self._desired)
                 async with connect(
                     self._config.clob.url,
@@ -432,7 +447,7 @@ class PolymarketClobSource:
                             for message in messages:
                                 events = apply_clob_message(
                                     message,
-                                    self.books,
+                                    self.assets,
                                     wall_ns,
                                     monotonic_ns,
                                     self._next_sequence(),

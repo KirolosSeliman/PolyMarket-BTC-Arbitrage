@@ -313,7 +313,7 @@ class MarketDataGateway:
             "queue_high_water": dict(self.bus.high_water),
             "raw_events_written": self._raw_written,
             "snapshots_written": self._snapshots_written,
-            "active_token_ids": sorted(self.clob.books),
+            "active_token_ids": sorted(self.clob.assets),
         })
 
     def _spawn(self, coroutine: object, name: str) -> None:

@@ -114,8 +114,8 @@ async def _run_gateway(config_path: Path, duration: float | None) -> dict[str, o
             initialized_tokens = {
                 token
                 for token in desired_tokens
-                if token in gateway.clob.books
-                and gateway.clob.books[token].initialized
+                if token in gateway.state._books_by_asset
+                and gateway.state._books_by_asset[token].initialized
             }
         generated_files = (
             sorted(

@@ -24,11 +24,15 @@ from .models import (
     EventStream,
     MarketDataEvent,
     MarketDataSnapshot,
+    MarketWindowPayload,
+    MarketWindowStatePayload,
     OrderBookSnapshot,
     Outcome,
     PolymarketBookPayload,
+    PolymarketBestBidAskPayload,
     PolymarketLastTradePayload,
     PolymarketPriceChangePayload,
+    PolymarketResolvedPayload,
     PolymarketSnapshot,
     PolymarketTickSizePayload,
     PolymarketTimeframeSnapshot,
@@ -50,6 +54,12 @@ class _Health:
 
 @dataclass(slots=True)
 class _Book:
+    asset_id: str
+    market_id: str
+    condition_id: str
+    timeframe: Timeframe
+    outcome: Outcome
+    source_session_id: str | None
     bids: dict[Decimal, Decimal] = field(default_factory=dict)
     asks: dict[Decimal, Decimal] = field(default_factory=dict)
     last_trade_price: Decimal | None = None
@@ -57,6 +67,27 @@ class _Book:
     initialized: bool = False
     coherent: bool = True
     resolved: bool = False
+    divergence_count: int = 0
+    last_event_timestamp_ns: int | None = None
+
+
+@dataclass(slots=True)
+class _TimeframeContext:
+    state: DiscoveryState
+    current_market_id: str | None
+    current_condition_id: str | None
+    current_up_asset_id: str | None
+    current_down_asset_id: str | None
+    current_start_ns: int | None
+    current_end_ns: int | None
+    next_market_id: str | None
+    next_condition_id: str | None
+    next_up_asset_id: str | None
+    next_down_asset_id: str | None
+    next_start_ns: int | None
+    next_end_ns: int | None
+    expected_transition_ns: int | None
+    last_error: str | None
 
 
 @dataclass(slots=True)
@@ -118,8 +149,8 @@ class StateStore:
         self._rolling_windows = tuple(
             _RollingAccumulator(seconds) for seconds in (1, 5, 30, 60)
         )
-        self._markets: dict[Timeframe, TimeframeSnapshot] = {}
-        self._books: dict[tuple[Timeframe, Outcome], _Book] = {}
+        self._contexts: dict[Timeframe, _TimeframeContext] = {}
+        self._books_by_asset: dict[str, _Book] = {}
 
     def set_connected(self, source: EventSource, connected: bool) -> None:
         self._health[source].connected = connected
@@ -131,17 +162,96 @@ class StateStore:
         self._health[source].invalid_count += 1
 
     def apply_market_snapshot(self, snapshot: TimeframeSnapshot) -> None:
-        self._markets[snapshot.timeframe] = snapshot
+        def window(market: object) -> MarketWindowPayload | None:
+            if market is None:
+                return None
+            return MarketWindowPayload(
+                snapshot.timeframe,
+                market.market_id,  # type: ignore[union-attr]
+                market.condition_id,  # type: ignore[union-attr]
+                market.slug,  # type: ignore[union-attr]
+                int(market.start_time_utc.timestamp() * 1_000_000_000),  # type: ignore[union-attr]
+                int(market.end_time_utc.timestamp() * 1_000_000_000),  # type: ignore[union-attr]
+                market.up_token_id,  # type: ignore[union-attr]
+                market.down_token_id,  # type: ignore[union-attr]
+                market.resolution_source,  # type: ignore[union-attr]
+            )
+        updated_ns = int(snapshot.updated_at_utc.timestamp() * 1_000_000_000)
+        self._apply_market_state(MarketWindowStatePayload(
+            snapshot.state.value,
+            snapshot.timeframe,
+            window(snapshot.current_market),
+            window(snapshot.next_market),
+            (
+                None
+                if snapshot.expected_transition_utc is None
+                else int(snapshot.expected_transition_utc.timestamp() * 1_000_000_000)
+            ),
+            updated_ns,
+            snapshot.attempt_count,
+            snapshot.last_error,
+        ))
         self._health[EventSource.MARKET_DISCOVERY].connected = True
-        self._health[EventSource.MARKET_DISCOVERY].last_message_ns = int(
-            snapshot.updated_at_utc.timestamp() * 1_000_000_000
+        self._health[EventSource.MARKET_DISCOVERY].last_message_ns = updated_ns
+
+    @staticmethod
+    def _context_window(
+        market: MarketWindowPayload | None,
+    ) -> tuple[str | None, str | None, str | None, str | None, int | None, int | None]:
+        if market is None:
+            return (None, None, None, None, None, None)
+        return (
+            market.market_id,
+            market.condition_id,
+            market.up_token_id,
+            market.down_token_id,
+            market.start_timestamp_ns,
+            market.end_timestamp_ns,
+        )
+
+    def _apply_market_state(self, payload: MarketWindowStatePayload) -> None:
+        current = self._context_window(payload.current_market)
+        next_market = self._context_window(payload.next_market)
+        self._contexts[payload.timeframe] = _TimeframeContext(
+            DiscoveryState(payload.state),
+            *current,
+            *next_market,
+            payload.expected_transition_timestamp_ns,
+            payload.last_error,
+        )
+        referenced = {
+            asset_id
+            for context in self._contexts.values()
+            for asset_id in (
+                context.current_up_asset_id,
+                context.current_down_asset_id,
+                context.next_up_asset_id,
+                context.next_down_asset_id,
+            )
+            if asset_id is not None
+        }
+        for asset_id in tuple(self._books_by_asset):
+            if asset_id not in referenced:
+                del self._books_by_asset[asset_id]
+
+    def _asset_is_referenced(self, asset_id: str) -> bool:
+        return any(
+            asset_id in {
+                context.current_up_asset_id,
+                context.current_down_asset_id,
+                context.next_up_asset_id,
+                context.next_down_asset_id,
+            }
+            for context in self._contexts.values()
         )
 
     def apply(self, event: MarketDataEvent) -> None:
         health = self._health[event.source]
         health.connected = True
         health.last_message_ns = event.received_wall_timestamp_ns
-        if event.stream is EventStream.CHAINLINK_PRICE:
+        if event.stream is EventStream.MARKET_WINDOW_STATE:
+            self._apply_market_state(cast(MarketWindowStatePayload, event.payload))
+        elif event.stream is EventStream.CHAINLINK_PRICE:
             self._chainlink = event
         elif event.stream is EventStream.BINANCE_AGG_TRADE:
             self._agg_trade = event
@@ -152,14 +262,41 @@ class StateStore:
             self._book_ticker = event
         elif event.stream is EventStream.BINANCE_DEPTH20:
             self._depth = event
-        elif event.timeframe is not None and event.outcome is not None:
-            book = self._books.setdefault((event.timeframe, event.outcome), _Book())
+        elif (
+            event.source is EventSource.POLYMARKET_CLOB
+            and event.asset_id is not None
+            and event.timeframe is not None
+            and event.outcome is not None
+            and event.market_id is not None
+            and event.condition_id is not None
+            and self._asset_is_referenced(event.asset_id)
+        ):
+            book = self._books_by_asset.get(event.asset_id)
+            if book is None:
+                book = self._books_by_asset[event.asset_id] = _Book(
+                    event.asset_id,
+                    event.market_id,
+                    event.condition_id,
+                    event.timeframe,
+                    event.outcome,
+                    event.source_session_id,
+                )
+            if (
+                book.market_id != event.market_id
+                or book.condition_id != event.condition_id
+                or book.timeframe is not event.timeframe
+                or book.outcome is not event.outcome
+            ):
+                return
+            book.last_event_timestamp_ns = event.source_timestamp_ns
             if event.stream is EventStream.POLYMARKET_BOOK:
                 payload = cast(PolymarketBookPayload, event.payload)
                 book.bids = {level.price: level.quantity for level in payload.bids}
                 book.asks = {level.price: level.quantity for level in payload.asks}
                 book.initialized = True
                 book.coherent = self._coherent(book)
+                book.divergence_count = 0
+                book.source_session_id = event.source_session_id
             elif event.stream is EventStream.POLYMARKET_PRICE_CHANGE:
                 payload = cast(PolymarketPriceChangePayload, event.payload)
                 levels = book.bids if payload.side == "BUY" else book.asks
@@ -168,12 +305,20 @@ class StateStore:
                 else:
                     levels[payload.price] = payload.quantity
                 book.coherent = self._coherent(book)
+            elif event.stream is EventStream.POLYMARKET_BEST_BID_ASK:
+                payload = cast(PolymarketBestBidAskPayload, event.payload)
+                best_bid = max(book.bids, default=None)
+                best_ask = min(book.asks, default=None)
+                if best_bid != payload.best_bid or best_ask != payload.best_ask:
+                    book.divergence_count += 1
             elif event.stream is EventStream.POLYMARKET_LAST_TRADE:
                 book.last_trade_price = cast(PolymarketLastTradePayload, event.payload).price
             elif event.stream is EventStream.POLYMARKET_TICK_SIZE_CHANGE:
                 book.tick_size = cast(PolymarketTickSizePayload, event.payload).new_tick_size
             elif event.stream is EventStream.POLYMARKET_MARKET_RESOLVED:
-                book.resolved = True
+                payload = cast(PolymarketResolvedPayload, event.payload)
+                if event.asset_id in payload.affected_asset_ids or not payload.affected_asset_ids:
+                    book.resolved = True
 
     @staticmethod
     def _coherent(book: _Book) -> bool:
@@ -239,8 +384,10 @@ class StateStore:
             self._rolling(now_ns),
         )
 
-    def _book_snapshot(self, timeframe: Timeframe, outcome: Outcome) -> OrderBookSnapshot | None:
-        book = self._books.get((timeframe, outcome))
+    def _book_snapshot(self, asset_id: str | None) -> OrderBookSnapshot | None:
+        if asset_id is None:
+            return None
+        book = self._books_by_asset.get(asset_id)
         if book is None:
             return None
         bids = tuple(
@@ -252,14 +399,21 @@ class StateStore:
             for price in sorted(book.asks)[:20]
         )
         return OrderBookSnapshot(
-            bids,
-            asks,
-            bids[0].price if bids else None,
-            asks[0].price if asks else None,
-            book.last_trade_price,
-            book.tick_size,
-            book.initialized,
-            book.coherent,
+            asset_id=book.asset_id,
+            market_id=book.market_id,
+            condition_id=book.condition_id,
+            outcome=book.outcome,
+            source_session_id=book.source_session_id,
+            bids=bids,
+            asks=asks,
+            best_bid=bids[0].price if bids else None,
+            best_ask=asks[0].price if asks else None,
+            last_trade_price=book.last_trade_price,
+            tick_size=book.tick_size,
+            initialized=book.initialized,
+            coherent=book.coherent,
+            resolved=book.resolved,
+            last_event_timestamp_ns=book.last_event_timestamp_ns,
         )
 
     def _timeframe_snapshot(
@@ -267,32 +421,30 @@ class StateStore:
         timeframe: Timeframe,
         now_ns: int,
     ) -> PolymarketTimeframeSnapshot | None:
-        discovery = self._markets.get(timeframe)
-        if discovery is None or discovery.current_market is None:
+        context = self._contexts.get(timeframe)
+        if context is None or context.current_market_id is None:
             return None
-        market = discovery.current_market
-        up = self._book_snapshot(timeframe, Outcome.UP)
-        down = self._book_snapshot(timeframe, Outcome.DOWN)
+        up = self._book_snapshot(context.current_up_asset_id)
+        down = self._book_snapshot(context.current_down_asset_id)
         reasons: list[str] = []
-        if discovery.state is not DiscoveryState.ACTIVE:
+        if context.state is not DiscoveryState.ACTIVE:
             reasons.append(f"{timeframe.value}:market_not_active")
         for name, book in (("up", up), ("down", down)):
             if book is None or not book.initialized:
                 reasons.append(f"{timeframe.value}:{name}_book_uninitialized")
             elif not book.coherent:
                 reasons.append(f"{timeframe.value}:{name}_book_incoherent")
-        resolved = any(
-            self._books.get((timeframe, outcome), _Book()).resolved
-            for outcome in (Outcome.UP, Outcome.DOWN)
-        )
+        resolved = any(book is not None and book.resolved for book in (up, down))
         if resolved:
             reasons.append(f"{timeframe.value}:market_resolved")
-        end_ns = int(market.end_time_utc.timestamp() * 1_000_000_000)
+        end_ns = context.current_end_ns
+        if end_ns is None:
+            return None
         return PolymarketTimeframeSnapshot(
             timeframe,
-            market.market_id,
-            market.condition_id,
-            int(market.start_time_utc.timestamp() * 1_000_000_000),
+            context.current_market_id,
+            context.current_condition_id,
+            context.current_start_ns,
             end_ns,
             max(0, (end_ns - now_ns) // 1_000_000),
             up,
