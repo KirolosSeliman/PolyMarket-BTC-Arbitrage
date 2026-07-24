@@ -72,7 +72,7 @@ def parse_chainlink_message(
     except ValueError as exc:
         raise InvalidEventError(str(exc)) from exc
     return MarketDataEvent(
-        schema_version=1,
+        schema_version=2,
         ingest_sequence=ingest_sequence,
         event_id=f"chainlink:{payload_ms}:{server_ms}",
         source=EventSource.CHAINLINK_RTDS,

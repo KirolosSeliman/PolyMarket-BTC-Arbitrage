@@ -61,6 +61,8 @@ class EventSource(str, Enum):
 
 class EventStream(str, Enum):
     MARKET_WINDOW_STATE = "market_window_state"
+    SOURCE_STATUS = "source_status"
+    SNAPSHOT_TICK = "snapshot_tick"
     CHAINLINK_PRICE = "chainlink_price"
     BINANCE_AGG_TRADE = "binance_agg_trade"
     BINANCE_BOOK_TICKER = "binance_book_ticker"
@@ -198,12 +200,59 @@ class PolymarketResolvedPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceHealthSnapshot:
+    connected: bool
+    stale: bool
+    current_session_id: str | None
+    last_message_timestamp_ns: int | None
+    age_ms: int | None
+    reconnect_count: int
+    invalid_count: int
+    duplicate_count: int
+    stale_session_count: int
+    divergence_count: int
+    protocol_error_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class SourceStatusPayload:
+    source: EventSource
+    connected: bool
+    session_id: str | None
+    reconnect_count: int
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotTickPayload:
+    snapshot_sequence: int
+    scheduled_timestamp_ns: int
+    health: tuple[tuple[EventSource, SourceHealthSnapshot], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MarketWindowPayload:
+    timeframe: Timeframe
+    market_id: str
+    condition_id: str
+    slug: str
+    start_timestamp_ns: int
+    end_timestamp_ns: int
+    up_token_id: str
+    down_token_id: str
+    resolution_source: str
+
+
+@dataclass(frozen=True, slots=True)
 class MarketWindowStatePayload:
     state: str
-    start_timestamp_ns: int | None
-    end_timestamp_ns: int | None
-    up_token_id: str | None
-    down_token_id: str | None
+    timeframe: Timeframe
+    current_market: MarketWindowPayload | None
+    next_market: MarketWindowPayload | None
+    expected_transition_timestamp_ns: int | None
+    updated_at_timestamp_ns: int
+    attempt_count: int
+    last_error: str | None
 
 
 EventPayload: TypeAlias = (
@@ -218,6 +267,8 @@ EventPayload: TypeAlias = (
     | PolymarketTickSizePayload
     | PolymarketResolvedPayload
     | MarketWindowStatePayload
+    | SourceStatusPayload
+    | SnapshotTickPayload
 )
 
 
@@ -240,17 +291,7 @@ class MarketDataEvent:
     asset_id: str | None
     outcome: Outcome | None
     payload: EventPayload
-
-
-@dataclass(frozen=True, slots=True)
-class SourceHealthSnapshot:
-    connected: bool
-    stale: bool
-    last_message_timestamp_ns: int | None
-    age_ms: int | None
-    reconnect_count: int
-    invalid_count: int
-    duplicate_count: int
+    source_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,7 +411,54 @@ def _level_from_dict(value: dict[str, object]) -> PriceLevel:
     return PriceLevel(Decimal(str(value["price"])), Decimal(str(value["quantity"])))
 
 
+def _source_health_from_dict(value: dict[str, object]) -> SourceHealthSnapshot:
+    return SourceHealthSnapshot(
+        connected=bool(value["connected"]),
+        stale=bool(value["stale"]),
+        current_session_id=(
+            value.get("current_session_id")
+            if isinstance(value.get("current_session_id"), str)
+            else None
+        ),
+        last_message_timestamp_ns=(
+            None
+            if value.get("last_message_timestamp_ns") is None
+            else int(value["last_message_timestamp_ns"])
+        ),
+        age_ms=None if value.get("age_ms") is None else int(value["age_ms"]),
+        reconnect_count=int(value["reconnect_count"]),
+        invalid_count=int(value["invalid_count"]),
+        duplicate_count=int(value["duplicate_count"]),
+        stale_session_count=int(value.get("stale_session_count", 0)),
+        divergence_count=int(value.get("divergence_count", 0)),
+        protocol_error_count=int(value.get("protocol_error_count", 0)),
+    )
+
+
+def _market_window_from_dict(value: object) -> MarketWindowPayload | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("market window must be an object")
+    return MarketWindowPayload(
+        timeframe=Timeframe(str(value["timeframe"])),
+        market_id=str(value["market_id"]),
+        condition_id=str(value["condition_id"]),
+        slug=str(value["slug"]),
+        start_timestamp_ns=int(value["start_timestamp_ns"]),
+        end_timestamp_ns=int(value["end_timestamp_ns"]),
+        up_token_id=str(value["up_token_id"]),
+        down_token_id=str(value["down_token_id"]),
+        resolution_source=str(value["resolution_source"]),
+    )
+
+
 def event_from_dict(value: dict[str, object]) -> MarketDataEvent:
+    schema_version = int(value["schema_version"])
+    if schema_version not in {1, 2}:
+        raise ReplayIntegrityError(
+            f"unsupported market data event schema version: {schema_version}"
+        )
     stream = EventStream(str(value["stream"]))
     raw_payload = value["payload"]
     if not isinstance(raw_payload, dict):
@@ -446,16 +534,96 @@ def event_from_dict(value: dict[str, object]) -> MarketDataEvent:
             raw_payload.get("winning_asset_id") if isinstance(raw_payload.get("winning_asset_id"), str) else None,
             None if raw_payload.get("winning_outcome") is None else Outcome(str(raw_payload["winning_outcome"])),
         )
-    else:
-        payload = MarketWindowStatePayload(
-            str(raw_payload["state"]),
-            None if raw_payload.get("start_timestamp_ns") is None else int(raw_payload["start_timestamp_ns"]),
-            None if raw_payload.get("end_timestamp_ns") is None else int(raw_payload["end_timestamp_ns"]),
-            raw_payload.get("up_token_id") if isinstance(raw_payload.get("up_token_id"), str) else None,
-            raw_payload.get("down_token_id") if isinstance(raw_payload.get("down_token_id"), str) else None,
+    elif stream is EventStream.SOURCE_STATUS:
+        payload = SourceStatusPayload(
+            EventSource(str(raw_payload["source"])),
+            bool(raw_payload["connected"]),
+            (
+                raw_payload.get("session_id")
+                if isinstance(raw_payload.get("session_id"), str)
+                else None
+            ),
+            int(raw_payload["reconnect_count"]),
+            raw_payload.get("reason") if isinstance(raw_payload.get("reason"), str) else None,
         )
+    elif stream is EventStream.SNAPSHOT_TICK:
+        raw_health = raw_payload.get("health")
+        if not isinstance(raw_health, list):
+            raise ValueError("snapshot tick health must be a list")
+        health: list[tuple[EventSource, SourceHealthSnapshot]] = []
+        for row in raw_health:
+            if (
+                not isinstance(row, list)
+                or len(row) != 2
+                or not isinstance(row[1], dict)
+            ):
+                raise ValueError("snapshot tick health row is invalid")
+            health.append(
+                (EventSource(str(row[0])), _source_health_from_dict(row[1]))
+            )
+        payload = SnapshotTickPayload(
+            int(raw_payload["snapshot_sequence"]),
+            int(raw_payload["scheduled_timestamp_ns"]),
+            tuple(health),
+        )
+    else:
+        timeframe = (
+            Timeframe(str(raw_payload["timeframe"]))
+            if schema_version == 2
+            else Timeframe(str(value["timeframe"]))
+        )
+        if schema_version == 2:
+            payload = MarketWindowStatePayload(
+                str(raw_payload["state"]),
+                timeframe,
+                _market_window_from_dict(raw_payload.get("current_market")),
+                _market_window_from_dict(raw_payload.get("next_market")),
+                (
+                    None
+                    if raw_payload.get("expected_transition_timestamp_ns") is None
+                    else int(raw_payload["expected_transition_timestamp_ns"])
+                ),
+                int(raw_payload["updated_at_timestamp_ns"]),
+                int(raw_payload["attempt_count"]),
+                (
+                    raw_payload.get("last_error")
+                    if isinstance(raw_payload.get("last_error"), str)
+                    else None
+                ),
+            )
+        else:
+            legacy_market = None
+            if (
+                value.get("market_id") is not None
+                and value.get("condition_id") is not None
+                and raw_payload.get("start_timestamp_ns") is not None
+                and raw_payload.get("end_timestamp_ns") is not None
+                and raw_payload.get("up_token_id") is not None
+                and raw_payload.get("down_token_id") is not None
+            ):
+                legacy_market = MarketWindowPayload(
+                    timeframe,
+                    str(value["market_id"]),
+                    str(value["condition_id"]),
+                    str(value["market_id"]),
+                    int(raw_payload["start_timestamp_ns"]),
+                    int(raw_payload["end_timestamp_ns"]),
+                    str(raw_payload["up_token_id"]),
+                    str(raw_payload["down_token_id"]),
+                    "",
+                )
+            payload = MarketWindowStatePayload(
+                str(raw_payload["state"]),
+                timeframe,
+                legacy_market,
+                None,
+                None,
+                int(value["received_wall_timestamp_ns"]),
+                0,
+                None,
+            )
     return MarketDataEvent(
-        schema_version=int(value["schema_version"]),
+        schema_version=schema_version,
         ingest_sequence=int(value["ingest_sequence"]),
         event_id=str(value["event_id"]),
         source=EventSource(str(value["source"])),
@@ -472,4 +640,9 @@ def event_from_dict(value: dict[str, object]) -> MarketDataEvent:
         asset_id=value.get("asset_id") if isinstance(value.get("asset_id"), str) else None,
         outcome=None if value.get("outcome") is None else Outcome(str(value["outcome"])),
         payload=payload,
+        source_session_id=(
+            value.get("source_session_id")
+            if schema_version == 2 and isinstance(value.get("source_session_id"), str)
+            else None
+        ),
     )

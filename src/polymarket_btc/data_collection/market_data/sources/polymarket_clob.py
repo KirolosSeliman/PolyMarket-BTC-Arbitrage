@@ -131,7 +131,7 @@ def _make_event(
     sequence: int,
 ) -> MarketDataEvent:
     return MarketDataEvent(
-        schema_version=1,
+        schema_version=2,
         ingest_sequence=sequence,
         event_id=_event_id(message, book.asset_id, event_type, timestamp_ns),
         source=EventSource.POLYMARKET_CLOB,

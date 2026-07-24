@@ -26,6 +26,7 @@ from .models import (
     GatewayInvariantError,
     MarketDataEvent,
     MarketDataSnapshot,
+    MarketWindowPayload,
     MarketWindowStatePayload,
     ShutdownTimeoutError,
 )
@@ -207,20 +208,40 @@ class MarketDataGateway:
                     raise GatewayInvariantError("market state queue contains an invalid value")
                 self.state.apply_market_snapshot(value)
                 self.clob.on_market_snapshot(value)
-                market = value.current_market or value.next_market
                 now_ns = time.time_ns()
                 event_time_ns = int(
                     value.updated_at_utc.timestamp() * 1_000_000_000
                 )
+                def market_payload(market: object) -> MarketWindowPayload | None:
+                    if market is None:
+                        return None
+                    return MarketWindowPayload(
+                        value.timeframe,
+                        market.market_id,  # type: ignore[union-attr]
+                        market.condition_id,  # type: ignore[union-attr]
+                        market.slug,  # type: ignore[union-attr]
+                        int(market.start_time_utc.timestamp() * 1_000_000_000),  # type: ignore[union-attr]
+                        int(market.end_time_utc.timestamp() * 1_000_000_000),  # type: ignore[union-attr]
+                        market.up_token_id,  # type: ignore[union-attr]
+                        market.down_token_id,  # type: ignore[union-attr]
+                        market.resolution_source,  # type: ignore[union-attr]
+                    )
                 payload = MarketWindowStatePayload(
                     value.state.value,
-                    None if market is None else int(market.start_time_utc.timestamp() * 1_000_000_000),
-                    None if market is None else int(market.end_time_utc.timestamp() * 1_000_000_000),
-                    None if market is None else market.up_token_id,
-                    None if market is None else market.down_token_id,
+                    value.timeframe,
+                    market_payload(value.current_market),
+                    market_payload(value.next_market),
+                    (
+                        None
+                        if value.expected_transition_utc is None
+                        else int(value.expected_transition_utc.timestamp() * 1_000_000_000)
+                    ),
+                    event_time_ns,
+                    value.attempt_count,
+                    value.last_error,
                 )
                 event = MarketDataEvent(
-                    1,
+                    2,
                     0,
                     f"market:{value.timeframe.value}:{value.state.value}:{event_time_ns}",
                     EventSource.MARKET_DISCOVERY,
@@ -232,8 +253,8 @@ class MarketDataGateway:
                     time.monotonic_ns(),
                     None,
                     value.timeframe,
-                    None if market is None else market.market_id,
-                    None if market is None else market.condition_id,
+                    None,
+                    None,
                     None,
                     None,
                     payload,

@@ -93,7 +93,7 @@ class BinanceMessageParser:
         stream = message.get("stream")
         data = message["data"]
         common = {
-            "schema_version": 1,
+            "schema_version": 2,
             "ingest_sequence": ingest_sequence,
             "source": EventSource.BINANCE_SPOT,
             "instrument": "BTCUSDT",

@@ -356,13 +356,17 @@ class StateStore:
                 else max(0, (now_ns - row.last_message_ns) // 1_000_000)
             )
             health_rows.append((source, SourceHealthSnapshot(
-                row.connected,
-                not row.connected,
-                row.last_message_ns,
-                age,
-                row.reconnect_count,
-                row.invalid_count,
-                row.duplicate_count,
+                connected=row.connected,
+                stale=not row.connected,
+                current_session_id=None,
+                last_message_timestamp_ns=row.last_message_ns,
+                age_ms=age,
+                reconnect_count=row.reconnect_count,
+                invalid_count=row.invalid_count,
+                duplicate_count=row.duplicate_count,
+                stale_session_count=0,
+                divergence_count=0,
+                protocol_error_count=0,
             )))
         return MarketDataSnapshot(
             1,
