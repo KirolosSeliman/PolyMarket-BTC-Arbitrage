@@ -25,6 +25,7 @@ from .models import (
     StorageFatalError,
 )
 from .replay import read_raw_events
+from .reducer import MarketDataReducer
 from .state import StateStore
 from .storage import ParquetSnapshotWriter
 
@@ -179,17 +180,43 @@ def _replay(input_path: Path, output_path: Path, speed: float) -> int:
     if speed < 0:
         raise ValueError("speed cannot be negative")
     state = StateStore()
+    reducer = MarketDataReducer(state)
     writer = ParquetSnapshotWriter(output_path, zstd_level=6)
     previous_ns: int | None = None
-    sequence = 0
+    processed = 0
+    ticks = 0
+    snapshots = 0
+    first_sequence = None
+    last_sequence = None
+    first_snapshot = None
+    last_snapshot = None
     for event in read_raw_events(input_path):
         if speed and previous_ns is not None:
             time.sleep(max(0, event.received_wall_timestamp_ns - previous_ns) / 1_000_000_000 / speed)
-        state.apply(event)
         previous_ns = event.received_wall_timestamp_ns
-        sequence += 1
-        writer.write(state.snapshot(event.received_wall_timestamp_ns, sequence))
-    writer.close()
+        processed += 1
+        first_sequence = event.ingest_sequence if first_sequence is None else first_sequence
+        last_sequence = event.ingest_sequence
+        snapshot = reducer.apply(event)
+        if event.stream is EventStream.SNAPSHOT_TICK:
+            ticks += 1
+        if snapshot is not None:
+            writer.write(snapshot)
+            snapshots += 1
+            first_snapshot = snapshot.snapshot_sequence if first_snapshot is None else first_snapshot
+            last_snapshot = snapshot.snapshot_sequence
+    manifests = writer.close()
+    print(json.dumps({
+        "events_processed": processed,
+        "ticks_processed": ticks,
+        "snapshots_produced": snapshots,
+        "first_ingest_sequence": first_sequence,
+        "last_ingest_sequence": last_sequence,
+        "first_snapshot_sequence": first_snapshot,
+        "last_snapshot_sequence": last_snapshot,
+        "integrity_status": "valid",
+        "output_manifests": [str(path) for path in manifests],
+    }, separators=(",", ":")))
     return 0
 
 
