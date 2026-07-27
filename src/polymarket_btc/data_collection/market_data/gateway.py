@@ -37,7 +37,7 @@ from .sources.binance_spot import BinanceSpotSource
 from .sources.polymarket_clob import PolymarketClobSource
 from .sources.rtds_chainlink import ChainlinkRtdsSource
 from .state import StateStore
-from .storage import ParquetSnapshotWriter, RawEventStorage, recover_partial_files
+from .storage import ParquetSnapshotWriter, RawEventStorage, recover_partial_files, stream_sha256
 
 
 class MarketDataGateway:
@@ -92,6 +92,7 @@ class MarketDataGateway:
         self._tasks: list[asyncio.Task[object]] = []
         self._entered = False
         self._fatal: BaseException | None = None
+        self._fatal_future: asyncio.Future[None] | None = None
         self.health: dict[str, object] = self.health_registry.to_health_file_payload(time.time_ns())
         self.chainlink = ChainlinkRtdsSource(
             config,
@@ -396,12 +397,54 @@ class MarketDataGateway:
         exception = task.exception()
         if exception is not None and self._fatal is None:
             self._fatal = exception
+            self.health_registry.record_fatal(exception, time.time_ns())
+            if self._fatal_future is not None and not self._fatal_future.done():
+                self._fatal_future.set_exception(exception)
             self._stop.set()
+
+    async def wait_for_fatal(self) -> None:
+        if self._fatal_future is None:
+            self._fatal_future = asyncio.get_running_loop().create_future()
+        await self._fatal_future
+
+    def runtime_report(self) -> dict[str, object]:
+        snapshot = self.state.snapshot(time.time_ns(), self._tick_sequence)
+        raw_manifests = list(self.config.storage.data_dir.rglob("*.manifest.json"))
+        parquet_files = list(self.config.storage.data_dir.rglob("*.parquet"))
+        raw_valid = bool(raw_manifests)
+        for manifest in raw_manifests:
+            try:
+                value = __import__("json").loads(manifest.read_text(encoding="utf-8"))
+                data = manifest.with_name(str(value["relative_path"]))
+                raw_valid = raw_valid and data.is_file() and stream_sha256(data) == value["sha256"]
+            except (OSError, ValueError, KeyError):
+                raw_valid = False
+        parquet_valid = bool(parquet_files)
+        return {
+            "event_counts": {stream.value: count for stream, count in self.event_counts.items()},
+            "raw_events_written": self._raw_written,
+            "snapshots_written": self._snapshots_written,
+            "active_token_ids": sorted(self.clob.assets),
+            "initialized_active_books": sum(
+                1 for asset in self.state._books_by_asset.values()
+                if asset.initialized and asset.asset_id in self.clob.assets
+            ),
+            "final_snapshot": snapshot,
+            "fatal_error": None if self._fatal is None else repr(self._fatal),
+            "raw_manifest_valid": raw_valid,
+            "parquet_manifest_valid": parquet_valid,
+            "parquet_readable": all(path.stat().st_size > 0 for path in parquet_files),
+            "queues_drained": all(queue.empty() for queue in (
+                self.bus.state_queue, self.bus.storage_queue,
+                self.bus.market_state_queue, self.snapshot_storage_queue,
+            )),
+        }
 
     async def __aenter__(self) -> "MarketDataGateway":
         if self._entered:
             raise RuntimeError("gateway cannot be entered twice")
         self._entered = True
+        self._fatal_future = asyncio.get_running_loop().create_future()
         recover_partial_files(
             self.config.storage.data_dir,
             zstd_level=self.config.storage.zstd_level,

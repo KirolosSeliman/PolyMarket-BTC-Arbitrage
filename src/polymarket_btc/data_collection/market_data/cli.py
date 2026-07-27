@@ -101,13 +101,26 @@ async def _run_gateway(config_path: Path, duration: float | None) -> dict[str, o
                 async for _snapshot in gateway.snapshots():
                     counts["snapshots"] += 1
             consumer = asyncio.create_task(consume())
-            if duration is None:
-                await stop.wait()
-            else:
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=duration)
-                except TimeoutError:
-                    pass
+            stop_task = asyncio.create_task(stop.wait())
+            fatal_task = asyncio.create_task(gateway.wait_for_fatal())
+            try:
+                if duration is None:
+                    await asyncio.wait(
+                        {stop_task, fatal_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                else:
+                    done, _ = await asyncio.wait(
+                        {stop_task, fatal_task},
+                        timeout=duration,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if fatal_task in done:
+                        await fatal_task
+            finally:
+                stop_task.cancel()
+                fatal_task.cancel()
+                await asyncio.gather(stop_task, fatal_task, return_exceptions=True)
             consumer.cancel()
             await asyncio.gather(consumer, return_exceptions=True)
             final_snapshot = gateway.state.snapshot(time.time_ns(), 0)
@@ -132,6 +145,25 @@ async def _run_gateway(config_path: Path, duration: float | None) -> dict[str, o
             for path in config.storage.data_dir.rglob("*")
             if path.is_file()
         ) if config.storage.data_dir.exists() else 0
+        runtime = gateway.runtime_report()
+        counts_by_stream = runtime["event_counts"]
+        criteria = {
+            "chainlink_received": counts_by_stream.get(EventStream.CHAINLINK_PRICE.value, 0) > 0,
+            "agg_trade_received": counts_by_stream.get(EventStream.BINANCE_AGG_TRADE.value, 0) > 0,
+            "book_ticker_received": counts_by_stream.get(EventStream.BINANCE_BOOK_TICKER.value, 0) > 0,
+            "depth20_received": counts_by_stream.get(EventStream.BINANCE_DEPTH20.value, 0) > 0,
+            "market_5m_active": final_snapshot is not None and final_snapshot.market_5m is not None,
+            "market_15m_active": final_snapshot is not None and final_snapshot.market_15m is not None,
+            "four_active_tokens": len(runtime["active_token_ids"]) == 4,
+            "all_active_books_initialized": runtime["initialized_active_books"] == 4,
+            "gateway_ready": bool(final_snapshot and final_snapshot.ready_for_strategy),
+            "fatal_error_absent": runtime["fatal_error"] is None,
+            "raw_manifest_valid": runtime["raw_manifest_valid"],
+            "parquet_manifest_valid": runtime["parquet_manifest_valid"],
+            "parquet_readable": runtime["parquet_readable"],
+            "health_ready": bool(final_snapshot and final_snapshot.ready_for_strategy),
+            "queues_drained": runtime["queues_drained"],
+        }
         report = {
             **counts,
             "chainlink_events": gateway.event_counts[EventStream.CHAINLINK_PRICE],
@@ -169,6 +201,8 @@ async def _run_gateway(config_path: Path, duration: float | None) -> dict[str, o
                 if final_snapshot
                 else ["snapshot_missing"]
             ),
+            "criteria": criteria,
+            "passed": all(criteria.values()),
         }
     finally:
         if temporary is not None:
@@ -238,18 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(report, separators=(",", ":")))
         if args.command == "smoke":
-            smoke_ok = all(
-                report[key]
-                for key in (
-                    "snapshots",
-                    "chainlink_events",
-                    "agg_trade_events",
-                    "book_ticker_events",
-                    "depth20_events",
-                    "clob_events",
-                )
-            ) and report["initialized_clob_tokens"] == report["active_clob_tokens"]
-            return 0 if smoke_ok else 1
+            return 0 if report["passed"] else 1
         return 0
     except ConfigurationError as exc:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
