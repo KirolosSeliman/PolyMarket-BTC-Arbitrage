@@ -28,9 +28,11 @@ from .models import (
     MarketDataSnapshot,
     MarketWindowPayload,
     MarketWindowStatePayload,
+    SnapshotTickPayload,
     ShutdownTimeoutError,
 )
 from .snapshot import SnapshotPublisher
+from .reducer import MarketDataReducer
 from .sources.binance_spot import BinanceSpotSource
 from .sources.polymarket_clob import PolymarketClobSource
 from .sources.rtds_chainlink import ChainlinkRtdsSource
@@ -78,11 +80,10 @@ class MarketDataGateway:
         self._snapshots_written = 0
         self.event_counts = {stream: 0 for stream in EventStream}
         self.publisher = SnapshotPublisher(
-            self.state,
-            interval_ms=config.service.snapshot_interval_ms,
             subscriber_capacity=config.queues.subscriber_capacity,
-            on_snapshot=self._write_snapshot,
         )
+        self.reducer = MarketDataReducer(self.state)
+        self._tick_sequence = 0
         self._sequence = itertools.count(1)
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task[object]] = []
@@ -143,7 +144,10 @@ class MarketDataGateway:
             except TimeoutError:
                 continue
             try:
-                self.state.apply(event)
+                snapshot = self.reducer.apply(event)
+                if snapshot is not None:
+                    self.publisher.publish(snapshot)
+                    self._write_snapshot(snapshot)
             finally:
                 self.bus.state_queue.task_done()
 
@@ -205,7 +209,6 @@ class MarketDataGateway:
             try:
                 if not isinstance(value, TimeframeSnapshot):
                     raise GatewayInvariantError("market state queue contains an invalid value")
-                self.state.apply_market_snapshot(value)
                 self.clob.on_market_snapshot(value)
                 now_ns = time.time_ns()
                 event_time_ns = int(
@@ -263,6 +266,49 @@ class MarketDataGateway:
                     self.event_counts[event.stream] += 1
             finally:
                 self.bus.market_state_queue.task_done()
+
+    async def _snapshot_scheduler(self) -> None:
+        interval = self.config.service.snapshot_interval_ms / 1_000
+        next_slot = time.monotonic()
+        while not self._stop.is_set():
+            next_slot += interval
+            delay = next_slot - time.monotonic()
+            if delay > 0:
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                    return
+                except TimeoutError:
+                    pass
+            else:
+                next_slot = time.monotonic() + interval
+            self._tick_sequence += 1
+            now_ns = time.time_ns()
+            event = MarketDataEvent(
+                2,
+                0,
+                f"snapshot-tick:{self._tick_sequence}",
+                EventSource.MARKET_DISCOVERY,
+                EventStream.SNAPSHOT_TICK,
+                "gateway",
+                now_ns,
+                None,
+                now_ns,
+                time.monotonic_ns(),
+                str(self._tick_sequence),
+                None,
+                None,
+                None,
+                None,
+                None,
+                SnapshotTickPayload(
+                    self._tick_sequence,
+                    now_ns,
+                    self.health_registry.all_source_snapshots(now_ns),
+                ),
+            )
+            accepted = await self.bus.publish(event, self.next_sequence)
+            if accepted:
+                self.event_counts[event.stream] += 1
 
     async def _health_writer(self) -> None:
         while not self._stop.is_set():
@@ -344,7 +390,7 @@ class MarketDataGateway:
         self._spawn(self._reducer(), "market-data-reducer")
         self._spawn(self._raw_writer(), "market-data-raw-writer")
         self._spawn(self._market_manager(), "market-data-market-manager")
-        self._spawn(self.publisher.run(), "market-data-snapshot-publisher")
+        self._spawn(self._snapshot_scheduler(), "market-data-snapshot-scheduler")
         self._spawn(self._health_writer(), "market-data-health")
         if self.start_live_sources:
             self._spawn(self.chainlink.run(), "market-data-rtds")
@@ -389,6 +435,7 @@ class MarketDataGateway:
                 "market-data-binance",
                 "market-data-clob",
                 "market-data-snapshot-publisher",
+                "market-data-snapshot-scheduler",
                 "market-data-health",
             }:
                 task.cancel()
