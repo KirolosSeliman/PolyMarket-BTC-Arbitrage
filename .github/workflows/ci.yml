@@ -26,7 +26,22 @@ jobs:
         run: python -m unittest
 
       - name: Compile Python sources
-        run: python -m compileall src tests
+        run: python -m compileall src tests scripts
+
+      - name: Validate production configuration
+        run: >-
+          python -m polymarket_btc.data_collection.market_data.cli
+          validate-config --config config/market_data.toml
+
+      - name: Run deterministic integrity and offline smoke tests
+        run: >-
+          python -m unittest
+          tests.data_collection.market_data.test_reducer
+          tests.data_collection.market_data.test_replay
+          tests.data_collection.market_data.test_storage
+          tests.data_collection.market_data.test_integration_offline
+          tests.data_collection.market_data.test_gateway
+          tests.data_collection.market_data.test_shutdown
 
       - name: Reject legacy Market Discovery references
         run: >-

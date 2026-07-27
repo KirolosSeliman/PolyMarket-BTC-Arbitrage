@@ -161,7 +161,7 @@ async def _run_gateway(config_path: Path, duration: float | None) -> dict[str, o
             "raw_manifest_valid": runtime["raw_manifest_valid"],
             "parquet_manifest_valid": runtime["parquet_manifest_valid"],
             "parquet_readable": runtime["parquet_readable"],
-            "health_ready": bool(final_snapshot and final_snapshot.ready_for_strategy),
+            "health_ready": bool(runtime["health_ready"]),
             "queues_drained": runtime["queues_drained"],
         }
         report = {

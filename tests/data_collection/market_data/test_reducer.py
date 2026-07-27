@@ -41,6 +41,41 @@ class ReducerTests(unittest.TestCase):
         self.assertEqual(snapshot.snapshot_timestamp_ns, 100)
         self.assertEqual(snapshot.health, health)
 
+    def test_live_and_replay_reducers_emit_identical_snapshots(self) -> None:
+        registry = HealthRegistry()
+        health = registry.all_source_snapshots(100)
+        events = [
+            MarketDataEvent(
+                2, 1, "chainlink-1", EventSource.CHAINLINK_RTDS,
+                EventStream.CHAINLINK_PRICE, "BTC/USD", 90, 90, 90, 90, "1",
+                None, None, None, None, None,
+                ChainlinkPricePayload("btc/usd", Decimal("67000.25")),
+            ),
+            MarketDataEvent(
+                2, 2, "tick-1", EventSource.MARKET_DISCOVERY,
+                EventStream.SNAPSHOT_TICK, "gateway", 100, None, 100, 100, "1",
+                None, None, None, None, None,
+                SnapshotTickPayload(1, 100, health),
+            ),
+            MarketDataEvent(
+                2, 3, "chainlink-2", EventSource.CHAINLINK_RTDS,
+                EventStream.CHAINLINK_PRICE, "BTC/USD", 190, 190, 190, 190, "2",
+                None, None, None, None, None,
+                ChainlinkPricePayload("btc/usd", Decimal("67100.50")),
+            ),
+            MarketDataEvent(
+                2, 4, "tick-2", EventSource.MARKET_DISCOVERY,
+                EventStream.SNAPSHOT_TICK, "gateway", 200, None, 200, 200, "2",
+                None, None, None, None, None,
+                SnapshotTickPayload(2, 200, health),
+            ),
+        ]
+        live = MarketDataReducer(StateStore()).apply
+        replay = MarketDataReducer(StateStore()).apply
+        live_snapshots = [snapshot for event in events if (snapshot := live(event)) is not None]
+        replay_snapshots = [snapshot for event in events if (snapshot := replay(event)) is not None]
+        self.assertEqual(live_snapshots, replay_snapshots)
+
 
 if __name__ == "__main__":
     unittest.main()

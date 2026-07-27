@@ -19,6 +19,8 @@ from polymarket_btc.data_collection.market_data.storage import (
     ParquetSnapshotWriter,
     RawEventStorage,
     recover_partial_files,
+    snapshot_from_parquet_row,
+    snapshot_to_parquet_row,
 )
 
 
@@ -66,6 +68,38 @@ class RawStorageTests(unittest.TestCase):
             self.assertEqual(len(manifests), 1)
             self.assertFalse(partial.exists())
 
+    def test_recovery_restores_orphan_compressed_segment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = RawEventStorage(root, zstd_level=3)
+            storage.write(event(1))
+            manifest = storage.close()[0]
+            compressed = manifest.parent / json.loads(manifest.read_text())["relative_path"]
+            partial = compressed.with_suffix(compressed.suffix + ".partial")
+            compressed.replace(partial)
+            manifest.unlink()
+            recovered = recover_partial_files(root, zstd_level=3)
+            self.assertTrue(recovered)
+            self.assertTrue(compressed.exists())
+            self.assertTrue(compressed.with_name(compressed.name.replace(".jsonl.zst", ".manifest.json")).exists())
+
+    def test_recovery_restores_orphan_parquet_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            snapshot = StateStore().snapshot(1_750_000_000_000_000_000, 1)
+            writer = ParquetSnapshotWriter(root, zstd_level=3)
+            manifest = writer.write(snapshot)
+            manifests = writer.close()
+            manifest = manifests[0]
+            parquet = manifest.with_name(manifest.name.replace(".manifest.json", ".parquet"))
+            partial = parquet.with_suffix(parquet.suffix + ".partial")
+            parquet.replace(partial)
+            manifest.unlink()
+            recovered = recover_partial_files(root, zstd_level=3)
+            self.assertTrue(recovered)
+            self.assertTrue(parquet.exists())
+            self.assertTrue(manifest.exists())
+
 
 class ParquetStorageTests(unittest.TestCase):
     def test_parquet_has_fixed_structured_depth_schema(self) -> None:
@@ -82,6 +116,11 @@ class ParquetStorageTests(unittest.TestCase):
             self.assertEqual(table.num_rows, 1)
             self.assertIn("binance_depth_bids", table.schema.names)
             self.assertEqual(manifest["row_count"], 1)
+
+    def test_parquet_round_trip_restores_full_snapshot_contract(self) -> None:
+        snapshot = StateStore().snapshot(1_750_000_000_000_000_000, 1)
+        restored = snapshot_from_parquet_row(snapshot_to_parquet_row(snapshot))
+        self.assertEqual(restored, snapshot)
 
 
 if __name__ == "__main__":

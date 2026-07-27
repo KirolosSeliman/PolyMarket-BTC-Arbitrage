@@ -99,6 +99,19 @@ structured depth levels. Snapshot files rotate by time or row count and are
 finalized atomically with manifests. The `data` directory must be placed on
 persistent storage.
 
+The `StateStore` is the sole owner of live books. CLOB books are indexed by
+`asset_id`, while market/condition IDs and the CLOB session ID remain part of
+each immutable snapshot. A reconnect invalidates old-session books, so stale
+messages cannot restore readiness. Live ingestion and replay use the same
+reducer and deterministic `SNAPSHOT_TICK` events (four snapshots per second).
+
+Raw schema versions 1 and 2 remain replay-compatible. Startup recovery handles
+partial JSONL, compressed segments, manifests, and Parquet files by either
+finalizing them deterministically or moving them to `data/quarantine/` with a
+reason sidecar. Parquet schema v2 stores the complete public snapshot contract
+alongside structured depth fields. A dedicated bounded Parquet queue and
+worker thread write rows; queue saturation is fatal rather than a silent drop.
+
 Replay verifies manifests, hashes, JSON records, schema versions, duplicate
 IDs, and contiguous ingest sequences before reconstructing snapshots:
 
@@ -127,6 +140,11 @@ The service atomically rewrites `data/runtime/health.json`. It reports gateway
 state, readiness causes, connections, reconnects, invalid and duplicate
 messages, divergence, queue sizes/capacities, active token IDs, and persisted
 event/snapshot counts.
+
+`HealthRegistry` is the single source for source health and fatal diagnostics;
+the same immutable checkpoint is attached to snapshots and the atomic health
+file. `market_resolved` remains a control event and can resolve a market even
+when the message has no asset ID.
 
 - `*_disconnected`: inspect DNS, TLS, firewall, and endpoint reachability.
 - `*_stale`: verify source traffic and system time.
@@ -200,4 +218,17 @@ validation.
 - Market valuation and trading decisions are outside this service.
 - No retention policy is implemented.
 - A live 120-second smoke and a 24-hour soak must be repeated in the target
-  network and storage environment before operational launch.
+network and storage environment before operational launch.
+
+## Migration procedure
+
+1. Stop the previous collector cleanly and keep its data directory intact.
+2. Start this gateway against the same persistent `data_dir`; recovery verifies
+   old manifests before opening network connections.
+3. Run `validate-config`, then replay a copy of the raw directory and compare
+   its deterministic snapshots with the stored Parquet rows.
+4. Run the strict 120-second smoke and inspect health, queue drain, and hashes
+   before enabling production traffic.
+
+The 24-hour operational validation is not run in CI or offline tests. Until it
+is executed on the target host, report: `validation opérationnelle 24 h non exécutée`.

@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 import itertools
+import json
 import time
 from collections.abc import AsyncIterator
+
+import pyarrow.parquet as pq
 
 from polymarket_btc.data_collection.market_discovery import (
     GammaClient,
@@ -23,6 +26,7 @@ from .health import HealthRegistry, write_health_file
 from .models import (
     EventSource,
     EventStream,
+    BackpressureFatalError,
     GatewayInvariantError,
     MarketDataEvent,
     MarketDataSnapshot,
@@ -37,7 +41,13 @@ from .sources.binance_spot import BinanceSpotSource
 from .sources.polymarket_clob import PolymarketClobSource
 from .sources.rtds_chainlink import ChainlinkRtdsSource
 from .state import StateStore
-from .storage import ParquetSnapshotWriter, RawEventStorage, recover_partial_files, stream_sha256
+from .storage import (
+    PARQUET_SCHEMA,
+    ParquetSnapshotWriter,
+    RawEventStorage,
+    recover_partial_files,
+    stream_sha256,
+)
 
 
 class MarketDataGateway:
@@ -151,10 +161,15 @@ class MarketDataGateway:
                 snapshot = self.reducer.apply(event)
                 if snapshot is not None:
                     self.publisher.publish(snapshot)
-                    await asyncio.wait_for(
-                        self.snapshot_storage_queue.put(snapshot),
-                        timeout=self.config.queues.put_timeout_seconds,
-                    )
+                    try:
+                        await asyncio.wait_for(
+                            self.snapshot_storage_queue.put(snapshot),
+                            timeout=self.config.queues.put_timeout_seconds,
+                        )
+                    except TimeoutError as exc:
+                        raise BackpressureFatalError(
+                            "snapshot storage queue remained full past the deadline"
+                        ) from exc
             finally:
                 self.bus.state_queue.task_done()
 
@@ -409,17 +424,51 @@ class MarketDataGateway:
 
     def runtime_report(self) -> dict[str, object]:
         snapshot = self.state.snapshot(time.time_ns(), self._tick_sequence)
-        raw_manifests = list(self.config.storage.data_dir.rglob("*.manifest.json"))
-        parquet_files = list(self.config.storage.data_dir.rglob("*.parquet"))
+        raw_root = self.config.storage.data_dir / "raw"
+        snapshots_root = self.config.storage.data_dir / "snapshots"
+        raw_manifests = list(raw_root.rglob("*.manifest.json"))
+        parquet_manifests = list(snapshots_root.rglob("*.manifest.json"))
+        parquet_files = list(snapshots_root.rglob("*.parquet"))
         raw_valid = bool(raw_manifests)
         for manifest in raw_manifests:
             try:
-                value = __import__("json").loads(manifest.read_text(encoding="utf-8"))
+                value = json.loads(manifest.read_text(encoding="utf-8"))
                 data = manifest.with_name(str(value["relative_path"]))
                 raw_valid = raw_valid and data.is_file() and stream_sha256(data) == value["sha256"]
             except (OSError, ValueError, KeyError):
                 raw_valid = False
-        parquet_valid = bool(parquet_files)
+        parquet_valid = bool(parquet_manifests and parquet_files)
+        for manifest in parquet_manifests:
+            try:
+                value = json.loads(manifest.read_text(encoding="utf-8"))
+                data = manifest.with_name(manifest.name.replace(".manifest.json", ".parquet"))
+                metadata = pq.read_metadata(data)
+                schema_names = set(pq.read_table(data).schema.names)
+                parquet_valid = parquet_valid and data.is_file()
+                parquet_valid = parquet_valid and stream_sha256(data) == value["sha256"]
+                parquet_valid = parquet_valid and metadata.num_rows == int(value["row_count"])
+                parquet_valid = parquet_valid and set(PARQUET_SCHEMA.names).issubset(schema_names)
+            except (OSError, ValueError, KeyError, TypeError):
+                parquet_valid = False
+        parquet_readable = True
+        for path in parquet_files:
+            try:
+                table = pq.read_table(path)
+                parquet_readable = parquet_readable and table.num_rows > 0
+            except Exception:
+                parquet_readable = False
+        health_file_valid = False
+        health_ready = False
+        try:
+            health_payload = json.loads(self.config.health.health_file.read_text(encoding="utf-8"))
+            health_file_valid = (
+                isinstance(health_payload, dict)
+                and isinstance(health_payload.get("gateway_state"), str)
+                and isinstance(health_payload.get("updated_at_ns"), int)
+            )
+            health_ready = health_file_valid and health_payload.get("ready") is True
+        except (OSError, ValueError):
+            pass
         return {
             "event_counts": {stream.value: count for stream, count in self.event_counts.items()},
             "raw_events_written": self._raw_written,
@@ -433,7 +482,9 @@ class MarketDataGateway:
             "fatal_error": None if self._fatal is None else repr(self._fatal),
             "raw_manifest_valid": raw_valid,
             "parquet_manifest_valid": parquet_valid,
-            "parquet_readable": all(path.stat().st_size > 0 for path in parquet_files),
+            "parquet_readable": parquet_readable and bool(parquet_files),
+            "health_file_valid": health_file_valid,
+            "health_ready": health_ready,
             "queues_drained": all(queue.empty() for queue in (
                 self.bus.state_queue, self.bus.storage_queue,
                 self.bus.market_state_queue, self.snapshot_storage_queue,

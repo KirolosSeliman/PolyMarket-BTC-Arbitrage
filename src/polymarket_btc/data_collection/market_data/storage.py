@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import time
 import uuid
 
@@ -19,6 +18,7 @@ import zstandard
 
 from .models import (
     MarketDataEvent,
+    PriceLevel,
     MarketDataSnapshot,
     BinanceSnapshot,
     ChainlinkSnapshot,
@@ -32,6 +32,7 @@ from .models import (
     TakerSide,
     StorageFatalError,
     json_dumps,
+    event_from_dict,
 )
 from polymarket_btc.data_collection.market_discovery import Timeframe
 
@@ -79,11 +80,8 @@ def stream_validate_jsonl(path: Path) -> tuple[int, int | None, int | None]:
                 value = json.loads(raw_line)
                 if not isinstance(value, dict):
                     raise ValueError("event is not an object")
-                event = __import__(
-                    "polymarket_btc.data_collection.market_data.models",
-                    fromlist=["event_from_dict"],
-                ).event_from_dict(value)
-            except (ValueError, json.JSONDecodeError) as exc:
+                event = event_from_dict(value)
+            except Exception as exc:
                 raise StorageFatalError(f"invalid JSONL event: {path}") from exc
             count += 1
             first = event.ingest_sequence if first is None else first
@@ -104,11 +102,8 @@ def stream_validate_zstd_jsonl(path: Path) -> tuple[int, int | None, int | None]
                     value = json.loads(raw_line)
                     if not isinstance(value, dict):
                         raise ValueError("event is not an object")
-                    event = __import__(
-                        "polymarket_btc.data_collection.market_data.models",
-                        fromlist=["event_from_dict"],
-                    ).event_from_dict(value)
-                except (ValueError, json.JSONDecodeError, zstandard.ZstdError) as exc:
+                    event = event_from_dict(value)
+                except Exception as exc:
                     raise StorageFatalError(f"invalid compressed JSONL: {path}") from exc
                 count += 1
                 first = event.ingest_sequence if first is None else first
@@ -256,51 +251,266 @@ class RawEventStorage:
             del self._segments[key]
         return list(self._manifests)
 
-def recover_partial_files(data_dir: Path, *, zstd_level: int) -> list[Path]:
-    manifests: list[Path] = []
-    quarantine = Path(data_dir) / "quarantine"
-    for partial in (Path(data_dir) / "raw").rglob("*.jsonl.partial"):
-        raw = partial.read_bytes()
-        last_newline = raw.rfind(b"\n")
-        complete = raw[: last_newline + 1] if last_newline >= 0 else b""
-        rows: list[dict[str, object]] = []
-        invalid = False
-        for line in complete.splitlines():
-            try:
-                value = json.loads(line)
-                if not isinstance(value, dict):
-                    raise ValueError
-                rows.append(value)
-            except (json.JSONDecodeError, ValueError):
-                invalid = True
-                break
-        if invalid:
-            quarantine.mkdir(parents=True, exist_ok=True)
-            target = quarantine / partial.name
-            if target.exists():
-                target = quarantine / f"{uuid.uuid4().hex}-{partial.name}"
-            shutil.move(str(partial), target)
-            continue
-        if not rows:
-            partial.unlink()
-            continue
-        partial.write_bytes(complete)
-        first = rows[0]
-        last = rows[-1]
-        handle = partial.open("ab")
-        segment = _RawSegment(
-            partial,
-            handle,
-            time.monotonic(),
-            len(rows),
-            int(first["ingest_sequence"]),
-            int(last["ingest_sequence"]),
-            int(first["received_wall_timestamp_ns"]),
-            int(last["received_wall_timestamp_ns"]),
-            len(complete),
+def _quarantine(path: Path, data_dir: Path, reason: str, exc: BaseException | None = None) -> None:
+    quarantine = data_dir / "quarantine"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    target = quarantine / f"{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}-{uuid.uuid4().hex}-{path.name}"
+    try:
+        path.replace(target)
+        _fsync_directory(quarantine)
+        _atomic_json(
+            target.with_name(target.name + ".reason.json"),
+            {
+                "original_path": str(path),
+                "reason": reason,
+                "exception_type": None if exc is None else type(exc).__name__,
+                "detected_at_utc": datetime.now(UTC).isoformat(),
+            },
         )
-        storage = RawEventStorage(Path(data_dir), zstd_level=zstd_level)
-        manifests.append(storage._finalize(segment))
+    except OSError as move_error:
+        raise StorageFatalError(f"cannot quarantine {path}: {move_error}") from move_error
+
+
+def _raw_event_metadata(path: Path, *, compressed: bool) -> tuple[int, int | None, int | None, int | None, int | None]:
+    count = first = last = first_received = last_received = None
+    import io
+
+    def consume(lines: object) -> None:
+        nonlocal count, first, last, first_received, last_received
+        for raw_line in lines:  # type: ignore[union-attr]
+            if not raw_line.endswith(b"\n"):
+                raise StorageFatalError(f"JSONL line is not terminated: {path}")
+            value = json.loads(raw_line)
+            if not isinstance(value, dict):
+                raise StorageFatalError(f"event is not an object: {path}")
+            event = event_from_dict(value)
+            count = 1 if count is None else count + 1
+            first = event.ingest_sequence if first is None else first
+            last = event.ingest_sequence
+            first_received = event.received_wall_timestamp_ns if first_received is None else first_received
+            last_received = event.received_wall_timestamp_ns
+
+    if compressed:
+        with path.open("rb") as handle:
+            with zstandard.ZstdDecompressor().stream_reader(handle) as raw_reader:
+                consume(io.BufferedReader(raw_reader))
+    else:
+        with path.open("rb") as handle:
+            consume(handle)
+    return int(count or 0), first, last, first_received, last_received
+
+
+def _raw_manifest(data_path: Path) -> Path:
+    compressed = data_path.name.endswith(".jsonl.zst")
+    count, first, last, first_received, last_received = _raw_event_metadata(
+        data_path, compressed=compressed
+    )
+    if not count:
+        raise StorageFatalError(f"raw segment is empty: {data_path}")
+    manifest_path = data_path.with_name(data_path.name.removesuffix(".jsonl.zst") + ".manifest.json")
+    if manifest_path.exists():
+        return manifest_path
+    manifest = {
+        "schema_version": 1,
+        "relative_path": data_path.name,
+        "sha256": stream_sha256(data_path),
+        "event_count": count,
+        "first_ingest_sequence": first,
+        "last_ingest_sequence": last,
+        "first_received_timestamp_ns": first_received,
+        "last_received_timestamp_ns": last_received,
+        "uncompressed_bytes": None if compressed else data_path.stat().st_size,
+        "compressed_bytes": data_path.stat().st_size,
+        "created_at_utc": _utc(first_received or time.time_ns()).isoformat(),
+        "finalized_at_utc": datetime.now(UTC).isoformat(),
+    }
+    _atomic_json(manifest_path, manifest)
+    _fsync_directory(manifest_path.parent)
+    return manifest_path
+
+
+def _validate_parquet(path: Path) -> tuple[int, int, int]:
+    table = pq.read_table(path)
+    required = set(PARQUET_SCHEMA.names)
+    if not required.issubset(table.schema.names) or table.num_rows <= 0:
+        raise StorageFatalError(f"invalid Parquet schema or empty file: {path}")
+    sequences = table.column("snapshot_sequence").to_pylist()
+    timestamps = table.column("snapshot_timestamp_ns").to_pylist()
+    return table.num_rows, int(sequences[0]), int(timestamps[0])
+
+
+def _parquet_manifest(data_path: Path) -> Path:
+    row_count, first_sequence, first_timestamp = _validate_parquet(data_path)
+    table = pq.read_table(data_path, columns=["snapshot_sequence", "snapshot_timestamp_ns"])
+    sequences = table.column("snapshot_sequence").to_pylist()
+    timestamps = table.column("snapshot_timestamp_ns").to_pylist()
+    manifest_path = data_path.with_suffix(".manifest.json")
+    if manifest_path.exists():
+        return manifest_path
+    manifest = {
+        "schema_version": 2,
+        "row_count": row_count,
+        "first_snapshot_sequence": first_sequence,
+        "last_snapshot_sequence": int(sequences[-1]),
+        "first_snapshot_timestamp_ns": first_timestamp,
+        "last_snapshot_timestamp_ns": int(timestamps[-1]),
+        "sha256": stream_sha256(data_path),
+        "compressed_bytes": data_path.stat().st_size,
+        "finalized_at_utc": datetime.now(UTC).isoformat(),
+    }
+    _atomic_json(manifest_path, manifest)
+    _fsync_directory(manifest_path.parent)
+    return manifest_path
+
+
+def _recover_jsonl_partial(path: Path, data_dir: Path, zstd_level: int) -> Path | None:
+    if path.stat().st_size == 0:
+        path.unlink()
+        return None
+    complete_bytes = 0
+    try:
+        with path.open("rb+") as handle:
+            for raw_line in handle:
+                if not raw_line.endswith(b"\n"):
+                    break
+                value = json.loads(raw_line)
+                if not isinstance(value, dict):
+                    raise ValueError("event is not an object")
+                event_from_dict(value)
+                complete_bytes += len(raw_line)
+            handle.truncate(complete_bytes)
+        if complete_bytes == 0:
+            path.unlink()
+            return None
+        count, first, last, first_received, last_received = _raw_event_metadata(path, compressed=False)
+        segment = _RawSegment(
+            path, path.open("ab"), time.monotonic(), count, first, last,
+            first_received, last_received, complete_bytes,
+        )
+        return RawEventStorage(data_dir, zstd_level=zstd_level)._finalize(segment)
+    except Exception as exc:
+        _quarantine(path, data_dir, "invalid JSONL partial segment", exc)
+        return None
+
+
+def recover_partial_files(data_dir: Path, *, zstd_level: int) -> list[Path]:
+    """Recover every known raw/Parquet crash state without overwriting data."""
+    root = Path(data_dir)
+    manifests: list[Path] = []
+    raw_root = root / "raw"
+    snapshot_root = root / "snapshots"
+    raw_root.mkdir(parents=True, exist_ok=True)
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+
+    for path in sorted(raw_root.rglob("*.jsonl.partial")):
+        recovered = _recover_jsonl_partial(path, root, zstd_level)
+        if recovered is not None:
+            manifests.append(recovered)
+
+    for path in sorted(raw_root.rglob("*.jsonl")):
+        manifest = path.with_name(path.name.removesuffix(".jsonl") + ".manifest.json")
+        if manifest.exists():
+            continue
+        try:
+            partial = path.with_name(path.name + ".partial")
+            path.replace(partial)
+            recovered = _recover_jsonl_partial(partial, root, zstd_level)
+            if recovered is not None:
+                manifests.append(recovered)
+        except Exception as exc:
+            if path.exists():
+                _quarantine(path, root, "orphan JSONL segment", exc)
+
+    for path in sorted(raw_root.rglob("*.jsonl.zst.partial")):
+        try:
+            _raw_event_metadata(path, compressed=True)
+            final = path.with_suffix("")
+            path.replace(final)
+            manifests.append(_raw_manifest(final))
+        except Exception as exc:
+            if path.exists():
+                _quarantine(path, root, "invalid compressed partial segment", exc)
+
+    for path in sorted(raw_root.rglob("*.jsonl.zst")):
+        manifest = path.with_name(path.name.removesuffix(".jsonl.zst") + ".manifest.json")
+        if manifest.exists():
+            continue
+        try:
+            manifests.append(_raw_manifest(path))
+        except Exception as exc:
+            _quarantine(path, root, "invalid compressed segment without manifest", exc)
+
+    for manifest in sorted(raw_root.rglob("*.manifest.json.partial")):
+        try:
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+            data_path = manifest.parent / str(value["relative_path"])
+            expected = str(value["sha256"])
+            if not data_path.is_file() or stream_sha256(data_path) != expected:
+                raise StorageFatalError("manifest does not match data file")
+            final = manifest.with_suffix("")
+            manifest.replace(final)
+            manifests.append(final)
+        except Exception as exc:
+            if manifest.exists():
+                _quarantine(manifest, root, "invalid partial manifest", exc)
+
+    for manifest in sorted(raw_root.rglob("*.manifest.json")):
+        try:
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+            data_path = manifest.parent / str(value["relative_path"])
+            if not data_path.is_file():
+                raise StorageFatalError("manifest data file is absent")
+            if stream_sha256(data_path) != str(value["sha256"]):
+                raise StorageFatalError("manifest hash mismatch")
+        except Exception as exc:
+            _quarantine(manifest, root, "manifest data is missing or corrupt", exc)
+
+    for path in sorted(snapshot_root.rglob("*.parquet.partial")):
+        try:
+            _validate_parquet(path)
+            final = path.with_suffix("")
+            path.replace(final)
+            manifests.append(_parquet_manifest(final))
+        except Exception as exc:
+            if path.exists():
+                _quarantine(path, root, "invalid Parquet partial", exc)
+
+    for path in sorted(snapshot_root.rglob("*.parquet")):
+        manifest = path.with_suffix(".manifest.json")
+        if manifest.exists():
+            continue
+        try:
+            manifests.append(_parquet_manifest(path))
+        except Exception as exc:
+            _quarantine(path, root, "invalid Parquet without manifest", exc)
+
+    for manifest in sorted(snapshot_root.rglob("*.manifest.json.partial")):
+        try:
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+            relative_path = value.get(
+                "relative_path", manifest.name.replace(".manifest.json.partial", ".parquet")
+            )
+            data_path = manifest.parent / str(relative_path)
+            if not data_path.is_file() or stream_sha256(data_path) != str(value["sha256"]):
+                raise StorageFatalError("Parquet manifest does not match data file")
+            final = manifest.with_suffix("")
+            manifest.replace(final)
+            manifests.append(final)
+        except Exception as exc:
+            if manifest.exists():
+                _quarantine(manifest, root, "invalid Parquet partial manifest", exc)
+
+    for manifest in sorted(snapshot_root.rglob("*.manifest.json")):
+        try:
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+            data_path = manifest.parent / str(value.get("relative_path", manifest.name.replace(".manifest.json", ".parquet")))
+            if not data_path.is_file():
+                # Snapshot manifests created by ParquetSnapshotWriter use a same-stem parquet file.
+                data_path = manifest.with_name(manifest.name.replace(".manifest.json", ".parquet"))
+            if not data_path.is_file() or stream_sha256(data_path) != str(value["sha256"]):
+                raise StorageFatalError("Parquet manifest data is absent or corrupt")
+        except Exception as exc:
+            _quarantine(manifest, root, "Parquet manifest data is missing or corrupt", exc)
     return manifests
 
 
@@ -446,7 +656,7 @@ class ParquetSnapshotWriter:
         table = pa.Table.from_pylist(self._rows, schema=PARQUET_SCHEMA)
         pq.write_table(table, partial, compression="zstd", compression_level=self.zstd_level)
         partial.replace(final)
-        digest = hashlib.sha256(final.read_bytes()).hexdigest()
+        digest = stream_sha256(final)
         manifest_path = directory / f"{stem}.manifest.json"
         manifest = {
             "schema_version": 2,

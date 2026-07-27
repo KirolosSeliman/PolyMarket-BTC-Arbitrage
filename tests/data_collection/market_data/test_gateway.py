@@ -45,8 +45,13 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 async for snapshot in gateway.snapshots():
                     self.assertEqual(snapshot.chainlink.price, Decimal("100"))
                     break
+            runtime = gateway.runtime_report()
+            self.assertTrue(runtime["health_file_valid"])
             self.assertTrue(list((Path(directory) / "raw").rglob("*.jsonl.zst")))
             self.assertTrue(list((Path(directory) / "snapshots").rglob("*.parquet")))
+            self.assertTrue(runtime["raw_manifest_valid"])
+            self.assertTrue(runtime["parquet_manifest_valid"])
+            self.assertTrue(runtime["parquet_readable"])
 
 
 if __name__ == "__main__":

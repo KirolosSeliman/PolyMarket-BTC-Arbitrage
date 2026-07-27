@@ -31,6 +31,14 @@ The gateway is read-only. It publishes immutable in-process snapshots and
 persists raw JSONL/Zstandard events plus Parquet snapshots. See
 [Market Data Gateway](docs/data_collection/market_data.md).
 
+Live and replay paths share one `StateStore`/`MarketDataReducer`: books are
+asset-keyed, CLOB sessions invalidate on reconnect, and `SnapshotTick` emits
+four deterministic snapshots per second. Raw replay is streaming and verifies
+v1/v2 manifests; Parquet schema v2 preserves the complete snapshot contract.
+Writes use bounded queues, atomic manifests, and quarantine-based crash
+recovery. The strict smoke reports fatal errors, readiness, storage hashes,
+health-file validity, and queue drain.
+
 ## Docker
 
 ```shell
@@ -44,3 +52,7 @@ docker compose down
 python -m unittest
 python -m compileall src tests
 ```
+
+The 24-hour operational validation is intentionally outside CI and offline
+tests. Until it runs on the target host, report:
+`validation opérationnelle 24 h non exécutée`.
