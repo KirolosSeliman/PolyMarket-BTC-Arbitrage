@@ -76,6 +76,9 @@ class MarketDataGateway:
             rotate_seconds=config.storage.snapshot_rotate_seconds,
             rotate_rows=config.storage.snapshot_rotate_rows,
         )
+        self.snapshot_storage_queue: asyncio.Queue[MarketDataSnapshot] = asyncio.Queue(
+            config.queues.snapshot_storage_capacity
+        )
         self._raw_written = 0
         self._snapshots_written = 0
         self.event_counts = {stream: 0 for stream in EventStream}
@@ -147,7 +150,10 @@ class MarketDataGateway:
                 snapshot = self.reducer.apply(event)
                 if snapshot is not None:
                     self.publisher.publish(snapshot)
-                    self._write_snapshot(snapshot)
+                    await asyncio.wait_for(
+                        self.snapshot_storage_queue.put(snapshot),
+                        timeout=self.config.queues.put_timeout_seconds,
+                    )
             finally:
                 self.bus.state_queue.task_done()
 
@@ -188,6 +194,19 @@ class MarketDataGateway:
             finally:
                 for _event in batch:
                     self.bus.storage_queue.task_done()
+
+    async def _parquet_writer(self) -> None:
+        while not self._stop.is_set() or not self.snapshot_storage_queue.empty():
+            try:
+                snapshot = await asyncio.wait_for(
+                    self.snapshot_storage_queue.get(), timeout=0.1
+                )
+            except TimeoutError:
+                continue
+            try:
+                await asyncio.to_thread(self._write_snapshot, snapshot)
+            finally:
+                self.snapshot_storage_queue.task_done()
 
     def _persist_raw_batch(
         self,
@@ -389,6 +408,7 @@ class MarketDataGateway:
         )
         self._spawn(self._reducer(), "market-data-reducer")
         self._spawn(self._raw_writer(), "market-data-raw-writer")
+        self._spawn(self._parquet_writer(), "market-data-parquet-writer")
         self._spawn(self._market_manager(), "market-data-market-manager")
         self._spawn(self._snapshot_scheduler(), "market-data-snapshot-scheduler")
         self._spawn(self._health_writer(), "market-data-health")
@@ -445,6 +465,7 @@ class MarketDataGateway:
                 await self.bus.state_queue.join()
                 await self.bus.storage_queue.join()
                 await self.bus.market_state_queue.join()
+                await self.snapshot_storage_queue.join()
                 await asyncio.gather(*self._tasks, return_exceptions=True)
         except TimeoutError as exc:
             self.health["last_fatal_error"] = "shutdown_timeout"

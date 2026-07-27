@@ -24,6 +24,7 @@ class QueueConfig:
     market_state_capacity: int
     subscriber_capacity: int
     put_timeout_seconds: float
+    snapshot_storage_capacity: int
 
 
 @dataclass(frozen=True, slots=True)

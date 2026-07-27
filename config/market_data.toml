@@ -9,6 +9,7 @@ storage_capacity = 100000
 market_state_capacity = 100
 subscriber_capacity = 1000
 put_timeout_seconds = 1.0
+snapshot_storage_capacity = 20000
 
 [rtds]
 url = "wss://ws-live-data.polymarket.com"
