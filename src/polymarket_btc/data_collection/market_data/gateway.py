@@ -542,29 +542,34 @@ class MarketDataGateway:
             self.binance.stop(),
             self.clob.stop(),
         )
-        for task in self._tasks:
-            if task.get_name() in {
-                "market-discovery",
-                "market-data-rtds",
-                "market-data-binance",
-                "market-data-clob",
-                "market-data-snapshot-publisher",
-                "market-data-snapshot-scheduler",
-                "market-data-health",
-            }:
-                task.cancel()
-        self._stop.set()
+        producer_task_names = {
+            "market-discovery",
+            "market-data-rtds",
+            "market-data-binance",
+            "market-data-clob",
+            "market-data-snapshot-publisher",
+            "market-data-snapshot-scheduler",
+            "market-data-health",
+        }
+        producer_tasks = [
+            task for task in self._tasks if task.get_name() in producer_task_names
+        ]
+        for task in producer_tasks:
+            task.cancel()
         try:
             async with asyncio.timeout(self.config.service.shutdown_timeout_seconds):
+                await asyncio.gather(*producer_tasks, return_exceptions=True)
+                await self.bus.market_state_queue.join()
                 await self.bus.state_queue.join()
                 await self.bus.storage_queue.join()
-                await self.bus.market_state_queue.join()
                 await self.snapshot_storage_queue.join()
+                self._stop.set()
                 await asyncio.gather(*self._tasks, return_exceptions=True)
         except TimeoutError as exc:
             self.health["last_fatal_error"] = "shutdown_timeout"
             raise ShutdownTimeoutError("gateway shutdown timed out") from exc
         finally:
+            self._stop.set()
             self.raw_storage.flush(fsync=True)
             self.raw_storage.close()
             self.parquet_storage.close()
