@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Centre de contrôle — PolyMarket BTC</title>
+<style>
+:root {
+  color-scheme: dark;
+  --surface-0: #0d0d0d; --surface-1: #1a1a19; --surface-2: #212120;
+  --text-1: #ffffff; --text-2: #c3c2b7; --muted: #898781;
+  --border: rgba(255,255,255,0.10); --accent: #3987e5;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --surface-0: #f9f9f7; --surface-1: #fcfcfb; --surface-2: #f2f1ed;
+    --text-1: #0b0b0b; --text-2: #52514e; --muted: #898781;
+    --border: rgba(11,11,11,0.10); --accent: #2a78d6;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 32px;
+  background: var(--surface-0); color: var(--text-1);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 40px 20px;
+}
+header { text-align: center; }
+h1 { font-size: 20px; margin: 0 0 6px; letter-spacing: 0.01em; }
+header p { color: var(--muted); margin: 0; font-size: 13px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; max-width: 900px; width: 100%; }
+a.card {
+  display: block; text-decoration: none; color: inherit;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+  padding: 24px 20px; transition: border-color 0.15s, transform 0.15s;
+}
+a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.card .icon { font-size: 22px; margin-bottom: 10px; display: block; }
+.card h2 { font-size: 15px; margin: 0 0 8px; }
+.card p { margin: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.5; }
+.card .status { display: inline-block; margin-top: 12px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>PolyMarket BTC — Centre de contrôle</h1>
+  <p>Le collecteur alimente trois destinations. Choisis-en une.</p>
+</header>
+<div class="cards">
+  <a class="card" href="/live">
+    <span class="icon">▮</span>
+    <h2>Trading en direct</h2>
+    <p>Analyse en temps réel des données collectées. Rien n'est implémenté pour l'instant — juste la page.</p>
+    <span class="status">Aucune stratégie · placeholder</span>
+  </a>
+  <a class="card" href="/backtest">
+    <span class="icon">▤</span>
+    <h2>Backtest</h2>
+    <p>Sélectionne un jeu de données déjà collecté pour l'analyser hors-ligne, comme en direct.</p>
+    <span class="status">Sélection de données · analyseur à venir</span>
+  </a>
+  <a class="card" href="/collect">
+    <span class="icon">●</span>
+    <h2>Collecte de données</h2>
+    <p>Choisis quelles données récolter (spot, futures, Polymarket…), lance la collecte en arrière-plan, et exporte un fichier pour le backtest.</p>
+    <span class="status">Fonctionnel</span>
+  </a>
+</div>
+</body>
+</html>

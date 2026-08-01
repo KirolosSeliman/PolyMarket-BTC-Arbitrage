@@ -26,16 +26,26 @@ from ..models import (
     parse_decimal,
 )
 from .base import ExponentialBackoff
+from .binance_kline_ticker import parse_kline_data, parse_ticker_24h_data
 
-STREAMS = (
-    "btcusdt@aggTrade",
-    "btcusdt@bookTicker",
-    "btcusdt@depth20@100ms",
-)
+def _streams_for(symbol: str) -> tuple[str, str, str, str, str]:
+    lower = symbol.lower()
+    return (
+        f"{lower}@aggTrade",
+        f"{lower}@bookTicker",
+        f"{lower}@depth20@100ms",
+        f"{lower}@kline_1m",
+        f"{lower}@ticker",
+    )
 
 
-def build_combined_url(base_url: str, microseconds: bool = True) -> str:
-    suffix = f"?streams={'/'.join(STREAMS)}"
+STREAMS = _streams_for("btcusdt")
+
+
+def build_combined_url(
+    base_url: str, microseconds: bool = True, *, streams: tuple[str, ...] = STREAMS,
+) -> str:
+    suffix = f"?streams={'/'.join(streams)}"
     if microseconds:
         suffix += "&timeUnit=MICROSECOND"
     return base_url + suffix
@@ -71,11 +81,15 @@ def _levels(value: object, side: str) -> tuple[PriceLevel, ...]:
 
 
 class BinanceMessageParser:
-    def __init__(self, connection_session_id: str, *, timestamp_unit: str) -> None:
+    def __init__(
+        self, connection_session_id: str, *, timestamp_unit: str, symbol: str = "BTCUSDT",
+    ) -> None:
         if timestamp_unit not in {"microsecond", "millisecond"}:
             raise ValueError("timestamp_unit must be microsecond or millisecond")
         self.session_id = connection_session_id
         self.timestamp_multiplier = 1_000 if timestamp_unit == "microsecond" else 1_000_000
+        self.symbol = symbol.upper()
+        self._streams = _streams_for(self.symbol)
         self.last_agg_trade_id: int | None = None
         self.last_book_update_id: int | None = None
         self.last_depth_update_id: int | None = None
@@ -97,7 +111,7 @@ class BinanceMessageParser:
             "schema_version": 2,
             "ingest_sequence": ingest_sequence,
             "source": EventSource.BINANCE_SPOT,
-            "instrument": "BTCUSDT",
+            "instrument": self.symbol,
             "received_wall_timestamp_ns": received_wall_timestamp_ns,
             "received_monotonic_ns": received_monotonic_ns,
             "timeframe": None,
@@ -106,16 +120,47 @@ class BinanceMessageParser:
             "asset_id": None,
             "outcome": None,
         }
-        if stream == STREAMS[0]:
+        if stream == self._streams[0]:
             return self._agg_trade(data, now_ns, common)
-        if stream == STREAMS[1]:
+        if stream == self._streams[1]:
             return self._book_ticker(data, common)
-        if stream == STREAMS[2]:
+        if stream == self._streams[2]:
             return self._depth(data, common)
+        if stream == self._streams[3]:
+            return self._kline(data, common)
+        if stream == self._streams[4]:
+            return self._ticker(data, common)
         raise InvalidEventError("unexpected Binance stream")
 
+    def _kline(self, data: dict[str, object], common: dict[str, object]) -> MarketDataEvent:
+        payload = parse_kline_data(
+            data, market="spot", symbol=self.symbol, interval="1m",
+            timestamp_multiplier=self.timestamp_multiplier,
+        )
+        return MarketDataEvent(
+            **common,
+            event_id=f"binance:kline:{self.symbol}:1m:{payload.open_time_ns}:{payload.is_closed}",
+            stream=EventStream.BINANCE_KLINE,
+            source_timestamp_ns=payload.close_time_ns,
+            server_timestamp_ns=payload.close_time_ns,
+            source_sequence=None,
+            payload=payload,
+        )
+
+    def _ticker(self, data: dict[str, object], common: dict[str, object]) -> MarketDataEvent:
+        payload = parse_ticker_24h_data(data, market="spot", symbol=self.symbol)
+        return MarketDataEvent(
+            **common,
+            event_id=f"binance:ticker24h:{self.symbol}:{common['received_wall_timestamp_ns']}",
+            stream=EventStream.BINANCE_TICKER_24H,
+            source_timestamp_ns=None,
+            server_timestamp_ns=None,
+            source_sequence=None,
+            payload=payload,
+        )
+
     def _agg_trade(self, data: dict[str, object], now_ns: int, common: dict[str, object]) -> MarketDataEvent:
-        if data.get("e") != "aggTrade" or data.get("s") != "BTCUSDT":
+        if data.get("e") != "aggTrade" or data.get("s") != self.symbol:
             raise InvalidEventError("invalid aggregate trade identity")
         aggregate_id = _positive_int(data.get("a"), "a")
         if self.last_agg_trade_id is not None and aggregate_id <= self.last_agg_trade_id:
@@ -139,13 +184,13 @@ class BinanceMessageParser:
         self.last_agg_trade_id = aggregate_id
         return MarketDataEvent(
             **common,
-            event_id=f"binance:aggTrade:BTCUSDT:{aggregate_id}",
+            event_id=f"binance:aggTrade:{self.symbol}:{aggregate_id}",
             stream=EventStream.BINANCE_AGG_TRADE,
             source_timestamp_ns=source_ns,
             server_timestamp_ns=event_time * self.timestamp_multiplier,
             source_sequence=str(aggregate_id),
             payload=BinanceAggTradePayload(
-                "BTCUSDT",
+                self.symbol,
                 aggregate_id,
                 price,
                 quantity,
@@ -157,7 +202,7 @@ class BinanceMessageParser:
         )
 
     def _book_ticker(self, data: dict[str, object], common: dict[str, object]) -> MarketDataEvent:
-        if data.get("s") != "BTCUSDT":
+        if data.get("s") != self.symbol:
             raise InvalidEventError("invalid book ticker symbol")
         update_id = _positive_int(data.get("u"), "u")
         if self.last_book_update_id is not None and update_id <= self.last_book_update_id:
@@ -174,13 +219,13 @@ class BinanceMessageParser:
         self.last_book_update_id = update_id
         return MarketDataEvent(
             **common,
-            event_id=f"binance:bookTicker:BTCUSDT:{self.session_id}:{update_id}",
+            event_id=f"binance:bookTicker:{self.symbol}:{self.session_id}:{update_id}",
             stream=EventStream.BINANCE_BOOK_TICKER,
             source_timestamp_ns=None,
             server_timestamp_ns=None,
             source_sequence=str(update_id),
             payload=BinanceBookTickerPayload(
-                "BTCUSDT", update_id, bid, bid_quantity, ask, ask_quantity
+                self.symbol, update_id, bid, bid_quantity, ask, ask_quantity
             ),
         )
 
@@ -195,12 +240,12 @@ class BinanceMessageParser:
         self.last_depth_update_id = update_id
         return MarketDataEvent(
             **common,
-            event_id=f"binance:depth20:BTCUSDT:{self.session_id}:{update_id}",
+            event_id=f"binance:depth20:{self.symbol}:{self.session_id}:{update_id}",
             stream=EventStream.BINANCE_DEPTH20,
             source_timestamp_ns=None,
             server_timestamp_ns=None,
             source_sequence=str(update_id),
-            payload=BinanceDepth20Payload("BTCUSDT", update_id, bids, asks),
+            payload=BinanceDepth20Payload(self.symbol, update_id, bids, asks),
         )
 
 
@@ -212,6 +257,8 @@ class BinanceSpotSource:
         next_sequence: Callable[[], int],
         on_connection: Callable[[bool], None] | None = None,
         health_registry: HealthRegistry | None = None,
+        *,
+        symbol: str | None = None,
     ) -> None:
         self._config = config
         self._publish = publish
@@ -219,25 +266,41 @@ class BinanceSpotSource:
         self._stop = asyncio.Event()
         self.health_registry = health_registry or HealthRegistry()
         self._on_connection = on_connection or (lambda _connected: None)
+        self.symbol = (symbol or config.binance.symbol).upper()
+        # None (health.py's own "BTC" default) unless a real symbol override
+        # was given -- keeps BTC's own health keyed exactly as before, since
+        # self.symbol is always a resolved pair ("BTCUSDT") which would
+        # otherwise silently split BTC's health onto a key nothing else reads.
+        self._health_instrument = self.symbol if symbol is not None else None
 
     def _set_connected(self, connected: bool) -> None:
         if connected:
-            self.health_registry.record_connection(EventSource.BINANCE_SPOT, None, time.time_ns())
+            self.health_registry.record_connection(
+                EventSource.BINANCE_SPOT, None, time.time_ns(), instrument=self._health_instrument,
+            )
         else:
-            self.health_registry.record_disconnection(EventSource.BINANCE_SPOT, None, "connection_closed")
+            self.health_registry.record_disconnection(
+                EventSource.BINANCE_SPOT, None, "connection_closed", instrument=self._health_instrument,
+            )
         self._on_connection(connected)
 
     @property
     def connected(self) -> bool:
-        return self.health_registry.source_snapshot(EventSource.BINANCE_SPOT, time.time_ns()).connected
+        return self.health_registry.source_snapshot(
+            EventSource.BINANCE_SPOT, time.time_ns(), instrument=self._health_instrument,
+        ).connected
 
     @property
     def reconnect_count(self) -> int:
-        return self.health_registry.source_snapshot(EventSource.BINANCE_SPOT, time.time_ns()).reconnect_count
+        return self.health_registry.source_snapshot(
+            EventSource.BINANCE_SPOT, time.time_ns(), instrument=self._health_instrument,
+        ).reconnect_count
 
     @property
     def invalid_count(self) -> int:
-        return self.health_registry.source_snapshot(EventSource.BINANCE_SPOT, time.time_ns()).invalid_count
+        return self.health_registry.source_snapshot(
+            EventSource.BINANCE_SPOT, time.time_ns(), instrument=self._health_instrument,
+        ).invalid_count
 
     async def stop(self) -> None:
         self._stop.set()
@@ -254,12 +317,15 @@ class BinanceSpotSource:
             try:
                 parser = BinanceMessageParser(
                     uuid.uuid4().hex,
+                    symbol=self.symbol,
                     timestamp_unit="microsecond" if microseconds else "millisecond",
                 )
                 reconnect_after = self._config.binance.proactive_reconnect_seconds
                 reconnect_after += uuid.uuid4().int % 31
                 async with connect(
-                    build_combined_url(self._config.binance.url, microseconds),
+                    build_combined_url(
+                        self._config.binance.url, microseconds, streams=_streams_for(self.symbol),
+                    ),
                     max_size=4 * 1024 * 1024,
                 ) as websocket:
                     self._set_connected(True)
@@ -277,13 +343,17 @@ class BinanceSpotSource:
                                 now_ns=wall_ns,
                             )
                         except (json.JSONDecodeError, InvalidEventError):
-                            self.health_registry.record_invalid(EventSource.BINANCE_SPOT)
+                            self.health_registry.record_invalid(
+                                EventSource.BINANCE_SPOT, instrument=self._health_instrument,
+                            )
                             continue
                         await self._publish(event)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self.health_registry.record_reconnect(EventSource.BINANCE_SPOT)
+                self.health_registry.record_reconnect(
+                    EventSource.BINANCE_SPOT, instrument=self._health_instrument,
+                )
                 if self._stop.is_set():
                     break
                 await asyncio.sleep(backoff.next_delay())

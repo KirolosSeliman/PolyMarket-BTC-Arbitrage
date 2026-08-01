@@ -50,5 +50,49 @@ class HealthRegistryTests(unittest.TestCase):
         self.assertFalse(registry.to_health_file_payload(20)["ready"])
 
 
+class MultiInstrumentIsolationTests(unittest.TestCase):
+    """An extra symbol's health must never collide with -- or shift where --
+    the default (BTC) entry lives, since to_health_file_payload/live still
+    expect exactly today's single-symbol shape."""
+
+    def test_default_calls_are_unaffected_by_an_extra_instrument(self) -> None:
+        registry = HealthRegistry()
+        registry.record_connection(EventSource.BINANCE_SPOT, None, 10)
+        registry.record_connection(EventSource.BINANCE_SPOT, None, 10, instrument="ETHUSDT")
+
+        default_snapshot = registry.source_snapshot(EventSource.BINANCE_SPOT, 20)
+        eth_snapshot = registry.source_snapshot(EventSource.BINANCE_SPOT, 20, instrument="ETHUSDT")
+        self.assertTrue(default_snapshot.connected)
+        self.assertTrue(eth_snapshot.connected)
+
+        # A write to the extra instrument must not touch the default's counters.
+        registry.record_reconnect(EventSource.BINANCE_SPOT, instrument="ETHUSDT")
+        self.assertEqual(
+            registry.source_snapshot(EventSource.BINANCE_SPOT, 20).reconnect_count, 0,
+        )
+        self.assertEqual(
+            registry.source_snapshot(EventSource.BINANCE_SPOT, 20, instrument="ETHUSDT").reconnect_count, 1,
+        )
+
+    def test_health_file_payload_stays_btc_only_shaped(self) -> None:
+        registry = HealthRegistry()
+        registry.record_connection(EventSource.BINANCE_SPOT, None, 10, instrument="ETHUSDT")
+        payload = registry.to_health_file_payload(20)
+        # The default (BTC) entry is present and untouched by the ETH write;
+        # to_health_file_payload never exposes per-instrument rows -- that's
+        # what all_source_snapshots_multi is for.
+        self.assertFalse(payload["sources"]["binance_spot"]["connected"])
+
+    def test_all_source_snapshots_multi_covers_every_recorded_instrument(self) -> None:
+        registry = HealthRegistry()
+        registry.record_connection(EventSource.BINANCE_SPOT, None, 10)
+        registry.record_connection(EventSource.BINANCE_SPOT, None, 10, instrument="ETHUSDT")
+        rows = registry.all_source_snapshots_multi(20)
+        instruments = {
+            instrument for source, instrument, _snap in rows if source is EventSource.BINANCE_SPOT
+        }
+        self.assertEqual(instruments, {"BTC", "ETHUSDT"})
+
+
 if __name__ == "__main__":
     unittest.main()

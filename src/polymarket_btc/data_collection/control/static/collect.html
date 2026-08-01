@@ -1,0 +1,1254 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collecte de données</title>
+<style>
+:root {
+  color-scheme: dark;
+  --surface-0: #0d0d0d; --surface-1: #1a1a19; --surface-2: #212120;
+  --text-1: #ffffff; --text-2: #c3c2b7; --muted: #898781;
+  --border: rgba(255,255,255,0.10); --grid: #2c2c2a;
+  --bid: #3987e5; --ask: #e66767; --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --surface-0: #f9f9f7; --surface-1: #fcfcfb; --surface-2: #f2f1ed;
+    --text-1: #0b0b0b; --text-2: #52514e; --muted: #898781;
+    --border: rgba(11,11,11,0.10); --grid: #e1e0d9;
+    --bid: #2a78d6; --ask: #e34948;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--surface-0); color: var(--text-1); font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--surface-1); display: flex; align-items: center; gap: 12px; }
+header a { color: var(--muted); text-decoration: none; font-size: 12px; }
+header h1 { font-size: 14px; margin: 0; }
+
+.downloads-tray { position: relative; margin-left: auto; }
+.downloads-tray-btn {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 6px 12px;
+}
+.tray-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--bid); color: #fff; font-size: 10px; font-weight: 700;
+}
+.tray-badge.running { background: var(--good); }
+.downloads-panel {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 70;
+  width: 340px; max-height: 60vh; overflow-y: auto;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.4);
+}
+.downloads-panel-header {
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+}
+.download-item { padding: 10px 14px; border-bottom: 1px solid var(--border); position: relative; }
+.download-item:last-child { border-bottom: none; }
+.download-item .title { font-size: 12.5px; font-weight: 600; padding-right: 18px; }
+.download-item .meta { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+.download-item .progress-bar { margin-top: 8px; }
+.download-item .dismiss {
+  position: absolute; top: 9px; right: 12px; cursor: pointer; color: var(--muted);
+  font-size: 14px; line-height: 1;
+}
+.download-item .dismiss:hover { color: var(--text-1); }
+.downloads-empty { padding: 18px 14px; color: var(--muted); font-size: 11.5px; text-align: center; }
+main { max-width: 980px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; grid-template-columns: 1fr; align-items: start; }
+.panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.panel h2 { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2); margin: 0 0 12px; }
+.panel h3 { font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+fieldset { border: none; margin: 0 0 14px; padding: 0; }
+fieldset legend { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; padding: 0; }
+label.check { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; font-size: 12.5px; cursor: pointer; }
+label.check input { margin-top: 2px; }
+label.check .desc { color: var(--muted); font-size: 11px; display: block; }
+label.master { font-weight: 600; margin-bottom: 12px; }
+.plugin-empty, .empty { color: var(--muted); font-size: 12px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.dropdown-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.dropdown-row select {
+  font: inherit; font-size: 12.5px; color: var(--text-1); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; cursor: pointer;
+}
+.asset-panel { display: none; }
+.asset-panel.active { display: block; }
+.market-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+.other-block { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--grid); }
+
+.select-all-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.select-all-row label.check { margin: 0; }
+
+/* Selection summary: the only place color differentiates assets -- picks
+   up each asset's kind color as a dot, never the dropdowns/panels above. */
+.selection-summary { margin: 4px 0 20px; padding: 12px 14px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border); }
+.selection-summary h3 { margin: 0 0 8px; }
+.summary-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12.5px; }
+.summary-row .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.summary-row .asset-name { font-weight: 600; }
+.summary-row .count { color: var(--text-2); }
+
+input[type="number"], input[type="datetime-local"] {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-1); font: inherit; padding: 7px 10px;
+}
+input[type="number"] { width: 100px; }
+input[type="datetime-local"] { width: 200px; }
+button {
+  font: inherit; font-size: 12.5px; color: #fff; background: var(--bid);
+  border: none; border-radius: 6px; padding: 9px 18px; cursor: pointer;
+}
+button.stop { background: var(--ask); }
+button.secondary {
+  color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border);
+}
+button.secondary:hover { border-color: var(--bid); }
+button.reset-btn { padding: 4px 10px; font-size: 11px; }
+
+.import-status { font-size: 12px; color: var(--text-2); }
+.import-status.warn { color: var(--warning); }
+.import-status.error { color: var(--critical); }
+
+.prompt-details { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--grid); }
+.prompt-details summary {
+  cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text-2); list-style: none;
+}
+.prompt-details summary::-webkit-details-marker { display: none; }
+.prompt-details summary::before { content: "▸ "; }
+.prompt-details[open] summary::before { content: "▾ "; }
+.prompt-box { margin-top: 10px; }
+.prompt-box pre {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-2); max-height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+.badge {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border); font-size: 11px; font-weight: 600; text-transform: uppercase;
+}
+.badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.badge.idle { color: var(--muted); } .badge.running { color: var(--good); } .badge.error { color: var(--critical); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); font-size: 11px; color: var(--text-2); }
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; }
+table { width: 100%; border-collapse: collapse; margin-top: 10px; font-variant-numeric: tabular-nums; }
+th { font-size: 10.5px; text-align: left; color: var(--muted); text-transform: uppercase; padding: 0 8px 4px 0; border-bottom: 1px solid var(--grid); }
+td { padding: 3px 8px 3px 0; font-size: 12px; color: var(--text-2); }
+.log { font: 11px ui-monospace, monospace; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 8px 10px; margin-top: 6px; max-height: 120px; overflow: auto; white-space: pre-wrap; }
+.run-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; font-size: 12px; }
+.run-row .id { font-weight: 600; }
+.run-row .meta { color: var(--muted); font-size: 11px; }
+
+.view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+.view-toggle button {
+  font-size: 12px; color: var(--text-2); background: var(--surface-2); border: none;
+  border-radius: 0; padding: 7px 16px;
+}
+.view-toggle button.active { color: #fff; background: var(--bid); }
+.view-toggle button + button { border-left: 1px solid var(--border); }
+
+.mode-badge {
+  display: inline-block; font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.03em; border-radius: 4px; padding: 1px 6px; margin-left: 6px; vertical-align: middle;
+}
+.mode-badge.collect { color: var(--bid); background: color-mix(in srgb, var(--bid) 16%, transparent); }
+.mode-badge.access { color: var(--good); background: color-mix(in srgb, var(--good) 16%, transparent); }
+
+.info-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 6px; border-radius: 50%;
+  border: 1px solid var(--muted); color: var(--muted); font-size: 10px; font-weight: 700;
+  font-style: italic; font-family: Georgia, "Times New Roman", serif; line-height: 1;
+  cursor: pointer; vertical-align: middle; user-select: none; flex: none;
+}
+.info-icon:hover, .info-icon:focus-visible { border-color: var(--text-1); color: var(--text-1); outline: none; }
+.info-bubble {
+  position: fixed; z-index: 80; max-width: 320px; padding: 10px 12px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 11.5px; line-height: 1.5; color: var(--text-2);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35); display: none;
+}
+.info-bubble.open { display: block; }
+
+.progress-bar {
+  margin-top: 10px; height: 6px; border-radius: 3px; background: var(--surface-2);
+  overflow: hidden; position: relative;
+}
+.progress-bar-fill {
+  height: 100%; border-radius: 3px; background: var(--bid); width: 0%;
+  transition: width 0.4s ease;
+}
+.progress-bar.indeterminate .progress-bar-fill {
+  width: 40% !important; transition: none;
+  animation: progress-bar-slide 1.4s ease-in-out infinite;
+}
+@keyframes progress-bar-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+.combobox { position: relative; }
+.combobox input[type="text"] {
+  font: inherit; font-size: 12.5px; color: var(--text-1); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; width: 200px;
+}
+.combobox-listbox {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; width: 260px; max-height: 280px;
+  overflow-y: auto; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35); padding: 4px;
+}
+.combobox-option { padding: 6px 10px; border-radius: 5px; cursor: pointer; font-size: 12.5px; }
+.combobox-option:hover, .combobox-option.active { background: var(--surface-2); }
+.combobox-empty { padding: 8px 10px; color: var(--muted); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">← retour</a><h1>Collecte de données</h1>
+  <div class="downloads-tray" id="downloads-tray">
+    <button type="button" class="secondary downloads-tray-btn" id="downloads-tray-btn">
+      Téléchargements<span class="tray-badge" id="tray-badge" style="display:none"></span>
+    </button>
+    <div class="downloads-panel" id="downloads-panel" style="display:none">
+      <div class="downloads-panel-header">Téléchargements</div>
+      <div id="downloads-panel-body"></div>
+    </div>
+  </div>
+</header>
+<div id="info-bubble" class="info-bubble" role="tooltip"></div>
+<main>
+  <div class="panel">
+    <h2>Mode</h2>
+    <div class="row" style="justify-content:space-between">
+      <div class="view-toggle" id="collection-mode-toggle">
+        <button type="button" class="active" data-mode="collect">Mode collecte</button>
+        <button type="button" data-mode="access">Mode déjà collecté</button>
+      </div>
+      <p id="collection-mode-hint" style="margin:0;color:var(--text-2);font-size:11.5px;max-width:420px"></p>
+    </div>
+    <p id="mode-locked-hint" style="display:none;margin:10px 0 0;color:var(--warning);font-size:11.5px">
+      Une collecte est en cours -- termine-la ou clique sur « Arrêter » pour changer de mode. Tu peux aussi
+      quitter cette page, la collecte continue en arrière-plan sur le serveur.
+    </p>
+  </div>
+
+  <div class="panel">
+    <h2>Sources intégrées</h2>
+
+    <h3>Sorte d'actif</h3>
+    <div id="asset-section">
+      <div class="dropdown-row">
+        <select id="kind-select"></select>
+        <div class="combobox" id="asset-combobox">
+          <input type="text" id="asset-search" placeholder="Rechercher un actif…" autocomplete="off">
+          <div class="combobox-listbox" id="asset-listbox" role="listbox" style="display:none"></div>
+        </div>
+      </div>
+      <div id="asset-panels"></div>
+    </div>
+    <div class="empty" id="asset-empty" style="display:none">Aucune source accessible pour l'instant en mode déjà collecté.</div>
+
+    <div class="selection-summary" id="selection-summary" style="display:none">
+      <h3>Données sélectionnées</h3>
+      <div id="summary-rows"></div>
+    </div>
+
+    <div class="other-block">
+      <h3>Autre</h3>
+      <div id="other-section">
+        <div class="select-all-row">
+          <label class="check master"><input type="checkbox" id="other-select-all" class="select-all"> Tout sélectionner</label>
+          <button type="button" class="secondary reset-btn" id="other-reset-btn">Réinitialiser</button>
+        </div>
+        <div id="other-sources"></div>
+      </div>
+      <div class="empty" id="other-empty" style="display:none">Aucune source accessible pour l'instant en mode déjà collecté.</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Extensions ajoutées</h2>
+    <p style="margin-top:0;color:var(--text-2);font-size:11.5px">
+      Scripts trouvés dans <code>plugins/</code>. La catégorie vient du plugin lui-même
+      (<code>PLUGIN_INFO["category"]</code>) ; une catégorie inédite apparaît toute seule dans le menu
+      ci-dessous, rien à déclarer ailleurs.
+    </p>
+
+    <div class="row" style="margin-bottom:16px">
+      <button type="button" class="secondary" id="import-plugin-btn">+ Importer un script</button>
+      <input type="file" id="import-plugin-input" accept=".py" style="display:none">
+      <span id="import-status" class="import-status"></span>
+    </div>
+
+    <h3>Catégorie</h3>
+    <div class="dropdown-row" id="plugin-category-row">
+      <select id="plugin-category-select"></select>
+      <button type="button" class="secondary reset-btn" id="plugin-reset-btn">Réinitialiser</button>
+    </div>
+    <div id="plugins"></div>
+
+    <details class="prompt-details">
+      <summary>Prompt pour créer un nouveau plugin avec une IA</summary>
+      <div class="prompt-box">
+        <div class="row" style="justify-content:flex-end;margin-bottom:8px">
+          <button type="button" class="secondary" id="copy-prompt-btn">Copier</button>
+        </div>
+        <pre id="plugin-prompt-text">Chargement…</pre>
+      </div>
+    </details>
+  </div>
+
+  <div class="panel">
+    <h2 id="launch-title">Lancer la collecte</h2>
+    <div class="row" id="launch-row-collect">
+      <label for="duration">Durée (minutes, vide = arrêt manuel)</label>
+      <input type="number" id="duration" min="1" step="1" placeholder="illimité">
+    </div>
+    <div class="row" id="launch-row-access" style="display:none">
+      <label for="range-start">Depuis</label>
+      <input type="datetime-local" id="range-start">
+      <label for="range-end">Jusqu'à</label>
+      <input type="datetime-local" id="range-end">
+    </div>
+    <p id="access-date-hint" style="display:none;margin:6px 0 0;color:var(--text-2);font-size:11.5px"></p>
+    <div class="row" style="margin-top:10px">
+      <button id="start">Démarrer</button>
+      <button id="stop" class="stop" disabled>Arrêter</button>
+      <span class="badge idle" id="badge"><span class="dot"></span><span id="badge-text">inactif</span></span>
+    </div>
+    <div class="progress-bar" id="progress-bar" style="display:none">
+      <div class="progress-bar-fill" id="progress-bar-fill"></div>
+    </div>
+    <p id="progress-eta" style="display:none;margin:6px 0 0;color:var(--text-2);font-size:11.5px"></p>
+    <div id="progress"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Collectes précédentes</h2>
+    <div id="past-runs"></div>
+  </div>
+</main>
+<script>
+"use strict";
+
+let pollHandle = null;
+
+function el(id) { return document.getElementById(id); }
+
+// --- (i) info bubbles -- one shared floating element, reused for every
+// source/plugin row. A row opts in just by having a non-empty `detail`
+// string; infoIconHtml() renders nothing at all when there isn't one, so
+// rows without a detail stay exactly as before. ---
+
+function escapeAttr(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function infoIconHtml(detail) {
+  if (!detail) return "";
+  return `<span class="info-icon" data-detail="${escapeAttr(detail)}" tabindex="0" role="button" aria-label="Plus d'infos">i</span>`;
+}
+
+let openInfoIcon = null;
+
+function closeInfoBubble() {
+  el("info-bubble").classList.remove("open");
+  openInfoIcon = null;
+}
+
+function toggleInfoBubble(icon) {
+  if (openInfoIcon === icon) { closeInfoBubble(); return; }
+  const bubble = el("info-bubble");
+  bubble.textContent = icon.dataset.detail;
+  bubble.classList.add("open");
+  const rect = icon.getBoundingClientRect();
+  const top = Math.min(rect.bottom + 6, window.innerHeight - bubble.offsetHeight - 8);
+  const left = Math.min(rect.left, window.innerWidth - 336);
+  bubble.style.top = `${Math.max(8, top)}px`;
+  bubble.style.left = `${Math.max(8, left)}px`;
+  openInfoIcon = icon;
+}
+
+document.addEventListener("click", (event) => {
+  const icon = event.target.closest(".info-icon");
+  if (icon) {
+    // The icon lives inside a <label> wrapping a checkbox -- without this,
+    // the browser's label click-forwarding would also toggle that checkbox
+    // and re-fire a second bubbled click that immediately closes the bubble
+    // we just opened.
+    event.preventDefault();
+    toggleInfoBubble(icon);
+    return;
+  }
+  if (!event.target.closest("#info-bubble")) closeInfoBubble();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeInfoBubble();
+  if (event.key === "Enter" && document.activeElement && document.activeElement.classList.contains("info-icon")) {
+    toggleInfoBubble(document.activeElement);
+  }
+});
+
+// Kind is the top selection level ("crypto" today). It only drives the
+// color dot in the selection summary below -- the dropdowns and panels
+// above stay neutral by design.
+const KIND_LABELS = { crypto: "Crypto" };
+const KIND_COLORS = { crypto: "var(--good)" };
+const DEFAULT_KIND_COLOR = "var(--bid)";
+const kindLabel = (kind) => KIND_LABELS[kind] || kind;
+const kindColor = (kind) => KIND_COLORS[kind] || DEFAULT_KIND_COLOR;
+
+let allSources = [];
+let allPlugins = [];
+let collectionMode = "collect";
+
+// --- Downloads tray -- the header button that mirrors a browser's own
+// download tray: the run in progress plus recently finished ones, without
+// needing to stay scrolled down to the launch panel. Dismissing a finished
+// entry only hides it from this list (persisted in localStorage) -- it
+// never touches the underlying run/manifest on disk.
+let lastRunStatus = null;
+let lastPastRuns = [];
+let dismissedRunIds = new Set();
+try {
+  dismissedRunIds = new Set(JSON.parse(localStorage.getItem("dismissedRunIds") || "[]"));
+} catch { /* corrupt localStorage value -- start fresh rather than break the page */ }
+
+function saveDismissedRunIds() {
+  localStorage.setItem("dismissedRunIds", JSON.stringify([...dismissedRunIds]));
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  const total = Math.round(seconds);
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+  if (h > 0) return `${h}h ${m}min`;
+  if (m > 0) return `${m}min ${s}s`;
+  return `${s}s`;
+}
+
+// A real fraction when we have one: a bounded live collection uses
+// elapsed/duration; an access-mode download averages the built-in
+// historical sources' own source_progress (plugins don't report progress,
+// so a plugin-only run has no fraction here -- null, not a fake number).
+function runProgressFraction(run) {
+  if (!run) return null;
+  if (run.duration_seconds) {
+    return Math.max(0, Math.min(1, run.elapsed_seconds / run.duration_seconds));
+  }
+  const values = Object.values(run.source_progress || {});
+  if (!values.length) return null;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+function estimateRemainingSeconds(run) {
+  if (!run || !run.running) return null;
+  if (run.duration_seconds) return Math.max(0, run.duration_seconds - run.elapsed_seconds);
+  const fraction = runProgressFraction(run);
+  if (fraction === null || fraction <= 0) return null;
+  if (fraction >= 1) return 0;
+  // Extrapolate from how long it took to get this far -- a rough ETA, not
+  // a promise: real-world fetch speed varies (rate limits, network), but
+  // this beats no estimate at all for a long historical download.
+  const estimatedTotalSeconds = run.elapsed_seconds / fraction;
+  return Math.max(0, estimatedTotalSeconds - run.elapsed_seconds);
+}
+
+// Checked state lives here, not in the DOM -- sources/plugins get filtered
+// in and out of existence entirely when the mode toggle flips (see
+// visibleSources/visiblePlugins below), so a checkbox can't be trusted to
+// still exist after a re-render. Every row-building function reads its
+// initial .checked from these Sets; every change handler writes back to
+// them first, then syncs whatever DOM copies of that box currently exist.
+let selectedSourceKeys = new Set();
+let selectedPluginIds = new Set();
+
+// The two catalogs fetched once from the API; everything rendered is a
+// filtered view over these, never re-fetched on a mode switch.
+function visibleSources() {
+  return allSources.filter((s) => collectionMode === "collect" || s.mode === "access");
+}
+function visiblePlugins() {
+  return allPlugins.filter((p) => collectionMode === "collect" || p.mode === "access");
+}
+
+// Dropping a mode="collect" source/plugin's row when switching to "access"
+// must also drop it from the selection -- otherwise a stale key stays
+// checked in the Set underneath a row that no longer exists to show it.
+function pruneSelectionForMode() {
+  if (collectionMode !== "access") return;
+  const accessSourceKeys = new Set(allSources.filter((s) => s.mode === "access").map((s) => s.key));
+  const accessPluginIds = new Set(allPlugins.filter((p) => p.mode === "access").map((p) => p.id));
+  [...selectedSourceKeys].forEach((key) => { if (!accessSourceKeys.has(key)) selectedSourceKeys.delete(key); });
+  [...selectedPluginIds].forEach((id) => { if (!accessPluginIds.has(id)) selectedPluginIds.delete(id); });
+}
+
+function sourceRow(source) {
+  const label = document.createElement("label");
+  label.className = "check";
+  // Only "Accès" gets a badge -- which mode's checkboxes are showing at all
+  // is already implied by which top button is pressed, so a "Collecte"
+  // badge on every single row would just be noise.
+  const modeBadge = source.mode === "access" ? `<span class="mode-badge access">Accès</span>` : "";
+  label.innerHTML = `<input type="checkbox" class="source-box" value="${source.key}" data-mode="${source.mode}"><span>${source.label}${modeBadge}${infoIconHtml(source.detail)}<span class="desc">${source.description}</span></span>`;
+  label.querySelector(".source-box").checked = selectedSourceKeys.has(source.key);
+  return label;
+}
+
+// Single source of truth for a source's checked state; updateSelectionSummary
+// reads selectedSourceKeys directly rather than the DOM, so it stays correct
+// even for an asset panel that hasn't been built yet (see showAsset).
+function syncSourceCheckbox(key, checked) {
+  if (checked) selectedSourceKeys.add(key); else selectedSourceKeys.delete(key);
+  document.querySelectorAll(`.source-box[value="${key}"]`).forEach((box) => { box.checked = checked; });
+  updateSelectionSummary();
+  applyAccessDateLimit();
+}
+
+function syncPluginCheckbox(id, checked) {
+  if (checked) selectedPluginIds.add(id); else selectedPluginIds.delete(id);
+}
+
+function buildAssetPanel(kind, asset, sources) {
+  const panel = document.createElement("div");
+  panel.className = "asset-panel";
+  panel.id = "asset-panel-" + asset;
+  panel.dataset.kind = kind;
+  panel.dataset.asset = asset;
+
+  const selectAllRow = document.createElement("div");
+  selectAllRow.className = "select-all-row";
+  selectAllRow.innerHTML = `<label class="check master"><input type="checkbox" class="select-all"> Tout sélectionner (${asset})</label>`
+    + `<button type="button" class="secondary reset-btn">Réinitialiser</button>`;
+  panel.appendChild(selectAllRow);
+  wireSelectAll(selectAllRow.querySelector(".select-all"), () => panel);
+  wireResetButton(selectAllRow.querySelector(".reset-btn"), () => panel);
+
+  const columns = document.createElement("div");
+  columns.className = "market-columns";
+  [["spot", "Spot"], ["futures", "Futures"]].forEach(([marketKey, marketLabel]) => {
+    const rows = sources.filter((s) => s.asset === asset && s.market === marketKey);
+    if (!rows.length) return;
+    const fieldset = document.createElement("fieldset");
+    const legend = document.createElement("legend");
+    legend.textContent = marketLabel;
+    fieldset.appendChild(legend);
+    rows.forEach((source) => fieldset.appendChild(sourceRow(source)));
+    columns.appendChild(fieldset);
+  });
+  panel.appendChild(columns);
+
+  panel.addEventListener("change", (event) => {
+    if (event.target.classList.contains("source-box")) {
+      syncSourceCheckbox(event.target.value, event.target.checked);
+    }
+  });
+
+  return panel;
+}
+
+// One box, separate from the kind/asset pickers, listing every asset that
+// currently has at least one box checked -- not just the one shown right
+// now -- so switching assets never hides what you already picked. Derived
+// straight from selectedSourceKeys/allSources rather than scanning built
+// .asset-panel DOM: with lazy panel construction (see showAsset) a checked
+// key's panel may never have been built at all (e.g. checked only from "Par
+// tag"), so a DOM scan would silently miss it -- this is correct AND O(number
+// of selected keys) instead of O(every asset panel ever built).
+function updateSelectionSummary() {
+  const sourceByKey = new Map(allSources.map((s) => [s.key, s]));
+  const counts = new Map(); // asset -> { count, kind }
+  selectedSourceKeys.forEach((key) => {
+    const source = sourceByKey.get(key);
+    if (!source || !source.asset_kind) return; // "Autre" sources aren't asset-scoped
+    const entry = counts.get(source.asset) || { count: 0, kind: source.asset_kind };
+    entry.count += 1;
+    counts.set(source.asset, entry);
+  });
+  const box = el("selection-summary");
+  if (!counts.size) { box.style.display = "none"; return; }
+  box.style.display = "block";
+  el("summary-rows").innerHTML = [...counts.entries()].map(([asset, { count, kind }]) => `
+    <div class="summary-row">
+      <span class="dot" style="background:${kindColor(kind)}"></span>
+      <span class="asset-name">${asset}</span>
+      <span class="count">${count} donnée(s)</span>
+    </div>
+  `).join("");
+}
+
+// Panels are built lazily, one per asset, the first time that asset is
+// actually shown -- with hundreds of Binance symbols, building every asset's
+// full checkbox tree up front (as before) would mean hundreds of hidden DOM
+// subtrees nobody may ever look at.
+let builtAssetPanels = new Set();
+
+function showAsset(asset) {
+  if (!builtAssetPanels.has(asset)) {
+    const source = visibleSources().find((s) => s.asset === asset && s.asset_kind);
+    if (!source) return;
+    el("asset-panels").appendChild(buildAssetPanel(source.asset_kind, asset, visibleSources()));
+    builtAssetPanels.add(asset);
+  }
+  document.querySelectorAll(".asset-panel").forEach((p) => p.classList.remove("active"));
+  const panel = el("asset-panel-" + asset);
+  if (panel) panel.classList.add("active");
+}
+
+// --- Sélecteur d'actif avec recherche (remplace un <select> classique,
+// impraticable une fois qu'il y a des centaines de cryptos Binance) ---
+
+let assetSearchOptions = [];
+let assetListboxActiveIndex = -1;
+
+function renderAssetListbox(query) {
+  const listbox = el("asset-listbox");
+  const normalized = query.trim().toUpperCase();
+  const filtered = (normalized
+    ? assetSearchOptions.filter((asset) => asset.includes(normalized))
+    : assetSearchOptions
+  ).slice(0, 50);
+  assetListboxActiveIndex = -1;
+  listbox.innerHTML = filtered.length
+    ? filtered.map((asset) => `<div class="combobox-option" data-asset="${asset}" role="option">${asset}</div>`).join("")
+    : '<div class="combobox-empty">Aucun actif trouvé.</div>';
+  listbox.style.display = "block";
+}
+
+function closeAssetListbox() {
+  el("asset-listbox").style.display = "none";
+}
+
+function selectAssetFromCombobox(asset) {
+  el("asset-search").value = asset;
+  closeAssetListbox();
+  showAsset(asset);
+}
+
+function initAssetCombobox() {
+  const input = el("asset-search");
+  const listbox = el("asset-listbox");
+  input.addEventListener("focus", () => renderAssetListbox(input.value));
+  input.addEventListener("input", () => renderAssetListbox(input.value));
+  input.addEventListener("keydown", (event) => {
+    const options = Array.from(listbox.querySelectorAll(".combobox-option"));
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (listbox.style.display === "none") { renderAssetListbox(input.value); return; }
+      assetListboxActiveIndex = Math.min(assetListboxActiveIndex + 1, options.length - 1);
+      options.forEach((o, i) => o.classList.toggle("active", i === assetListboxActiveIndex));
+      options[assetListboxActiveIndex]?.scrollIntoView({ block: "nearest" });
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      assetListboxActiveIndex = Math.max(assetListboxActiveIndex - 1, 0);
+      options.forEach((o, i) => o.classList.toggle("active", i === assetListboxActiveIndex));
+      options[assetListboxActiveIndex]?.scrollIntoView({ block: "nearest" });
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const target = options[assetListboxActiveIndex] || options[0];
+      if (target) selectAssetFromCombobox(target.dataset.asset);
+    } else if (event.key === "Escape") {
+      closeAssetListbox();
+    }
+  });
+  // mousedown, not click: fires before the input's blur would close the
+  // listbox first and swallow the selection.
+  listbox.addEventListener("mousedown", (event) => {
+    const option = event.target.closest(".combobox-option");
+    if (option) selectAssetFromCombobox(option.dataset.asset);
+  });
+  document.addEventListener("click", (event) => {
+    if (!el("asset-combobox").contains(event.target)) closeAssetListbox();
+  });
+}
+
+function populateAssetSelect(kind) {
+  const assets = [...new Set(visibleSources().filter((s) => s.asset_kind === kind).map((s) => s.asset))].sort();
+  assetSearchOptions = assets;
+  if (assets.length) {
+    el("asset-search").value = assets[0];
+    showAsset(assets[0]);
+  } else {
+    el("asset-search").value = "";
+  }
+}
+
+// Rebuilds every dropdown/panel from visibleSources() -- called on initial
+// load AND on every mode switch, never re-fetching. kind-select uses
+// .onchange (reassignment, idempotent) rather than addEventListener since
+// this can now run many times over the page's life; a repeated
+// addEventListener here would stack duplicate handlers on the same
+// never-replaced <select> element. Asset panels are cleared and rebuilt
+// lazily (see showAsset) rather than eagerly for every asset -- with
+// hundreds of Binance symbols that would mean hundreds of unused DOM subtrees.
+function renderSourcesUI() {
+  const sources = visibleSources();
+  const assetScoped = sources.filter((s) => s.asset_kind);
+  const other = sources.filter((s) => !s.asset_kind);
+
+  const assetSection = el("asset-section");
+  const assetEmpty = el("asset-empty");
+  el("asset-panels").innerHTML = "";
+  builtAssetPanels.clear();
+  if (!assetScoped.length) {
+    assetSection.style.display = "none";
+    assetEmpty.style.display = "block";
+  } else {
+    assetSection.style.display = "";
+    assetEmpty.style.display = "none";
+    // Three axes: kind (crypto today) > asset (BTC today) > spot/futures --
+    // purely data-driven from asset_kind/asset/market, nothing hardcoded here.
+    const kinds = [...new Set(assetScoped.map((s) => s.asset_kind))];
+    const kindSelect = el("kind-select");
+    kindSelect.innerHTML = kinds.map((kind) => `<option value="${kind}">${kindLabel(kind)}</option>`).join("");
+    kindSelect.onchange = () => populateAssetSelect(kindSelect.value);
+    populateAssetSelect(kinds[0]);
+  }
+
+  const otherSection = el("other-section");
+  const otherEmpty = el("other-empty");
+  if (!other.length) {
+    otherSection.style.display = "none";
+    otherEmpty.style.display = "block";
+    el("other-sources").innerHTML = "";
+  } else {
+    otherSection.style.display = "";
+    otherEmpty.style.display = "none";
+    const container = el("other-sources");
+    container.innerHTML = "";
+    other.forEach((source) => container.appendChild(sourceRow(source)));
+  }
+
+  updateSelectionSummary();
+}
+
+async function loadSources() {
+  const res = await fetch("/api/sources");
+  const data = await res.json();
+  allSources = data.sources;
+  renderSourcesUI();
+}
+
+// Scoped "select all": one per asset, one per tag, plus one for "Autre",
+// each toggling only the source-box inputs inside its own container and
+// keeping every other view's copy of those same keys in sync.
+function wireSelectAll(checkbox, containerGetter) {
+  checkbox.addEventListener("change", (event) => {
+    const container = containerGetter();
+    container.querySelectorAll(".source-box").forEach((box) => {
+      syncSourceCheckbox(box.value, event.target.checked);
+    });
+  });
+}
+
+// Scoped "reset": the inverse of wireSelectAll -- unchecks every source-box
+// inside this same container, same scoping (an asset panel only clears that
+// asset, "Autre" only clears Autre). Only touches boxes that are actually
+// checked, so it doesn't fire a sync (and a re-render) for every box.
+function wireResetButton(button, containerGetter) {
+  button.addEventListener("click", () => {
+    containerGetter().querySelectorAll(".source-box").forEach((box) => {
+      if (box.checked) syncSourceCheckbox(box.value, false);
+    });
+  });
+}
+
+function renderPluginCategory(category) {
+  const container = el("plugins");
+  container.innerHTML = "";
+  visiblePlugins().filter((p) => p.category === category).forEach((plugin) => {
+    const label = document.createElement("label");
+    label.className = "check";
+    const modeBadge = plugin.mode === "access" ? `<span class="mode-badge access">Accès</span>` : "";
+    label.innerHTML = `<input type="checkbox" class="plugin-box" value="${plugin.id}" data-mode="${plugin.mode}"><span>${plugin.label}${modeBadge}${infoIconHtml(plugin.detail)}<span class="desc">${plugin.description}</span></span>`;
+    label.querySelector(".plugin-box").checked = selectedPluginIds.has(plugin.id);
+    container.appendChild(label);
+  });
+}
+
+// Rebuilds the category picker + list from visiblePlugins() -- called on
+// initial load AND on every mode switch, never re-fetching.
+function renderPluginsUI() {
+  const plugins = visiblePlugins();
+  const container = el("plugins");
+  const categoryRow = el("plugin-category-row");
+  const select = el("plugin-category-select");
+  if (!plugins.length) {
+    categoryRow.style.display = "none";
+    container.innerHTML = allPlugins.length
+      ? '<div class="plugin-empty">Aucun plugin en mode accès pour l\'instant. Repasse en mode collecte, ou déclare "mode": "access" dans un plugin (voir le prompt ci-dessous).</div>'
+      : '<div class="plugin-empty">Aucun plugin trouvé dans plugins/. Voir plugins/example_funding_history.py pour le modèle, ou importe un script ci-dessus.</div>';
+    return;
+  }
+
+  // The category picker is entirely plugin-driven, same principle as the
+  // asset kind picker above: whatever PLUGIN_INFO["category"] strings exist
+  // become the options, in discovery order -- always shown, even with a
+  // single category, so "where do I pick a category" is never a mystery.
+  const previous = select.value;
+  const categories = [...new Set(plugins.map((p) => p.category))];
+  categoryRow.style.display = "flex";
+  select.innerHTML = categories.map((c) => `<option value="${c}">${c}</option>`).join("");
+  select.value = categories.includes(previous) ? previous : categories[0];
+  select.onchange = () => renderPluginCategory(select.value);
+  renderPluginCategory(select.value);
+}
+
+async function loadPlugins() {
+  const res = await fetch("/api/plugins");
+  const data = await res.json();
+  allPlugins = data.plugins;
+  renderPluginsUI();
+}
+
+// --- Importer un script depuis le disque local ---
+
+async function uploadPlugin(filename, content, overwrite) {
+  const status = el("import-status");
+  status.className = "import-status";
+  status.textContent = "Import en cours…";
+  let res, data;
+  try {
+    res = await fetch("/api/plugins/import", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename, content, overwrite }),
+    });
+    data = await res.json();
+  } catch (error) {
+    status.className = "import-status error";
+    status.textContent = "Échec réseau à l'import.";
+    return;
+  }
+  if (res.status === 409 && data.exists && !overwrite) {
+    if (confirm(`${filename} existe déjà dans plugins/. Remplacer ?`)) {
+      await uploadPlugin(filename, content, true);
+    } else {
+      status.textContent = "Import annulé.";
+    }
+    return;
+  }
+  if (!res.ok) {
+    status.className = "import-status error";
+    status.textContent = "Erreur : " + data.error;
+    return;
+  }
+  if (data.recognized) {
+    status.textContent = `${filename} importé et reconnu comme plugin valide.`;
+  } else {
+    status.className = "import-status warn";
+    status.textContent = `${filename} copié dans plugins/, mais pas reconnu comme plugin valide -- vérifie PLUGIN_INFO et async def run(context).`;
+  }
+  await loadPlugins();
+}
+
+el("import-plugin-btn").addEventListener("click", () => el("import-plugin-input").click());
+el("import-plugin-input").addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  event.target.value = "";  // permet de re-sélectionner le même fichier plus tard
+  if (!file) return;
+  if (!file.name.endsWith(".py")) {
+    el("import-status").className = "import-status error";
+    el("import-status").textContent = "Le fichier doit avoir l'extension .py";
+    return;
+  }
+  const content = await file.text();
+  await uploadPlugin(file.name, content, false);
+});
+
+// --- Prompt IA pour écrire un nouveau plugin ---
+
+let pluginPromptLoaded = false;
+
+async function loadPluginPrompt() {
+  const pre = el("plugin-prompt-text");
+  try {
+    const res = await fetch("/api/plugin-prompt");
+    const data = await res.json();
+    pre.textContent = res.ok ? data.content : "Prompt indisponible : " + data.error;
+  } catch (error) {
+    pre.textContent = "Prompt indisponible (erreur réseau).";
+  }
+}
+
+document.querySelector(".prompt-details").addEventListener("toggle", (event) => {
+  if (event.target.open && !pluginPromptLoaded) {
+    pluginPromptLoaded = true;
+    loadPluginPrompt();
+  }
+});
+
+el("copy-prompt-btn").addEventListener("click", async () => {
+  const button = el("copy-prompt-btn");
+  try {
+    await navigator.clipboard.writeText(el("plugin-prompt-text").textContent);
+    const original = button.textContent;
+    button.textContent = "Copié !";
+    setTimeout(() => { button.textContent = original; }, 1500);
+  } catch (error) {
+    alert("Copie automatique impossible -- sélectionne le texte manuellement.");
+  }
+});
+
+function selectedValues(cls) {
+  return Array.from(document.querySelectorAll("." + cls)).filter((b) => b.checked).map((b) => b.value);
+}
+
+// --- Mode collecte / mode déjà collecté ---
+//
+// Switching modes re-renders the source/plugin lists from scratch (see
+// renderSourcesUI/renderPluginsUI): only what's eligible (mode="access")
+// is shown at all in access mode, everything else disappears rather than
+// just greying out. What also changes is the bottom panel: a live duration
+// becomes a time range, "Démarrer" becomes "Récupérer", and no gateway runs
+// at all server-side -- see CollectionRunManager._run_access.
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+function toDatetimeLocalValue(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function initRangeDefaults() {
+  const end = new Date();
+  const start = new Date(end.getTime() - 24 * 3600 * 1000);
+  el("range-end").value = toDatetimeLocalValue(end);
+  el("range-start").value = toDatetimeLocalValue(start);
+}
+
+// Some access-mode sources (open interest / long-short ratio) only have
+// history going back a limited number of days at Binance, even on a paid
+// plan -- see historical_limit_days in gateway.py. Tightest limit among the
+// currently-checked access sources wins; unlimited ones (null) don't count.
+function applyAccessDateLimit() {
+  const hint = el("access-date-hint");
+  const startInput = el("range-start");
+  if (collectionMode !== "access") {
+    startInput.removeAttribute("min");
+    hint.style.display = "none";
+    return;
+  }
+  const limitedSources = allSources.filter(
+    (s) => selectedSourceKeys.has(s.key) && s.historical_limit_days != null,
+  );
+  if (!limitedSources.length) {
+    startInput.removeAttribute("min");
+    hint.style.display = "none";
+    return;
+  }
+  const limitDays = Math.min(...limitedSources.map((s) => s.historical_limit_days));
+  const floor = new Date(Date.now() - limitDays * 24 * 3600 * 1000);
+  startInput.min = toDatetimeLocalValue(floor);
+  if (startInput.value && new Date(startInput.value) < floor) {
+    startInput.value = toDatetimeLocalValue(floor);
+  }
+  const names = limitedSources.map((s) => s.label).join(", ");
+  hint.textContent = `${names} : Binance ne conserve que les ${limitDays} derniers jours, la date de début est ajustée en conséquence.`;
+  hint.style.display = "block";
+}
+
+function setCollectionMode(mode) {
+  collectionMode = mode;
+  document.querySelectorAll("#collection-mode-toggle button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.mode === mode);
+  });
+  const isAccess = mode === "access";
+  el("launch-row-collect").style.display = isAccess ? "none" : "flex";
+  el("launch-row-access").style.display = isAccess ? "flex" : "none";
+  el("launch-title").textContent = isAccess ? "Récupérer des données" : "Lancer la collecte";
+  el("start").textContent = isAccess ? "Récupérer" : "Démarrer";
+  el("collection-mode-hint").textContent = isAccess
+    ? "Données déjà accessibles : seules les sources et plugins marqués ACCÈS sont affichés, pas de récolte en direct. Choisis une plage temporelle plutôt qu'une durée."
+    : "Récolte en direct : les sources cochées sont interrogées en continu pendant la durée choisie.";
+  pruneSelectionForMode();
+  renderSourcesUI();
+  renderPluginsUI();
+  applyAccessDateLimit();
+}
+
+document.querySelectorAll("#collection-mode-toggle button").forEach((button) => {
+  button.addEventListener("click", () => setCollectionMode(button.dataset.mode));
+});
+
+async function start() {
+  const sources = selectedValues("source-box");
+  const plugins = selectedValues("plugin-box");
+  const body = { sources, plugins, mode: collectionMode };
+  if (collectionMode === "access") {
+    if (!sources.length && !plugins.length) {
+      alert("Sélectionne au moins une source ou un plugin marqué ACCÈS.");
+      return;
+    }
+    const startVal = el("range-start").value;
+    const endVal = el("range-end").value;
+    body.start_ts = startVal ? new Date(startVal).getTime() : null;
+    body.end_ts = endVal ? new Date(endVal).getTime() : null;
+    body.duration_seconds = null;
+  } else {
+    if (!sources.length) { alert("Sélectionne au moins une source."); return; }
+    const durationMin = parseFloat(el("duration").value);
+    body.duration_seconds = Number.isFinite(durationMin) && durationMin > 0 ? durationMin * 60 : null;
+  }
+  const res = await fetch("/api/collect/start", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) { alert("Erreur : " + data.error); return; }
+  startPolling();
+}
+
+async function stop() {
+  const res = await fetch("/api/collect/stop", { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) alert("Erreur : " + data.error);
+}
+
+function healthTone(row, running) {
+  // A source reads "disconnected" once shutdown runs, whether the run
+  // succeeded or not -- only paint that red while the run is still live,
+  // where it actually signals trouble.
+  if (!row.connected) return running ? "critical" : "muted";
+  return "good";
+}
+
+// Switching mode mid-run would leave the just-started run orphaned (its
+// sources/plugins were picked under the OLD mode) -- so the toggle locks
+// while one is active. The run itself is a server-side asyncio task, not
+// tied to this page: leaving/closing the tab doesn't stop it, only
+// "Arrêter" or letting it reach its own end does -- the hint says so.
+function setModeToggleLocked(locked) {
+  document.querySelectorAll("#collection-mode-toggle button").forEach((b) => { b.disabled = locked; });
+  el("mode-locked-hint").style.display = locked ? "block" : "none";
+}
+
+function updateProgressBar(run) {
+  const bar = el("progress-bar"), fill = el("progress-bar-fill"), eta = el("progress-eta");
+  if (!run || !run.running) {
+    bar.style.display = "none";
+    bar.classList.remove("indeterminate");
+    eta.style.display = "none";
+    return;
+  }
+  bar.style.display = "block";
+  const fraction = runProgressFraction(run);
+  if (fraction === null) {
+    // No known total either way (an unbounded live collection, or a
+    // plugin-only access run that doesn't report source_progress) -- an
+    // honest indeterminate bar beats a fake percentage.
+    bar.classList.add("indeterminate");
+  } else {
+    bar.classList.remove("indeterminate");
+    fill.style.width = `${Math.round(fraction * 100)}%`;
+  }
+  const remaining = estimateRemainingSeconds(run);
+  const pctText = fraction === null ? "" : `${Math.round(fraction * 100)}%`;
+  const etaText = remaining === null ? "" : `temps restant estimé : ~${formatDuration(remaining)}`;
+  const combined = [pctText, etaText].filter(Boolean).join(" · ");
+  eta.textContent = combined;
+  eta.style.display = combined ? "block" : "none";
+}
+
+function renderStatus(run) {
+  const badge = el("badge"), badgeText = el("badge-text");
+  el("start").disabled = !!run && run.running;
+  el("stop").disabled = !run || !run.running;
+  setModeToggleLocked(!!run && run.running);
+  updateProgressBar(run);
+  if (!run) {
+    badge.className = "badge idle"; badgeText.textContent = "inactif";
+    el("progress").innerHTML = "";
+    return;
+  }
+  if (run.error) { badge.className = "badge error"; badgeText.textContent = "erreur"; }
+  else if (run.running) {
+    badge.className = "badge running";
+    badgeText.textContent = run.mode === "access" ? "récupération en cours" : "collecte en cours";
+  }
+  else { badge.className = "badge idle"; badgeText.textContent = "terminé"; }
+
+  const chips = (run.health || []).filter((h) => run.sources.includes(h.source) || (h.source === "market_discovery" && run.sources.includes("polymarket")))
+    .map((h) => `<span class="chip"><span class="dot" style="background:var(--${healthTone(h, run.running)})"></span>${h.source}${!h.connected && run.running ? " · hors ligne" : ""}</span>`)
+    .join("");
+
+  const counts = Object.entries(run.event_counts || {}).sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const countsRows = counts.map(([stream, count]) => `<tr><td>${stream}</td><td style="text-align:right">${count}</td></tr>`).join("");
+
+  const logs = Object.entries(run.plugin_logs || {}).map(([id, lines]) =>
+    `<div><strong>${id}</strong><div class="log">${lines.join("\n") || "—"}</div></div>`).join("");
+
+  const exportInfo = run.export
+    ? `<p style="color:var(--good)">Export prêt : ${run.export.data_dir}/${run.export.dataset_file || "(aucun fichier parquet)"} — ${run.export.snapshot_row_count} lignes.</p>`
+    : "";
+
+  const rangeInfo = run.mode === "access" && (run.start_ts_utc || run.end_ts_utc)
+    ? ` · plage ${run.start_ts_utc ? new Date(run.start_ts_utc).toLocaleString() : "…"} → ${run.end_ts_utc ? new Date(run.end_ts_utc).toLocaleString() : "…"}`
+    : "";
+
+  el("progress").innerHTML = `
+    <p style="color:var(--text-2)">run <strong>${run.run_id}</strong> · ${Math.floor(run.elapsed_seconds)} s écoulées${run.duration_seconds ? ` / ${Math.floor(run.duration_seconds)} s` : ""}${rangeInfo}</p>
+    <div class="chips">${chips}</div>
+    <table><thead><tr><th>Flux</th><th style="text-align:right">Événements</th></tr></thead><tbody>${countsRows}</tbody></table>
+    ${logs}
+    ${exportInfo}
+    ${run.error ? `<p style="color:var(--critical)">Erreur : ${run.error}</p>` : ""}
+  `;
+}
+
+// Normalizes either shape into one display model: the live /api/collect/status
+// run (has running/elapsed_seconds/source_progress) and a finished run's
+// manifest from /api/runs (has none of those -- it's already over) describe
+// the same thing at different points in its life.
+function downloadItemModel(run, isCurrent) {
+  if (isCurrent) {
+    return {
+      runId: run.run_id, mode: run.mode, running: run.running, error: run.error,
+      fraction: runProgressFraction(run), remainingSeconds: estimateRemainingSeconds(run),
+    };
+  }
+  return {
+    runId: run.run_id, mode: run.mode, running: false, error: run.error,
+    fraction: null, remainingSeconds: null,
+  };
+}
+
+function renderDownloadItem(run, isCurrent) {
+  const model = downloadItemModel(run, isCurrent);
+  const kindLabel = model.mode === "access" ? "Téléchargement" : "Collecte";
+  const pct = model.fraction === null ? null : Math.round(model.fraction * 100);
+  let statusText;
+  if (model.running) {
+    statusText = model.remainingSeconds === null ? "en cours" : `en cours · ~${formatDuration(model.remainingSeconds)} restant`;
+  } else {
+    statusText = model.error ? "erreur" : "terminé";
+  }
+  const barHtml = model.running
+    ? `<div class="progress-bar ${pct === null ? "indeterminate" : ""}" style="display:block">`
+      + `<div class="progress-bar-fill" style="${pct === null ? "" : `width:${pct}%`}"></div></div>`
+    : "";
+  const dismissHtml = isCurrent ? "" : `<span class="dismiss" data-dismiss="${model.runId}" role="button" tabindex="0" aria-label="Ignorer">×</span>`;
+  return `
+    <div class="download-item" data-run-id="${model.runId}">
+      ${dismissHtml}
+      <div class="title">${kindLabel} · ${model.runId}</div>
+      <div class="meta">${statusText}${pct === null ? "" : ` · ${pct}%`}</div>
+      ${barHtml}
+    </div>
+  `;
+}
+
+function renderDownloadsPanel() {
+  const body = el("downloads-panel-body");
+  const badge = el("tray-badge");
+  const currentRunning = lastRunStatus && lastRunStatus.running ? lastRunStatus : null;
+  const finished = lastPastRuns
+    .filter((r) => !dismissedRunIds.has(r.run_id))
+    .filter((r) => !(currentRunning && r.run_id === currentRunning.run_id))
+    .slice(0, 15);
+
+  const items = [];
+  if (currentRunning) items.push(renderDownloadItem(currentRunning, true));
+  finished.forEach((r) => items.push(renderDownloadItem(r, false)));
+  body.innerHTML = items.length ? items.join("") : '<div class="downloads-empty">Aucun téléchargement.</div>';
+
+  const total = (currentRunning ? 1 : 0) + finished.length;
+  badge.style.display = total > 0 ? "inline-flex" : "none";
+  badge.textContent = String(total);
+  badge.classList.toggle("running", !!currentRunning);
+}
+
+function dismissRun(runId) {
+  dismissedRunIds.add(runId);
+  saveDismissedRunIds();
+  renderDownloadsPanel();
+}
+
+el("downloads-tray-btn").addEventListener("click", (event) => {
+  event.stopPropagation();
+  const panel = el("downloads-panel");
+  panel.style.display = panel.style.display === "none" ? "block" : "none";
+});
+el("downloads-panel-body").addEventListener("click", (event) => {
+  const dismissEl = event.target.closest(".dismiss");
+  if (dismissEl) dismissRun(dismissEl.dataset.dismiss);
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("#downloads-tray")) el("downloads-panel").style.display = "none";
+});
+
+async function pollOnce() {
+  const res = await fetch("/api/collect/status");
+  const data = await res.json();
+  lastRunStatus = data.run;
+  renderStatus(data.run);
+  renderDownloadsPanel();
+  if (data.run && data.run.running) {
+    if (!pollHandle) pollHandle = setInterval(pollOnce, 1000);
+  } else {
+    if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+    if (data.run) loadPastRuns();
+  }
+}
+
+function startPolling() {
+  if (pollHandle) return;
+  pollOnce();
+  pollHandle = setInterval(pollOnce, 1000);
+}
+
+async function loadPastRuns() {
+  const res = await fetch("/api/runs");
+  const data = await res.json();
+  lastPastRuns = data.runs;
+  renderDownloadsPanel();
+  const container = el("past-runs");
+  if (!data.runs.length) { container.innerHTML = '<div class="empty">Aucune collecte encore.</div>'; return; }
+  container.innerHTML = data.runs.map((run) => `
+    <div class="run-row">
+      <span class="id">${run.run_id}</span>
+      <span class="mode-badge ${run.mode === "access" ? "access" : "collect"}">${run.mode === "access" ? "Accès" : "Collecte"}</span> —
+      <span class="meta">${(run.sources || []).join(", ")} · ${run.snapshot_row_count ?? 0} lignes · ${run.dataset_file || "aucun fichier"}</span>
+    </div>
+  `).join("");
+}
+
+el("start").addEventListener("click", start);
+el("stop").addEventListener("click", stop);
+
+// Delegated listeners on containers that persist for the page's whole life
+// (only their children get rebuilt, on every mode switch) -- attached
+// exactly once here rather than inside the functions that rebuild those
+// children, which would otherwise stack a duplicate handler on every rebuild.
+wireSelectAll(el("other-select-all"), () => el("other-sources"));
+wireResetButton(el("other-reset-btn"), () => el("other-sources"));
+el("plugins").addEventListener("change", (event) => {
+  if (event.target.classList.contains("plugin-box")) {
+    syncPluginCheckbox(event.target.value, event.target.checked);
+  }
+});
+// Plugins aren't scoped to a container the way sources are -- switching
+// category hides the other categories' checkboxes entirely (see
+// renderPluginCategory), so a selected plugin in a category you're not
+// looking at has no checkbox in the DOM right now to uncheck. Clear the
+// backing state directly and re-render, same principle as
+// updateSelectionSummary reading selectedSourceKeys instead of the DOM.
+el("plugin-reset-btn").addEventListener("click", () => {
+  if (!selectedPluginIds.size) return;
+  selectedPluginIds.clear();
+  renderPluginCategory(el("plugin-category-select").value);
+});
+
+initAssetCombobox();
+initRangeDefaults();
+setCollectionMode("collect");
+loadSources();
+loadPlugins();
+loadPastRuns();
+startPolling();
+</script>
+</body>
+</html>

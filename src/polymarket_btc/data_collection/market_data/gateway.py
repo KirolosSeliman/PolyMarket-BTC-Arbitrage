@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import itertools
 import json
@@ -20,6 +21,7 @@ from polymarket_btc.data_collection.market_discovery import (
     TransitionLogger,
 )
 
+from .binance_symbol_catalog import SymbolCatalog
 from .config import MarketDataConfig
 from .event_bus import EventBus
 from .health import HealthRegistry, write_health_file
@@ -38,6 +40,16 @@ from .models import (
 from .snapshot import SnapshotPublisher
 from .reducer import MarketDataReducer
 from .sources.binance_spot import BinanceSpotSource
+from .sources.binance_spot_full_depth import BinanceSpotFullDepthSource
+from .sources.binance_futures_depth import BinanceFuturesDepthSource
+from .sources.binance_futures_liquidations import BinanceFuturesLiquidationSource
+from .sources.binance_futures_rest_poller import BinanceFuturesRestPoller
+from .sources.binance_futures_rest_streams import (
+    BinanceFuturesKlineRestSource,
+    BinanceFuturesMarkPriceRestSource,
+    BinanceFuturesTicker24hRestSource,
+    BinanceFuturesTradeRestSource,
+)
 from .sources.polymarket_clob import PolymarketClobSource
 from .sources.rtds_chainlink import ChainlinkRtdsSource
 from .state import StateStore
@@ -50,6 +62,226 @@ from .storage import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class SourceInfo:
+    label: str
+    description: str
+    # asset_kind is the top selection level (e.g. "crypto"); asset is the
+    # specific asset within that kind (e.g. "BTC"). Both None means the
+    # source isn't asset-scoped and belongs in the catch-all "other" bucket
+    # (Polymarket, Chainlink). market is "spot" | "futures" | None, the axis
+    # within an asset. Adding another kind or asset later (a non-crypto
+    # kind, ETH, ...) is just more catalog entries -- the control panel
+    # groups by whatever asset_kind/asset/market values it finds; nothing
+    # here is BTC- or crypto-specific by construction.
+    asset_kind: str | None
+    asset: str | None
+    market: str | None
+    # tag is the second, cross-cutting browsing axis: "Par tag" groups every
+    # asset-scoped source by what KIND of data it is (funding, order book,
+    # liquidations...) instead of by asset -- so picking "Funding" surfaces
+    # every asset's funding source together once more than one asset exists,
+    # not just BTC's.
+    tag: str | None = None
+    # mode mirrors the plugin contract's PLUGIN_INFO["mode"]: "collect"
+    # (default) means this source only exists as a live feed the gateway
+    # subscribes to/polls. "access" means it also has a bulk historical
+    # fetch implemented (see sources/binance_futures_historical.py), so it
+    # can run under the control panel's "déjà collecté" mode (time range
+    # instead of a live duration, no gateway involved).
+    mode: str = "collect"
+    # Only meaningful when mode == "access": Binance itself only retains
+    # this many days of history server-side for some endpoints (open
+    # interest, long/short ratio) -- None means no such limit (klines,
+    # trades, mark price/funding are all unlimited, verified live). The
+    # control panel's date picker uses this to clamp/hint the start date.
+    historical_limit_days: int | None = None
+    # Longer explanation shown in the control panel's (i) info bubble on
+    # click -- distinct from `description`, which is always visible inline
+    # and stays short. None means no bubble is offered for this source.
+    detail: str | None = None
+
+
+SOURCE_CATALOG: dict[str, SourceInfo] = {
+    "chainlink": SourceInfo(
+        "Chainlink RTDS", "Prix BTC/USD de référence, utilisé pour la résolution des marchés", None, None, None,
+        detail=(
+            "Prix de référence BTC/USD publié par Chainlink, utilisé pour déterminer "
+            "l'issue des marchés Polymarket à l'échéance. Ce n'est pas un flux de "
+            "trading -- juste le prix officiel de résolution."
+        ),
+    ),
+    "polymarket": SourceInfo(
+        "Polymarket", "Market discovery + carnets CLOB 5 min / 15 min", None, None, None,
+        detail=(
+            "Découverte des marchés Polymarket BTC actifs, plus leur carnet d'ordres "
+            "CLOB à deux fréquences (5 min et 15 min). L'API publique de Polymarket ne "
+            "renvoie que l'état en direct du carnet -- aucune archive historique "
+            "officielle n'existe, donc ce flux n'est disponible qu'en collecte live."
+        ),
+    ),
+    "binance_spot": SourceInfo(
+        "Carnet + trades + bougies + stats 24h", "Un seul flux WebSocket combiné", "crypto", "BTC", "spot",
+        tag="Flux combiné",
+        detail=(
+            "Un seul flux WebSocket Binance Spot combinant carnet, trades, bougies et "
+            "statistiques 24h pour ce symbole. Collecte uniquement en direct -- pas "
+            "d'archive groupée, chaque composant (bougies, trades...) a son propre "
+            "historique séparé côté futures si besoin de données passées."
+        ),
+    ),
+    "binance_spot_dom": SourceInfo(
+        "DOM profondeur complète", "Carnet reconstruit, agrégé en paliers de prix", "crypto", "BTC", "spot",
+        tag="Carnet",
+        detail=(
+            "Carnet d'ordres complet (profondeur intégrale) reconstruit à partir du "
+            "flux de mises à jour, agrégé en paliers de prix. Binance n'archive pas le "
+            "carnet historique -- ni gratuitement ni en payant -- donc disponible "
+            "uniquement en collecte live, jamais en mode déjà collecté."
+        ),
+    ),
+    "binance_futures_trade": SourceInfo(
+        "Trades récents (prix)", "Polling REST incrémental", "crypto", "BTC", "futures",
+        tag="Trades", mode="access",
+        detail=(
+            "Trades exécutés tick-by-tick (aggTrades Binance), historique illimité et "
+            "gratuit depuis l'origine du symbole. C'est la donnée requise pour "
+            "recréer le prix sous forme de bougies à une granularité personnalisée "
+            "(1 seconde, 5 secondes...) : Binance Futures n'offre pas de bougies "
+            "natives en dessous de la minute, contrairement au spot."
+        ),
+    ),
+    "binance_futures_dom": SourceInfo(
+        "DOM profondeur complète", "Carnet reconstruit, agrégé en paliers de prix", "crypto", "BTC", "futures",
+        tag="Carnet",
+        detail=(
+            "Carnet d'ordres complet (profondeur intégrale) sur le contrat futures "
+            "perpétuel, reconstruit en paliers de prix. Comme pour le spot, Binance ne "
+            "conserve aucune archive du carnet -- disponible uniquement en collecte live."
+        ),
+    ),
+    "binance_futures_mark_price": SourceInfo(
+        "Mark price / funding", "Polling REST", "crypto", "BTC", "futures",
+        tag="Funding", mode="access",
+        detail=(
+            "Prix mark (référence de liquidation) et taux de funding du contrat "
+            "futures. Historique illimité et gratuit : bougies de mark price "
+            "(markPriceKlines) + historique des paiements de funding aux 8h "
+            "(fundingRate) -- c'est le taux effectivement payé, pas le taux continu "
+            "affiché en direct."
+        ),
+    ),
+    "binance_futures_liquidations": SourceInfo(
+        "Liquidations forcées", "Flux WebSocket, filtré côté client sur ce symbole", "crypto", "BTC", "futures",
+        tag="Liquidations",
+        detail=(
+            "Liquidations forcées exécutées sur Binance Futures, reçues en direct via "
+            "WebSocket et filtrées côté client sur ce symbole. Aucune archive "
+            "officielle chez Binance -- disponible uniquement en collecte live, jamais "
+            "en mode déjà collecté."
+        ),
+    ),
+    "binance_futures_open_interest_long_short": SourceInfo(
+        "Open interest / long-short ratio", "Polling REST, 5 min", "crypto", "BTC", "futures",
+        tag="Positionnement", mode="access", historical_limit_days=30,
+        detail=(
+            "Open interest total et ratio long/short des comptes top traders, toutes "
+            "les 5 minutes. Historique disponible mais limité aux 30 derniers jours "
+            "côté Binance, même en payant -- au-delà, seul un fournisseur tiers "
+            "(ex. Tardis.dev) archive ces données."
+        ),
+    ),
+    "binance_futures_kline": SourceInfo(
+        "Bougies 1m", "Polling REST", "crypto", "BTC", "futures",
+        tag="Bougies", mode="access",
+        detail=(
+            "Bougies OHLCV natives Binance à 1 minute, historique illimité et gratuit "
+            "depuis l'origine du symbole. Pour une granularité plus fine (ex. 1 "
+            "seconde), il faut reconstruire soi-même les bougies à partir des trades "
+            "bruts -- voir 'Trades récents (prix)'."
+        ),
+    ),
+    "binance_futures_ticker": SourceInfo(
+        "Stats 24h", "Polling REST", "crypto", "BTC", "futures",
+        tag="Statistiques",
+        detail=(
+            "Statistiques glissantes sur 24h (variation de prix, volume, plus haut/"
+            "plus bas) rafraîchies en continu. Pas d'historique disponible -- "
+            "seulement un instantané en direct."
+        ),
+    ),
+}
+
+# Flat key -> label view, kept for callers that only need the valid-key set
+# or a plain description (enabled_sources filtering, existing tests).
+SOURCE_KEYS: dict[str, str] = {key: info.label for key, info in SOURCE_CATALOG.items()}
+
+
+def parse_source_key(key: str) -> tuple[str, str | None]:
+    """Splits a catalog key into its base key and symbol override. Plain
+    BTC keys ("binance_spot") have no colon and resolve to (key, None) --
+    today's meaning, unchanged. A compound key ("binance_spot:ETH") is an
+    extra-symbol request: (base_key, short_symbol)."""
+    base_key, sep, symbol = key.partition(":")
+    return (base_key, symbol) if sep else (key, None)
+
+
+# Base keys that have a parameterized source class and can run for a symbol
+# other than BTC (see parse_source_key/MarketDataGateway.extra_sources).
+# binance_futures_liquidations is handled separately below: it's a single
+# shared all-symbols connection, not one instance per symbol.
+_EXTRA_SOURCE_CLASSES: dict[str, type] = {
+    "binance_spot": BinanceSpotSource,
+    "binance_spot_dom": BinanceSpotFullDepthSource,
+    "binance_futures_dom": BinanceFuturesDepthSource,
+    "binance_futures_mark_price": BinanceFuturesMarkPriceRestSource,
+    "binance_futures_trade": BinanceFuturesTradeRestSource,
+    "binance_futures_kline": BinanceFuturesKlineRestSource,
+    "binance_futures_ticker": BinanceFuturesTicker24hRestSource,
+}
+
+# Which market (spot/futures) each extra-symbol-capable base key needs a
+# real listing in, to decide which symbols can offer it. Includes
+# binance_futures_liquidations even though it's built specially (one shared
+# connection, see MarketDataGateway.__init__) -- it's still futures-scoped
+# for catalog purposes. binance_futures_open_interest_long_short has no
+# parameterized *live* source class (absent from _EXTRA_SOURCE_CLASSES
+# above), but that's harmless here: its SOURCE_CATALOG template is
+# mode="access", replace(template, asset=symbol) propagates that to every
+# generated entry, and runs.py enforces mode server-side at run start (an
+# access-only key is dropped from a collect run and vice versa) -- so a
+# generated entry for it can only ever be run through the historical
+# fetcher, never through MarketDataGateway's live construction path.
+_EXTRA_BASE_KEY_MARKET: dict[str, str] = {
+    "binance_spot": "spot",
+    "binance_spot_dom": "spot",
+    "binance_futures_trade": "futures",
+    "binance_futures_dom": "futures",
+    "binance_futures_mark_price": "futures",
+    "binance_futures_liquidations": "futures",
+    "binance_futures_kline": "futures",
+    "binance_futures_ticker": "futures",
+    "binance_futures_open_interest_long_short": "futures",
+}
+
+
+def build_extra_catalog(catalog: SymbolCatalog) -> dict[str, SourceInfo]:
+    """Generates one SourceInfo per (base key, symbol) pair for every
+    Binance symbol `catalog` lists as tradable in that base key's market --
+    same label/description/tag as BTC's own entry for that base key (so
+    "Par tag" groups them together), asset=symbol. BTC itself is skipped
+    here since it already has its own static SOURCE_CATALOG entries."""
+    entries: dict[str, SourceInfo] = {}
+    for base_key, market in _EXTRA_BASE_KEY_MARKET.items():
+        template = SOURCE_CATALOG[base_key]
+        symbols = catalog.spot if market == "spot" else catalog.futures
+        for symbol in sorted(symbols):
+            if symbol == "BTC":
+                continue
+            entries[f"{base_key}:{symbol}"] = replace(template, asset=symbol)
+    return entries
+
+
 class MarketDataGateway:
     def __init__(
         self,
@@ -57,10 +289,18 @@ class MarketDataGateway:
         *,
         start_live_sources: bool = True,
         start_market_discovery: bool = True,
+        enabled_sources: frozenset[str] | None = None,
     ) -> None:
+        """enabled_sources restricts which built-in feeds actually connect.
+        None (the default) means every feed -- existing callers (run/smoke/
+        live) are unaffected. A non-None set is intersected against
+        SOURCE_KEYS; unknown keys are silently ignored so a stale UI
+        selection can't crash collection. Used by the control panel to run
+        a user-picked subset for a data-collection export."""
         self.config = config
         self.start_live_sources = start_live_sources
         self.start_market_discovery = start_market_discovery
+        self.enabled_sources = enabled_sources
         self.bus = EventBus(
             config.queues.state_capacity,
             config.queues.storage_capacity,
@@ -125,6 +365,92 @@ class MarketDataGateway:
             None,
             self.health_registry,
         )
+        self.spot_full_depth = BinanceSpotFullDepthSource(
+            config,
+            self._publish_source,
+            lambda: 0,
+            None,
+            self.health_registry,
+        )
+        self.futures_depth = BinanceFuturesDepthSource(
+            config,
+            self._publish_source,
+            lambda: 0,
+            None,
+            self.health_registry,
+        )
+        self.futures_mark_price = BinanceFuturesMarkPriceRestSource(
+            config,
+            self._publish_source,
+            lambda: 0,
+            None,
+            self.health_registry,
+        )
+        self.futures_liquidations = BinanceFuturesLiquidationSource(
+            config,
+            self._publish_source,
+            lambda: 0,
+            None,
+            self.health_registry,
+        )
+        self.futures_rest = BinanceFuturesRestPoller(
+            config,
+            self._publish_source,
+            lambda: 0,
+            None,
+            self.health_registry,
+        )
+        self.futures_trade = BinanceFuturesTradeRestSource(
+            config,
+            self._publish_source,
+            lambda: 0,
+            None,
+            self.health_registry,
+        )
+        self.futures_kline = BinanceFuturesKlineRestSource(
+            config,
+            self._publish_source,
+            lambda: 0,
+            None,
+            self.health_registry,
+        )
+        self.futures_ticker = BinanceFuturesTicker24hRestSource(
+            config,
+            self._publish_source,
+            lambda: 0,
+            None,
+            self.health_registry,
+        )
+        # Extra (non-BTC) symbols requested via compound enabled_sources keys
+        # ("binance_spot:ETH"). Empty unless enabled_sources explicitly names
+        # one -- enabled_sources=None (every CLI caller except the control
+        # panel) means "all 9 BTC sources, exactly as before", never "and
+        # every extra symbol too". Published through _publish_extra_source,
+        # which bypasses state_queue entirely (see EventBus.publish_storage_only)
+        # so these events never reach StateStore/the BTC composite snapshot.
+        self.extra_sources: dict[str, object] = {}
+        if enabled_sources:
+            liquidation_symbols: set[str] = set()
+            for key in enabled_sources:
+                base_key, short_symbol = parse_source_key(key)
+                if short_symbol is None:
+                    continue
+                pair = f"{short_symbol.upper()}USDT"
+                if base_key == "binance_futures_liquidations":
+                    liquidation_symbols.add(pair)
+                    continue
+                source_class = _EXTRA_SOURCE_CLASSES.get(base_key)
+                if source_class is None:
+                    continue
+                self.extra_sources[key] = source_class(
+                    config, self._publish_extra_source, lambda: 0, None, self.health_registry,
+                    symbol=pair,
+                )
+            if liquidation_symbols:
+                self.extra_sources["binance_futures_liquidations:*"] = BinanceFuturesLiquidationSource(
+                    config, self._publish_extra_source, lambda: 0, None, self.health_registry,
+                    symbol_filters=frozenset(liquidation_symbols),
+                )
         resolver = MarketResolver(GammaClient())
         controller = TransitionController(resolver)
         transition_log = config.storage.data_dir / "market_discovery" / "transitions.jsonl"
@@ -138,11 +464,27 @@ class MarketDataGateway:
     def next_sequence(self) -> int:
         return next(self._sequence)
 
+    def _source_enabled(self, key: str) -> bool:
+        return self.enabled_sources is None or key in self.enabled_sources
+
     async def _publish_source(self, event: MarketDataEvent) -> None:
         """Allocate sequence numbers only for valid events submitted to the bus."""
         accepted = await self.bus.publish(event, self.next_sequence)
         if accepted:
             self.event_counts[event.stream] += 1
+
+    async def _publish_extra_source(self, event: MarketDataEvent) -> None:
+        """Same bookkeeping as _publish_source, but for extra (non-BTC)
+        symbols: goes to storage_queue only (see publish_storage_only's
+        docstring for why), and records connection health itself since
+        StateStore.apply -- the only other place record_message() normally
+        gets called -- never sees these events."""
+        accepted = await self.bus.publish_storage_only(event, self.next_sequence)
+        if accepted:
+            self.event_counts[event.stream] += 1
+            self.health_registry.record_message(
+                event.source, event.received_wall_timestamp_ns, instrument=event.instrument,
+            )
 
     def market_discovery_callback(self, snapshot: TimeframeSnapshot) -> None:
         self.bus.publish_market_state_nowait(snapshot)
@@ -367,16 +709,40 @@ class MarketDataGateway:
                 "rtds": self.chainlink.connected,
                 "binance": self.binance.connected,
                 "clob": self.clob.connected,
+                "binance_spot_full_depth": self.spot_full_depth.connected,
+                "binance_futures_depth": self.futures_depth.connected,
+                "binance_futures_mark_price": self.futures_mark_price.connected,
+                "binance_futures_liquidations": self.futures_liquidations.connected,
+                "binance_futures_rest": self.futures_rest.connected,
+                "binance_futures_trade": self.futures_trade.connected,
+                "binance_futures_kline": self.futures_kline.connected,
+                "binance_futures_ticker": self.futures_ticker.connected,
             },
             "reconnect_count": (
                 self.chainlink.reconnect_count
                 + self.binance.reconnect_count
                 + self.clob.reconnect_count
+                + self.spot_full_depth.reconnect_count
+                + self.futures_depth.reconnect_count
+                + self.futures_mark_price.reconnect_count
+                + self.futures_liquidations.reconnect_count
+                + self.futures_rest.reconnect_count
+                + self.futures_trade.reconnect_count
+                + self.futures_kline.reconnect_count
+                + self.futures_ticker.reconnect_count
             ),
             "invalid_message_count": (
                 self.chainlink.invalid_count
                 + self.binance.invalid_count
                 + self.clob.invalid_count
+                + self.spot_full_depth.invalid_count
+                + self.futures_depth.invalid_count
+                + self.futures_mark_price.invalid_count
+                + self.futures_liquidations.invalid_count
+                + self.futures_rest.invalid_count
+                + self.futures_trade.invalid_count
+                + self.futures_kline.invalid_count
+                + self.futures_ticker.invalid_count
             ),
             "duplicate_count": sum(
                 row.duplicate_count
@@ -507,10 +873,31 @@ class MarketDataGateway:
         self._spawn(self._snapshot_scheduler(), "market-data-snapshot-scheduler")
         self._spawn(self._health_writer(), "market-data-health")
         if self.start_live_sources:
-            self._spawn(self.chainlink.run(), "market-data-rtds")
-            self._spawn(self.binance.run(), "market-data-binance")
-            self._spawn(self.clob.run(), "market-data-clob")
-        if self.start_market_discovery:
+            if self._source_enabled("chainlink"):
+                self._spawn(self.chainlink.run(), "market-data-rtds")
+            if self._source_enabled("binance_spot"):
+                self._spawn(self.binance.run(), "market-data-binance")
+            if self._source_enabled("polymarket"):
+                self._spawn(self.clob.run(), "market-data-clob")
+            if self._source_enabled("binance_spot_dom"):
+                self._spawn(self.spot_full_depth.run(), "market-data-spot-full-depth")
+            if self._source_enabled("binance_futures_dom"):
+                self._spawn(self.futures_depth.run(), "market-data-futures-depth")
+            if self._source_enabled("binance_futures_mark_price"):
+                self._spawn(self.futures_mark_price.run(), "market-data-futures-mark-price")
+            if self._source_enabled("binance_futures_liquidations"):
+                self._spawn(self.futures_liquidations.run(), "market-data-futures-liquidations")
+            if self._source_enabled("binance_futures_open_interest_long_short"):
+                self._spawn(self.futures_rest.run(), "market-data-futures-rest")
+            if self._source_enabled("binance_futures_trade"):
+                self._spawn(self.futures_trade.run(), "market-data-futures-trade")
+            if self._source_enabled("binance_futures_kline"):
+                self._spawn(self.futures_kline.run(), "market-data-futures-kline")
+            if self._source_enabled("binance_futures_ticker"):
+                self._spawn(self.futures_ticker.run(), "market-data-futures-ticker")
+            for key, source in self.extra_sources.items():
+                self._spawn(source.run(), f"market-data-extra-{key}")
+        if self.start_market_discovery and self._source_enabled("polymarket"):
             self._spawn(self.discovery.run_forever(), "market-discovery")
         return self
 
@@ -541,6 +928,15 @@ class MarketDataGateway:
             self.chainlink.stop(),
             self.binance.stop(),
             self.clob.stop(),
+            self.spot_full_depth.stop(),
+            self.futures_depth.stop(),
+            self.futures_mark_price.stop(),
+            self.futures_liquidations.stop(),
+            self.futures_rest.stop(),
+            self.futures_trade.stop(),
+            self.futures_kline.stop(),
+            self.futures_ticker.stop(),
+            *(source.stop() for source in self.extra_sources.values()),
         )
         for task in self._tasks:
             if task.get_name() in {
@@ -548,10 +944,18 @@ class MarketDataGateway:
                 "market-data-rtds",
                 "market-data-binance",
                 "market-data-clob",
+                "market-data-spot-full-depth",
+                "market-data-futures-depth",
+                "market-data-futures-mark-price",
+                "market-data-futures-liquidations",
+                "market-data-futures-rest",
+                "market-data-futures-trade",
+                "market-data-futures-kline",
+                "market-data-futures-ticker",
                 "market-data-snapshot-publisher",
                 "market-data-snapshot-scheduler",
                 "market-data-health",
-            }:
+            } or task.get_name().startswith("market-data-extra-"):
                 task.cancel()
         self._stop.set()
         try:

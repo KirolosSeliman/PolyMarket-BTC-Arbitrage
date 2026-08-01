@@ -60,6 +60,20 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--config", type=Path, default=Path("config/market_data.toml"))
         if name == "smoke":
             command.add_argument("--duration-seconds", type=float, default=120)
+    live = commands.add_parser("live")
+    live.add_argument("--config", type=Path, default=Path("config/market_data.toml"))
+    live.add_argument("--host", default="127.0.0.1")
+    live.add_argument("--port", type=int, default=8765)
+    live.add_argument("--duration-seconds", type=float, default=None)
+    control = commands.add_parser("control")
+    control.add_argument("--config", type=Path, default=Path("config/market_data.toml"))
+    control.add_argument("--host", default="127.0.0.1")
+    control.add_argument("--port", type=int, default=8780)
+    control.add_argument("--collections-dir", type=Path, default=Path("data/collections"))
+    control.add_argument("--plugins-dir", type=Path, default=Path("plugins"))
+    control.add_argument(
+        "--plugin-prompt", type=Path, default=Path("docs/nouveau_plugin_prompt.md"),
+    )
     status = commands.add_parser("status")
     status.add_argument("--health-file", type=Path, required=True)
     replay = commands.add_parser("replay")
@@ -254,6 +268,64 @@ def _replay(input_path: Path, output_path: Path, speed: float) -> int:
     return 0
 
 
+def _live(args: argparse.Namespace) -> int:
+    from .live_view import run_live_view
+
+    config = load_config(args.config)
+    _configure_logging(config.service.log_level)
+    report = asyncio.run(
+        run_live_view(
+            config,
+            host=args.host,
+            port=args.port,
+            duration_seconds=args.duration_seconds,
+        )
+    )
+    print(json.dumps(report, separators=(",", ":")))
+    return 0
+
+
+async def _run_control(
+    config_path: Path, host: str, port: int, collections_dir: Path, plugins_dir: Path,
+    plugin_prompt: Path,
+) -> None:
+    from ..control.runs import CollectionRunManager
+    from ..control.server import ControlPanelServer
+
+    manager = CollectionRunManager(
+        config_path=config_path, collections_dir=collections_dir, plugins_dir=plugins_dir,
+    )
+    server = ControlPanelServer(runs=manager, host=host, port=port, prompt_doc_path=plugin_prompt)
+    await server.start()
+    print(f"control panel ready: {server.url}", flush=True)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for name in ("SIGINT", "SIGTERM"):
+        if hasattr(signal, name):
+            try:
+                loop.add_signal_handler(getattr(signal, name), stop.set)
+            except NotImplementedError:
+                pass
+    try:
+        await stop.wait()
+    finally:
+        if manager.current is not None and manager.current.ended_at_ns is None:
+            manager.stop()
+            if manager.current.task is not None:
+                await asyncio.gather(manager.current.task, return_exceptions=True)
+        await server.stop()
+
+
+def _control(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    _configure_logging(config.service.log_level)
+    asyncio.run(_run_control(
+        args.config, args.host, args.port, args.collections_dir, args.plugins_dir,
+        args.plugin_prompt,
+    ))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -267,6 +339,10 @@ def main(argv: list[str] | None = None) -> int:
             return code
         if args.command == "replay":
             return _replay(args.input, args.output, args.speed)
+        if args.command == "live":
+            return _live(args)
+        if args.command == "control":
+            return _control(args)
         report = asyncio.run(
             _run_gateway(args.config, args.duration_seconds if args.command == "smoke" else None)
         )

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backtest — sélection des données</title>
+<style>
+:root {
+  color-scheme: dark;
+  --surface-0: #0d0d0d; --surface-1: #1a1a19; --surface-2: #212120;
+  --text-1: #ffffff; --text-2: #c3c2b7; --muted: #898781;
+  --border: rgba(255,255,255,0.10); --accent: #3987e5; --grid: #2c2c2a;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --surface-0: #f9f9f7; --surface-1: #fcfcfb; --surface-2: #f2f1ed;
+    --text-1: #0b0b0b; --text-2: #52514e; --muted: #898781;
+    --border: rgba(11,11,11,0.10); --accent: #2a78d6; --grid: #e1e0d9;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--surface-0); color: var(--text-1); font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--surface-1); display: flex; align-items: center; gap: 12px; }
+header a { color: var(--muted); text-decoration: none; font-size: 12px; }
+header h1 { font-size: 14px; margin: 0; }
+main { max-width: 900px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+.panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.run-row {
+  display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px;
+  cursor: pointer;
+}
+.run-row:hover { border-color: var(--accent); }
+.run-row.selected { border-color: var(--accent); background: var(--surface-2); }
+.run-row .id { font-weight: 600; font-size: 12.5px; }
+.run-row .meta { font-size: 11px; color: var(--muted); grid-column: 1 / -1; }
+.run-row .rows { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-2); text-align: right; }
+.empty { color: var(--muted); font-size: 12.5px; padding: 10px 0; }
+button {
+  font: inherit; font-size: 12.5px; color: var(--text-1); background: var(--accent);
+  border: none; border-radius: 6px; padding: 9px 16px; cursor: pointer;
+}
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+.status { font-size: 12px; color: var(--muted); margin-top: 10px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header><a href="/">← retour</a><h1>Backtest — sélection des données</h1></header>
+<main>
+  <div class="panel">
+    <p style="margin-top:0;color:var(--text-2)">Choisis un jeu de données déjà collecté. L'analyseur de backtest n'est pas encore implémenté — cette page ne fait que sélectionner et vérifier le fichier.</p>
+    <div id="runs"></div>
+  </div>
+  <div class="panel">
+    <button id="analyze" disabled>Lancer l'analyse</button>
+    <div class="status" id="status"></div>
+  </div>
+</main>
+<script>
+"use strict";
+let selected = null;
+
+function fmtBytes(n) {
+  if (!n) return "—";
+  const units = ["o", "Ko", "Mo", "Go"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(1) + " " + units[i];
+}
+
+async function load() {
+  const res = await fetch("/api/runs");
+  const data = await res.json();
+  const container = document.getElementById("runs");
+  if (!data.runs.length) {
+    container.innerHTML = '<div class="empty">Aucune collecte terminée pour l\'instant — lance-en une depuis la page Collecte de données.</div>';
+    return;
+  }
+  container.innerHTML = "";
+  data.runs.forEach((run) => {
+    const row = document.createElement("div");
+    row.className = "run-row";
+    row.dataset.runId = run.run_id;
+    row.innerHTML = `
+      <span class="id">${run.run_id}</span>
+      <span class="rows">${run.snapshot_row_count ?? 0} lignes</span>
+      <span class="meta">${(run.sources || []).join(", ")}${run.plugins && run.plugins.length ? " + " + run.plugins.join(", ") : ""}</span>
+      <span class="meta">${run.started_at_utc || "—"} → ${run.ended_at_utc || "en cours"}${run.dataset_file ? " · " + run.dataset_file : " · aucun fichier"}</span>
+    `;
+    row.addEventListener("click", () => {
+      document.querySelectorAll(".run-row").forEach((el) => el.classList.remove("selected"));
+      row.classList.add("selected");
+      selected = run;
+      document.getElementById("analyze").disabled = !run.dataset_file;
+      document.getElementById("status").textContent = "";
+    });
+    container.appendChild(row);
+  });
+}
+
+document.getElementById("analyze").addEventListener("click", () => {
+  if (!selected) return;
+  document.getElementById("status").textContent =
+    `Analyseur de backtest non implémenté — fichier prêt : ${selected.data_dir}/${selected.dataset_file}\n` +
+    `(${selected.snapshot_row_count} snapshots, sources : ${(selected.sources || []).join(", ")})`;
+});
+
+load();
+</script>
+</body>
+</html>

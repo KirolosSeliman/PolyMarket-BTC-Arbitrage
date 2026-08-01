@@ -10,8 +10,13 @@ orders. Custom endpoints are rejected unless
 It combines:
 
 - Polymarket RTDS Chainlink BTC/USD updates;
-- Binance Spot BTCUSDT aggregate trades, best bid/ask, and full depth-20
-  snapshots;
+- Binance Spot BTCUSDT aggregate trades, best bid/ask, full depth-20
+  snapshots, full-depth-reconstructed DOM, 1-minute klines, and rolling 24h
+  statistics -- one combined connection;
+- Binance USDT-M Futures BTCUSDT full-depth DOM, mark price/funding rate,
+  forced liquidations, open interest and long/short ratio (REST poll),
+  aggregate trades, 1-minute klines, and rolling 24h statistics -- one
+  connection per feed;
 - Polymarket CLOB market-channel data for the active and preloaded 5-minute
   and 15-minute Up/Down tokens;
 - the existing Market Discovery state machine.
@@ -34,10 +39,18 @@ bounded queues and are disconnected instead of blocking collection.
 - Binance: `wss://stream.binance.com:9443/stream`
 - CLOB: `wss://ws-subscriptions-clob.polymarket.com/ws/market`
 
-Binance subscribes to `btcusdt@aggTrade`, `btcusdt@bookTicker`, and
-`btcusdt@depth20@100ms` on one combined connection with microsecond timestamps.
-The depth stream is treated as a complete replacement snapshot, never as a
-delta. Binance is proactively reconnected before its 24-hour server limit.
+Binance Spot subscribes to `btcusdt@aggTrade`, `btcusdt@bookTicker`,
+`btcusdt@depth20@100ms`, `btcusdt@kline_1m`, and `btcusdt@ticker` on one
+combined connection with microsecond timestamps. The depth stream is treated
+as a complete replacement snapshot, never as a delta. Binance is proactively
+reconnected before its 24-hour server limit.
+
+Binance USDT-M Futures (`fstream.binance.com`) opens one connection per feed:
+`btcusdt@depth@100ms` (full-depth DOM reconstruction), `btcusdt@markPrice@1s`,
+`!forceOrder@arr` (filtered to BTCUSDT), `btcusdt@aggTrade`,
+`btcusdt@kline_1m`, `btcusdt@ticker`, plus a 5-minute REST poll for open
+interest and the top-trader long/short account ratio -- Binance has no
+WebSocket push for either.
 
 RTDS sends the documented subscription and an application `PING` every five
 seconds. CLOB sends an application `PING` every ten seconds and dynamically

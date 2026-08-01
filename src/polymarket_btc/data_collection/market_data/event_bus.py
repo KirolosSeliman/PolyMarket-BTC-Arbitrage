@@ -54,6 +54,34 @@ class EventBus:
             )
             return True
 
+    async def publish_storage_only(
+        self,
+        event: MarketDataEvent,
+        sequence_allocator: Callable[[], int] | None = None,
+    ) -> bool:
+        """Like publish(), but skips state_queue entirely -- for events whose
+        symbol the state reducer isn't built to represent (see StateStore):
+        they still get archived, they just never reach the BTC composite
+        snapshot pipeline, which would otherwise silently overwrite its
+        single-symbol fields with whichever event arrived last."""
+        if self.closed:
+            raise BackpressureFatalError("event bus is closed")
+        async with self._publish_lock:
+            if sequence_allocator is not None:
+                event = replace(event, ingest_sequence=sequence_allocator())
+            deadline = time.monotonic() + self.put_timeout_seconds
+            while self.storage_queue.full():
+                if time.monotonic() >= deadline:
+                    raise BackpressureFatalError(
+                        "storage queue remained full past the deadline"
+                    )
+                await asyncio.sleep(0.001)
+            self.storage_queue.put_nowait(event)
+            self.high_water["storage"] = max(
+                self.high_water["storage"], self.storage_queue.qsize()
+            )
+            return True
+
     def publish_market_state_nowait(self, snapshot: object) -> None:
         if self.closed:
             raise BackpressureFatalError("event bus is closed")

@@ -57,6 +57,14 @@ class EventSource(str, Enum):
     CHAINLINK_RTDS = "chainlink_rtds"
     BINANCE_SPOT = "binance_spot"
     POLYMARKET_CLOB = "polymarket_clob"
+    BINANCE_SPOT_FULL_DEPTH = "binance_spot_full_depth"
+    BINANCE_FUTURES_DEPTH = "binance_futures_depth"
+    BINANCE_FUTURES_MARK_PRICE = "binance_futures_mark_price"
+    BINANCE_FUTURES_LIQUIDATIONS = "binance_futures_liquidations"
+    BINANCE_FUTURES_REST = "binance_futures_rest"
+    BINANCE_FUTURES_TRADE = "binance_futures_trade"
+    BINANCE_FUTURES_KLINE = "binance_futures_kline"
+    BINANCE_FUTURES_TICKER = "binance_futures_ticker"
 
 
 class EventStream(str, Enum):
@@ -73,6 +81,15 @@ class EventStream(str, Enum):
     POLYMARKET_LAST_TRADE = "polymarket_last_trade"
     POLYMARKET_TICK_SIZE_CHANGE = "polymarket_tick_size_change"
     POLYMARKET_MARKET_RESOLVED = "polymarket_market_resolved"
+    BINANCE_SPOT_DOM_SNAPSHOT = "binance_spot_dom_snapshot"
+    BINANCE_FUTURES_DOM_SNAPSHOT = "binance_futures_dom_snapshot"
+    BINANCE_FUTURES_MARK_PRICE = "binance_futures_mark_price"
+    BINANCE_FUTURES_LIQUIDATION = "binance_futures_liquidation"
+    BINANCE_FUTURES_OPEN_INTEREST = "binance_futures_open_interest"
+    BINANCE_FUTURES_LONG_SHORT_RATIO = "binance_futures_long_short_ratio"
+    BINANCE_FUTURES_AGG_TRADE = "binance_futures_agg_trade"
+    BINANCE_KLINE = "binance_kline"
+    BINANCE_TICKER_24H = "binance_ticker_24h"
 
 
 class TakerSide(str, Enum):
@@ -106,6 +123,20 @@ def parse_decimal(
         raise ValueError(f"{field_name} must be positive")
     if parsed == 0 and not allow_zero and not strictly_positive:
         return parsed
+    return parsed
+
+
+def parse_signed_decimal(value: str, field_name: str) -> Decimal:
+    """Like parse_decimal, but permits negative values (funding rate, price
+    change, and price-change-percent can all be negative)."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a decimal string")
+    try:
+        parsed = Decimal(value)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field_name} is not a valid decimal") from exc
+    if not parsed.is_finite():
+        raise ValueError(f"{field_name} must be finite")
     return parsed
 
 
@@ -203,6 +234,81 @@ class PolymarketResolvedPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class DomBucketPayload:
+    price: Decimal  # bucket floor price
+    bid_quantity: Decimal
+    ask_quantity: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceDomSnapshotPayload:
+    market: str  # "spot" or "futures"
+    mid_price: Decimal
+    bucket_size: Decimal
+    buckets: tuple[DomBucketPayload, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceFuturesMarkPricePayload:
+    mark_price: Decimal
+    index_price: Decimal
+    funding_rate: Decimal
+    next_funding_time_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceFuturesLiquidationPayload:
+    symbol: str
+    side: str
+    price: Decimal
+    quantity: Decimal
+    average_price: Decimal
+    order_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceFuturesOpenInterestPayload:
+    open_interest: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceFuturesLongShortRatioPayload:
+    long_account_ratio: Decimal
+    short_account_ratio: Decimal
+    long_short_ratio: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceKlinePayload:
+    market: str  # "spot" or "futures"
+    interval: str
+    open_time_ns: int
+    close_time_ns: int
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    base_volume: Decimal
+    quote_volume: Decimal
+    trade_count: int
+    is_closed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceTicker24hPayload:
+    market: str  # "spot" or "futures"
+    price_change: Decimal
+    price_change_percent: Decimal
+    weighted_avg_price: Decimal
+    last_price: Decimal
+    open_price: Decimal
+    high_price: Decimal
+    low_price: Decimal
+    base_volume: Decimal
+    quote_volume: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class SourceHealthSnapshot:
     connected: bool
     stale: bool
@@ -272,6 +378,13 @@ EventPayload: TypeAlias = (
     | MarketWindowStatePayload
     | SourceStatusPayload
     | SnapshotTickPayload
+    | BinanceDomSnapshotPayload
+    | BinanceFuturesMarkPricePayload
+    | BinanceFuturesLiquidationPayload
+    | BinanceFuturesOpenInterestPayload
+    | BinanceFuturesLongShortRatioPayload
+    | BinanceKlinePayload
+    | BinanceTicker24hPayload
 )
 
 
@@ -387,6 +500,19 @@ class MarketDataSnapshot:
     health: tuple[tuple[EventSource, SourceHealthSnapshot], ...]
     ready_for_strategy: bool
     not_ready_reasons: tuple[str, ...]
+    spot_dom: BinanceDomSnapshotPayload | None = None
+    futures_dom: BinanceDomSnapshotPayload | None = None
+    futures_mark_price: BinanceFuturesMarkPricePayload | None = None
+    futures_open_interest: BinanceFuturesOpenInterestPayload | None = None
+    futures_long_short_ratio: BinanceFuturesLongShortRatioPayload | None = None
+    futures_last_liquidation: BinanceFuturesLiquidationPayload | None = None
+    futures_last_trade: BinanceAggTradePayload | None = None
+    spot_recent_trades: tuple[BinanceAggTradePayload, ...] = ()
+    futures_recent_trades: tuple[BinanceAggTradePayload, ...] = ()
+    spot_kline: BinanceKlinePayload | None = None
+    futures_kline: BinanceKlinePayload | None = None
+    spot_ticker_24h: BinanceTicker24hPayload | None = None
+    futures_ticker_24h: BinanceTicker24hPayload | None = None
 
 
 def _jsonable(value: object) -> object:
@@ -479,7 +605,7 @@ def event_from_dict(value: dict[str, object]) -> MarketDataEvent:
             str(raw_payload["symbol"]),
             Decimal(str(raw_payload["price"])),
         )
-    elif stream is EventStream.BINANCE_AGG_TRADE:
+    elif stream in (EventStream.BINANCE_AGG_TRADE, EventStream.BINANCE_FUTURES_AGG_TRADE):
         payload = BinanceAggTradePayload(
             str(raw_payload["symbol"]),
             int(raw_payload["aggregate_trade_id"]),
@@ -489,6 +615,74 @@ def event_from_dict(value: dict[str, object]) -> MarketDataEvent:
             int(raw_payload["last_trade_id"]),
             int(raw_payload["trade_timestamp_ns"]),
             TakerSide(str(raw_payload["taker_side"])),
+        )
+    elif stream is EventStream.BINANCE_KLINE:
+        payload = BinanceKlinePayload(
+            str(raw_payload["market"]),
+            str(raw_payload["interval"]),
+            int(raw_payload["open_time_ns"]),
+            int(raw_payload["close_time_ns"]),
+            Decimal(str(raw_payload["open"])),
+            Decimal(str(raw_payload["high"])),
+            Decimal(str(raw_payload["low"])),
+            Decimal(str(raw_payload["close"])),
+            Decimal(str(raw_payload["base_volume"])),
+            Decimal(str(raw_payload["quote_volume"])),
+            int(raw_payload["trade_count"]),
+            bool(raw_payload["is_closed"]),
+        )
+    elif stream is EventStream.BINANCE_TICKER_24H:
+        payload = BinanceTicker24hPayload(
+            str(raw_payload["market"]),
+            Decimal(str(raw_payload["price_change"])),
+            Decimal(str(raw_payload["price_change_percent"])),
+            Decimal(str(raw_payload["weighted_avg_price"])),
+            Decimal(str(raw_payload["last_price"])),
+            Decimal(str(raw_payload["open_price"])),
+            Decimal(str(raw_payload["high_price"])),
+            Decimal(str(raw_payload["low_price"])),
+            Decimal(str(raw_payload["base_volume"])),
+            Decimal(str(raw_payload["quote_volume"])),
+        )
+    elif stream in (EventStream.BINANCE_SPOT_DOM_SNAPSHOT, EventStream.BINANCE_FUTURES_DOM_SNAPSHOT):
+        payload = BinanceDomSnapshotPayload(
+            str(raw_payload["market"]),
+            Decimal(str(raw_payload["mid_price"])),
+            Decimal(str(raw_payload["bucket_size"])),
+            tuple(
+                DomBucketPayload(
+                    Decimal(str(bucket["price"])),
+                    Decimal(str(bucket["bid_quantity"])),
+                    Decimal(str(bucket["ask_quantity"])),
+                )
+                for bucket in raw_payload["buckets"]  # type: ignore[union-attr]
+            ),
+        )
+    elif stream is EventStream.BINANCE_FUTURES_MARK_PRICE:
+        payload = BinanceFuturesMarkPricePayload(
+            Decimal(str(raw_payload["mark_price"])),
+            Decimal(str(raw_payload["index_price"])),
+            Decimal(str(raw_payload["funding_rate"])),
+            int(raw_payload["next_funding_time_ns"]),
+        )
+    elif stream is EventStream.BINANCE_FUTURES_LIQUIDATION:
+        payload = BinanceFuturesLiquidationPayload(
+            str(raw_payload["symbol"]),
+            str(raw_payload["side"]),
+            Decimal(str(raw_payload["price"])),
+            Decimal(str(raw_payload["quantity"])),
+            Decimal(str(raw_payload["average_price"])),
+            str(raw_payload["order_status"]),
+        )
+    elif stream is EventStream.BINANCE_FUTURES_OPEN_INTEREST:
+        payload = BinanceFuturesOpenInterestPayload(
+            Decimal(str(raw_payload["open_interest"])),
+        )
+    elif stream is EventStream.BINANCE_FUTURES_LONG_SHORT_RATIO:
+        payload = BinanceFuturesLongShortRatioPayload(
+            Decimal(str(raw_payload["long_account_ratio"])),
+            Decimal(str(raw_payload["short_account_ratio"])),
+            Decimal(str(raw_payload["long_short_ratio"])),
         )
     elif stream is EventStream.BINANCE_BOOK_TICKER:
         payload = BinanceBookTickerPayload(

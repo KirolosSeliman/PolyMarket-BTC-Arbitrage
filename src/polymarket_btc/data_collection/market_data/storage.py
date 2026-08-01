@@ -20,8 +20,17 @@ from .models import (
     MarketDataEvent,
     PriceLevel,
     MarketDataSnapshot,
+    BinanceAggTradePayload,
     BinanceSnapshot,
+    BinanceDomSnapshotPayload,
+    BinanceFuturesLiquidationPayload,
+    BinanceFuturesLongShortRatioPayload,
+    BinanceFuturesMarkPricePayload,
+    BinanceFuturesOpenInterestPayload,
+    BinanceKlinePayload,
+    BinanceTicker24hPayload,
     ChainlinkSnapshot,
+    DomBucketPayload,
     OrderBookSnapshot,
     PolymarketSnapshot,
     PolymarketTimeframeSnapshot,
@@ -137,7 +146,7 @@ class RawEventStorage:
         self.zstd_level = zstd_level
         self.rotate_seconds = rotate_seconds
         self.rotate_bytes = rotate_bytes
-        self._segments: dict[tuple[str, str], _RawSegment] = {}
+        self._segments: dict[tuple[str, str, str], _RawSegment] = {}
         self._manifests: list[Path] = []
 
     def _open(self, event: MarketDataEvent) -> _RawSegment:
@@ -145,6 +154,7 @@ class RawEventStorage:
         directory = (
             self.data_dir / "raw" / f"date={instant:%Y-%m-%d}" / f"hour={instant:%H}"
             / f"source={event.source.value}" / f"stream={event.stream.value}"
+            / f"instrument={event.instrument}"
         )
         directory.mkdir(parents=True, exist_ok=True)
         stem = f"part-{event.received_wall_timestamp_ns}-{uuid.uuid4().hex}"
@@ -156,7 +166,7 @@ class RawEventStorage:
         return _RawSegment(partial, handle, time.monotonic())
 
     def write(self, event: MarketDataEvent) -> None:
-        key = (event.source.value, event.stream.value)
+        key = (event.source.value, event.stream.value, event.instrument)
         segment = self._segments.get(key)
         if segment is None:
             segment = self._segments[key] = self._open(event)
@@ -175,9 +185,11 @@ class RawEventStorage:
         except OSError as exc:
             raise StorageFatalError(f"cannot write raw event: {exc}") from exc
         segment.event_count += 1
-        segment.first_sequence = segment.first_sequence or event.ingest_sequence
+        if segment.first_sequence is None:
+            segment.first_sequence = event.ingest_sequence
         segment.last_sequence = event.ingest_sequence
-        segment.first_received_ns = segment.first_received_ns or event.received_wall_timestamp_ns
+        if segment.first_received_ns is None:
+            segment.first_received_ns = event.received_wall_timestamp_ns
         segment.last_received_ns = event.received_wall_timestamp_ns
         segment.uncompressed_bytes += len(encoded)
 
@@ -612,6 +624,106 @@ def snapshot_from_parquet_row(row: dict[str, object]) -> MarketDataSnapshot:
         )
     chain = value["chainlink"]
     binance = value["binance"]
+
+    def dom(raw: object) -> BinanceDomSnapshotPayload | None:
+        if raw is None:
+            return None
+        return BinanceDomSnapshotPayload(
+            market=str(raw["market"]),
+            mid_price=_decimal(raw["mid_price"]),
+            bucket_size=_decimal(raw["bucket_size"]),
+            buckets=tuple(
+                DomBucketPayload(
+                    _decimal(bucket["price"]), _decimal(bucket["bid_quantity"]), _decimal(bucket["ask_quantity"])
+                )
+                for bucket in raw["buckets"]
+            ),
+        )
+
+    def mark_price(raw: object) -> BinanceFuturesMarkPricePayload | None:
+        if raw is None:
+            return None
+        return BinanceFuturesMarkPricePayload(
+            mark_price=_decimal(raw["mark_price"]),
+            index_price=_decimal(raw["index_price"]),
+            funding_rate=_decimal(raw["funding_rate"]),
+            next_funding_time_ns=int(raw["next_funding_time_ns"]),
+        )
+
+    def open_interest(raw: object) -> BinanceFuturesOpenInterestPayload | None:
+        if raw is None:
+            return None
+        return BinanceFuturesOpenInterestPayload(open_interest=_decimal(raw["open_interest"]))
+
+    def long_short_ratio(raw: object) -> BinanceFuturesLongShortRatioPayload | None:
+        if raw is None:
+            return None
+        return BinanceFuturesLongShortRatioPayload(
+            long_account_ratio=_decimal(raw["long_account_ratio"]),
+            short_account_ratio=_decimal(raw["short_account_ratio"]),
+            long_short_ratio=_decimal(raw["long_short_ratio"]),
+        )
+
+    def agg_trade(raw: object) -> BinanceAggTradePayload | None:
+        if raw is None:
+            return None
+        return BinanceAggTradePayload(
+            symbol=str(raw["symbol"]),
+            aggregate_trade_id=int(raw["aggregate_trade_id"]),
+            price=_decimal(raw["price"]),
+            quantity=_decimal(raw["quantity"]),
+            first_trade_id=int(raw["first_trade_id"]),
+            last_trade_id=int(raw["last_trade_id"]),
+            trade_timestamp_ns=int(raw["trade_timestamp_ns"]),
+            taker_side=TakerSide(str(raw["taker_side"])),
+        )
+
+    def kline(raw: object) -> BinanceKlinePayload | None:
+        if raw is None:
+            return None
+        return BinanceKlinePayload(
+            market=str(raw["market"]),
+            interval=str(raw["interval"]),
+            open_time_ns=int(raw["open_time_ns"]),
+            close_time_ns=int(raw["close_time_ns"]),
+            open=_decimal(raw["open"]),
+            high=_decimal(raw["high"]),
+            low=_decimal(raw["low"]),
+            close=_decimal(raw["close"]),
+            base_volume=_decimal(raw["base_volume"]),
+            quote_volume=_decimal(raw["quote_volume"]),
+            trade_count=int(raw["trade_count"]),
+            is_closed=bool(raw["is_closed"]),
+        )
+
+    def ticker_24h(raw: object) -> BinanceTicker24hPayload | None:
+        if raw is None:
+            return None
+        return BinanceTicker24hPayload(
+            market=str(raw["market"]),
+            price_change=_decimal(raw["price_change"]),
+            price_change_percent=_decimal(raw["price_change_percent"]),
+            weighted_avg_price=_decimal(raw["weighted_avg_price"]),
+            last_price=_decimal(raw["last_price"]),
+            open_price=_decimal(raw["open_price"]),
+            high_price=_decimal(raw["high_price"]),
+            low_price=_decimal(raw["low_price"]),
+            base_volume=_decimal(raw["base_volume"]),
+            quote_volume=_decimal(raw["quote_volume"]),
+        )
+
+    def liquidation(raw: object) -> BinanceFuturesLiquidationPayload | None:
+        if raw is None:
+            return None
+        return BinanceFuturesLiquidationPayload(
+            symbol=str(raw["symbol"]),
+            side=str(raw["side"]),
+            price=_decimal(raw["price"]),
+            quantity=_decimal(raw["quantity"]),
+            average_price=_decimal(raw["average_price"]),
+            order_status=str(raw["order_status"]),
+        )
+
     return MarketDataSnapshot(
         int(value["schema_version"]), int(value["snapshot_sequence"]), int(value["snapshot_timestamp_ns"]),
         market(value.get("market_5m")), market(value.get("market_15m")),
@@ -620,6 +732,19 @@ def snapshot_from_parquet_row(row: dict[str, object]) -> MarketDataSnapshot:
         PolymarketSnapshot(market(value["polymarket"]["five_minutes"]), market(value["polymarket"]["fifteen_minutes"])),
         tuple((EventSource(str(source)), SourceHealthSnapshot(**health)) for source, health in value["health"]),
         bool(value["ready_for_strategy"]), tuple(value["not_ready_reasons"]),
+        spot_dom=dom(value.get("spot_dom")),
+        futures_dom=dom(value.get("futures_dom")),
+        futures_mark_price=mark_price(value.get("futures_mark_price")),
+        futures_open_interest=open_interest(value.get("futures_open_interest")),
+        futures_long_short_ratio=long_short_ratio(value.get("futures_long_short_ratio")),
+        futures_last_liquidation=liquidation(value.get("futures_last_liquidation")),
+        futures_last_trade=agg_trade(value.get("futures_last_trade")),
+        spot_recent_trades=tuple(agg_trade(row) for row in value.get("spot_recent_trades", ())),
+        futures_recent_trades=tuple(agg_trade(row) for row in value.get("futures_recent_trades", ())),
+        spot_kline=kline(value.get("spot_kline")),
+        futures_kline=kline(value.get("futures_kline")),
+        spot_ticker_24h=ticker_24h(value.get("spot_ticker_24h")),
+        futures_ticker_24h=ticker_24h(value.get("futures_ticker_24h")),
     )
 
 

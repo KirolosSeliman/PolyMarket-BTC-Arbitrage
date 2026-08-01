@@ -7,6 +7,7 @@ from polymarket_btc.data_collection.market_data.models import (
 )
 from polymarket_btc.data_collection.market_data.sources.binance_spot import (
     BinanceMessageParser,
+    _streams_for,
     build_combined_url,
 )
 
@@ -31,6 +32,7 @@ class BinanceParserTests(unittest.TestCase):
             build_combined_url("wss://stream.binance.com:9443/stream", True),
             "wss://stream.binance.com:9443/stream?streams="
             "btcusdt@aggTrade/btcusdt@bookTicker/btcusdt@depth20@100ms"
+            "/btcusdt@kline_1m/btcusdt@ticker"
             "&timeUnit=MICROSECOND",
         )
 
@@ -102,6 +104,61 @@ class BinanceParserTests(unittest.TestCase):
                 ingest_sequence=1,
                 now_ns=NOW_NS,
             )
+
+
+class SymbolOverrideTests(unittest.TestCase):
+    """Omitting `symbol` must reproduce today's exact BTC behavior; passing
+    one must fully replace every "BTCUSDT" literal, not just some of them."""
+
+    def test_default_symbol_is_still_btcusdt(self) -> None:
+        parser = BinanceMessageParser("session-1", timestamp_unit="microsecond")
+        self.assertEqual(parser.symbol, "BTCUSDT")
+
+    def test_eth_override_parses_eth_flavored_message_end_to_end(self) -> None:
+        parser = BinanceMessageParser("session-1", timestamp_unit="microsecond", symbol="ethusdt")
+        self.assertEqual(parser.symbol, "ETHUSDT")
+        message = agg_trade()
+        message["stream"] = "ethusdt@aggTrade"
+        message["data"]["s"] = "ETHUSDT"  # type: ignore[index]
+        event = parser.parse(
+            message,
+            received_wall_timestamp_ns=NOW_NS,
+            received_monotonic_ns=1,
+            ingest_sequence=1,
+            now_ns=NOW_NS,
+        )
+        self.assertEqual(event.instrument, "ETHUSDT")
+        self.assertEqual(event.payload.symbol, "ETHUSDT")
+        self.assertIn("ETHUSDT", event.event_id)
+
+    def test_eth_override_rejects_a_btc_flavored_message(self) -> None:
+        # A parser built for ETH must not silently accept BTC data that
+        # happens to arrive on the wrong stream.
+        parser = BinanceMessageParser("session-1", timestamp_unit="microsecond", symbol="ETHUSDT")
+        with self.assertRaises(InvalidEventError):
+            parser.parse(
+                agg_trade(),
+                received_wall_timestamp_ns=NOW_NS,
+                received_monotonic_ns=1,
+                ingest_sequence=1,
+                now_ns=NOW_NS,
+            )
+
+    def test_streams_for_builds_lowercase_symbol_streams(self) -> None:
+        self.assertEqual(
+            _streams_for("ETHUSDT"),
+            (
+                "ethusdt@aggTrade", "ethusdt@bookTicker", "ethusdt@depth20@100ms",
+                "ethusdt@kline_1m", "ethusdt@ticker",
+            ),
+        )
+
+    def test_build_combined_url_accepts_custom_streams(self) -> None:
+        url = build_combined_url(
+            "wss://stream.binance.com:9443/stream", True, streams=_streams_for("ETHUSDT"),
+        )
+        self.assertIn("ethusdt@aggTrade", url)
+        self.assertNotIn("btcusdt", url)
 
 
 if __name__ == "__main__":

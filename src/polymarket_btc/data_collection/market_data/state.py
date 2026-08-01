@@ -17,7 +17,14 @@ from .models import (
     BinanceAggTradePayload,
     BinanceBookTickerPayload,
     BinanceDepth20Payload,
+    BinanceDomSnapshotPayload,
+    BinanceFuturesLiquidationPayload,
+    BinanceFuturesLongShortRatioPayload,
+    BinanceFuturesMarkPricePayload,
+    BinanceFuturesOpenInterestPayload,
+    BinanceKlinePayload,
     BinanceSnapshot,
+    BinanceTicker24hPayload,
     ChainlinkPricePayload,
     ChainlinkSnapshot,
     EventSource,
@@ -140,6 +147,19 @@ class StateStore:
         self._agg_trade: MarketDataEvent | None = None
         self._book_ticker: MarketDataEvent | None = None
         self._depth: MarketDataEvent | None = None
+        self._spot_dom: MarketDataEvent | None = None
+        self._futures_dom: MarketDataEvent | None = None
+        self._futures_mark_price: MarketDataEvent | None = None
+        self._futures_open_interest: MarketDataEvent | None = None
+        self._futures_long_short_ratio: MarketDataEvent | None = None
+        self._futures_last_liquidation: MarketDataEvent | None = None
+        self._futures_trade: MarketDataEvent | None = None
+        self._spot_trades: deque[BinanceAggTradePayload] = deque(maxlen=40)
+        self._futures_trades: deque[BinanceAggTradePayload] = deque(maxlen=40)
+        self._spot_kline: MarketDataEvent | None = None
+        self._futures_kline: MarketDataEvent | None = None
+        self._spot_ticker_24h: MarketDataEvent | None = None
+        self._futures_ticker_24h: MarketDataEvent | None = None
         self._rolling_windows = tuple(
             _RollingAccumulator(seconds) for seconds in (1, 5, 30, 60)
         )
@@ -191,9 +211,6 @@ class StateStore:
             snapshot.attempt_count,
             snapshot.last_error,
         ))
-        self.health_registry.record_connection(
-            EventSource.MARKET_DISCOVERY, None, updated_ns
-        )
 
     @staticmethod
     def _context_window(
@@ -211,6 +228,11 @@ class StateStore:
         )
 
     def _apply_market_state(self, payload: MarketWindowStatePayload) -> None:
+        # The only "connection" signal Market Discovery has is producing a
+        # fresh snapshot -- it has no socket to report SOURCE_STATUS on.
+        self.health_registry.record_connection(
+            EventSource.MARKET_DISCOVERY, None, payload.updated_at_timestamp_ns
+        )
         current = self._context_window(payload.current_market)
         next_market = self._context_window(payload.next_market)
         self._contexts[payload.timeframe] = _TimeframeContext(
@@ -293,12 +315,38 @@ class StateStore:
         elif event.stream is EventStream.BINANCE_AGG_TRADE:
             self._agg_trade = event
             payload = cast(BinanceAggTradePayload, event.payload)
+            self._spot_trades.append(payload)
             for window in self._rolling_windows:
                 window.add(event.received_wall_timestamp_ns, payload)
+        elif event.stream is EventStream.BINANCE_FUTURES_AGG_TRADE:
+            self._futures_trade = event
+            self._futures_trades.append(cast(BinanceAggTradePayload, event.payload))
+        elif event.stream is EventStream.BINANCE_KLINE:
+            if cast(BinanceKlinePayload, event.payload).market == "spot":
+                self._spot_kline = event
+            else:
+                self._futures_kline = event
+        elif event.stream is EventStream.BINANCE_TICKER_24H:
+            if cast(BinanceTicker24hPayload, event.payload).market == "spot":
+                self._spot_ticker_24h = event
+            else:
+                self._futures_ticker_24h = event
         elif event.stream is EventStream.BINANCE_BOOK_TICKER:
             self._book_ticker = event
         elif event.stream is EventStream.BINANCE_DEPTH20:
             self._depth = event
+        elif event.stream is EventStream.BINANCE_SPOT_DOM_SNAPSHOT:
+            self._spot_dom = event
+        elif event.stream is EventStream.BINANCE_FUTURES_DOM_SNAPSHOT:
+            self._futures_dom = event
+        elif event.stream is EventStream.BINANCE_FUTURES_MARK_PRICE:
+            self._futures_mark_price = event
+        elif event.stream is EventStream.BINANCE_FUTURES_OPEN_INTEREST:
+            self._futures_open_interest = event
+        elif event.stream is EventStream.BINANCE_FUTURES_LONG_SHORT_RATIO:
+            self._futures_long_short_ratio = event
+        elif event.stream is EventStream.BINANCE_FUTURES_LIQUIDATION:
+            self._futures_last_liquidation = event
         elif (
             event.source is EventSource.POLYMARKET_CLOB
             and event.asset_id is not None
@@ -560,4 +608,50 @@ class StateStore:
             health_rows,
             not reasons,
             tuple(dict.fromkeys(reasons)),
+            spot_dom=(
+                cast(BinanceDomSnapshotPayload, self._spot_dom.payload)
+                if self._spot_dom else None
+            ),
+            futures_dom=(
+                cast(BinanceDomSnapshotPayload, self._futures_dom.payload)
+                if self._futures_dom else None
+            ),
+            futures_mark_price=(
+                cast(BinanceFuturesMarkPricePayload, self._futures_mark_price.payload)
+                if self._futures_mark_price else None
+            ),
+            futures_open_interest=(
+                cast(BinanceFuturesOpenInterestPayload, self._futures_open_interest.payload)
+                if self._futures_open_interest else None
+            ),
+            futures_long_short_ratio=(
+                cast(BinanceFuturesLongShortRatioPayload, self._futures_long_short_ratio.payload)
+                if self._futures_long_short_ratio else None
+            ),
+            futures_last_liquidation=(
+                cast(BinanceFuturesLiquidationPayload, self._futures_last_liquidation.payload)
+                if self._futures_last_liquidation else None
+            ),
+            futures_last_trade=(
+                cast(BinanceAggTradePayload, self._futures_trade.payload)
+                if self._futures_trade else None
+            ),
+            spot_recent_trades=tuple(reversed(self._spot_trades)),
+            futures_recent_trades=tuple(reversed(self._futures_trades)),
+            spot_kline=(
+                cast(BinanceKlinePayload, self._spot_kline.payload)
+                if self._spot_kline else None
+            ),
+            futures_kline=(
+                cast(BinanceKlinePayload, self._futures_kline.payload)
+                if self._futures_kline else None
+            ),
+            spot_ticker_24h=(
+                cast(BinanceTicker24hPayload, self._spot_ticker_24h.payload)
+                if self._spot_ticker_24h else None
+            ),
+            futures_ticker_24h=(
+                cast(BinanceTicker24hPayload, self._futures_ticker_24h.payload)
+                if self._futures_ticker_24h else None
+            ),
         )

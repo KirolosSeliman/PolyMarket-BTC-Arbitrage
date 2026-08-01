@@ -56,6 +56,26 @@ class RawStorageTests(unittest.TestCase):
                 manifest["sha256"],
             )
 
+    def test_a_segments_first_event_may_have_ingest_sequence_zero(self) -> None:
+        # `segment.first_sequence or event.ingest_sequence` used to be the
+        # write() logic -- falsy for ingest_sequence == 0, so it silently
+        # kept overwriting first_sequence on every later write instead of
+        # staying pinned at 0, and close()'s validation-vs-tracked-metadata
+        # check would then reject the segment outright. Only ever latent in
+        # the live gateway path (its counter starts at 1), but a zero-based
+        # counter (e.g. a fresh itertools.count() per access-mode run) hits
+        # it on the very first event of whichever segment happens first.
+        with tempfile.TemporaryDirectory() as directory:
+            storage = RawEventStorage(Path(directory), zstd_level=3)
+            storage.write(event(0))
+            storage.write(event(1))
+            storage.write(event(2))
+            manifests = storage.close()
+            manifest = json.loads(manifests[0].read_text())
+            self.assertEqual(manifest["first_ingest_sequence"], 0)
+            self.assertEqual(manifest["last_ingest_sequence"], 2)
+            self.assertEqual(manifest["event_count"], 3)
+
     def test_recovery_truncates_partial_line_and_finalizes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "raw" / "date=2026-01-01" / "hour=00"

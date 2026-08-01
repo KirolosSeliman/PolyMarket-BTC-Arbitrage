@@ -18,13 +18,48 @@ stale_after_ms = 10000
 
 [binance]
 url = "wss://stream.binance.com:9443/stream"
+full_depth_url = "wss://stream.binance.com:9443/ws/btcusdt@depth@100ms"
 symbol = "btcusdt"
 agg_trade_stream = "btcusdt@aggTrade"
 book_ticker_stream = "btcusdt@bookTicker"
 depth_stream = "btcusdt@depth20@100ms"
+kline_stream = "btcusdt@kline_1m"
+ticker_stream = "btcusdt@ticker"
 stale_depth_after_ms = 1000
 stale_trade_after_ms = 5000
+stale_full_depth_after_ms = 1000
 proactive_reconnect_seconds = 85800
+
+[binance_futures]
+depth_url = "wss://fstream.binance.com/ws/btcusdt@depth@100ms"
+mark_price_url = "wss://fstream.binance.com/ws/btcusdt@markPrice@1s"
+liquidations_url = "wss://fstream.binance.com/ws/!forceOrder@arr"
+agg_trade_url = "wss://fstream.binance.com/ws/btcusdt@aggTrade"
+kline_url = "wss://fstream.binance.com/ws/btcusdt@kline_1m"
+ticker_url = "wss://fstream.binance.com/ws/btcusdt@ticker"
+symbol = "btcusdt"
+depth_stream = "btcusdt@depth@100ms"
+mark_price_stream = "btcusdt@markPrice@1s"
+agg_trade_stream = "btcusdt@aggTrade"
+kline_stream = "btcusdt@kline_1m"
+ticker_stream = "btcusdt@ticker"
+stale_depth_after_ms = 1000
+stale_mark_price_after_ms = 2000
+proactive_reconnect_seconds = 85800
+rest_poll_interval_seconds = 300.0
+# Binance geo-restricts the aggTrade/markPrice/kline/ticker WebSocket pushes
+# for USDT-M Futures in some jurisdictions (observed for CA/US-egress IPs)
+# while leaving the equivalent REST endpoints open; the gateway polls REST
+# for those four feeds instead of relying on the (there, non-delivering) WS.
+mark_price_poll_interval_seconds = 1.0
+kline_poll_interval_seconds = 2.0
+ticker_poll_interval_seconds = 3.0
+agg_trade_poll_interval_seconds = 2.0
+
+[dom]
+bucket_size = 10
+price_range = 100
+snapshot_interval_ms = 1000
 
 [clob]
 url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"

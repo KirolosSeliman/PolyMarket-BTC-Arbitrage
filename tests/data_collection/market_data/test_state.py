@@ -433,6 +433,16 @@ class StateStoreTests(unittest.TestCase):
         ))
         self.assertTrue(store.snapshot(NOW_NS, 7).market_5m.up.coherent)
 
+    def test_market_window_state_marks_market_discovery_connected(self) -> None:
+        # Market Discovery has no socket to emit SOURCE_STATUS on -- a
+        # fresh MARKET_WINDOW_STATE event is its only "I'm alive" signal.
+        store = StateStore()
+        before = store.health_registry.source_snapshot(EventSource.MARKET_DISCOVERY, NOW_NS)
+        self.assertFalse(before.connected)
+        store.apply(self._market_state_event(Timeframe.FIVE_MINUTES, current_suffix="a"))
+        after = store.health_registry.source_snapshot(EventSource.MARKET_DISCOVERY, NOW_NS)
+        self.assertTrue(after.connected)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,880 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live View — BTC / Polymarket</title>
+<style>
+:root {
+  color-scheme: dark;
+  --surface-0: #0d0d0d;
+  --surface-1: #1a1a19;
+  --surface-2: #212120;
+  --text-1: #ffffff;
+  --text-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --rule: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --bid: #3987e5;
+  --ask: #e66767;
+  --bid-fill: rgba(57, 135, 229, 0.24);
+  --ask-fill: rgba(230, 103, 103, 0.24);
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --surface-0: #f9f9f7;
+    --surface-1: #fcfcfb;
+    --surface-2: #f2f1ed;
+    --text-1: #0b0b0b;
+    --text-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --rule: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --bid: #2a78d6;
+    --ask: #e34948;
+    --bid-fill: rgba(42, 120, 214, 0.16);
+    --ask-fill: rgba(227, 73, 72, 0.16);
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-1);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 { margin: 0; font-weight: 600; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- header ---------- */
+header {
+  position: sticky; top: 0; z-index: 20;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+}
+.header-top {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+}
+h1 { font-size: 14px; letter-spacing: 0.01em; }
+h1 small { color: var(--muted); font-weight: 400; margin-left: 8px; }
+.spacer { flex: 1 1 auto; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.03em; text-transform: uppercase;
+  white-space: nowrap;
+}
+.badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.badge.is-good { color: var(--good); }
+.badge.is-warning { color: var(--warning); }
+.badge.is-critical { color: var(--critical); }
+.badge.is-idle { color: var(--muted); }
+
+button {
+  font: inherit; font-size: 12px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover { color: var(--text-1); border-color: var(--rule); }
+button[aria-pressed="true"] { color: var(--text-1); border-color: var(--warning); }
+
+.health-strip {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px;
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 11px; color: var(--text-2);
+  cursor: default;
+}
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.chip .age { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ---------- layout ---------- */
+main {
+  padding: 14px 16px 40px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  align-items: start;
+}
+.panel {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px 14px;
+  min-width: 0;
+}
+.panel.wide { grid-column: 1 / -1; }
+@media (min-width: 1180px) {
+  .panel.span2 { grid-column: span 2; }
+}
+.panel-head {
+  display: flex; align-items: baseline; gap: 10px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--grid);
+}
+.panel-head h2 { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2); }
+.panel-head .note { font-size: 11px; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+/* ---------- stat tiles ---------- */
+.tiles { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.tile { min-width: 0; }
+.tile .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.tile .value { font-size: 26px; font-weight: 600; line-height: 1.15; margin-top: 2px; }
+.tile .value.sm { font-size: 18px; }
+.tile .sub { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(122px, 1fr)); gap: 8px 14px; }
+.kv > div { min-width: 0; }
+.kv .label { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.kv .value { font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.pos { color: var(--good); }
+.neg { color: var(--critical); }
+.bid-ink { color: var(--bid); }
+.ask-ink { color: var(--ask); }
+.dim { color: var(--muted); }
+
+/* ---------- tables ---------- */
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th {
+  font-size: 10.5px; font-weight: 500; text-align: right;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 0 0 4px; border-bottom: 1px solid var(--grid);
+}
+th:first-child, td:first-child { text-align: left; }
+td { padding: 2px 0; font-size: 12px; text-align: right; color: var(--text-2); }
+tbody tr:hover td { background: var(--surface-2); }
+
+/* ---------- ladders ---------- */
+.ladder { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+.ladder-col { min-width: 0; }
+.ladder-head {
+  display: flex; justify-content: space-between;
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); padding-bottom: 4px; border-bottom: 1px solid var(--grid); margin-bottom: 3px;
+}
+.lvl {
+  position: relative; display: flex; justify-content: space-between;
+  font-size: 12px; font-variant-numeric: tabular-nums;
+  padding: 1px 4px; margin-bottom: 1px; border-radius: 3px;
+  overflow: hidden; color: var(--text-2);
+}
+.lvl .bar { position: absolute; inset: 0 auto 0 0; border-radius: 3px; }
+.lvl.bid .bar { background: var(--bid-fill); right: 0; left: auto; }
+.lvl.ask .bar { background: var(--ask-fill); }
+.lvl > span { position: relative; }
+.lvl .px { font-weight: 600; }
+.lvl.bid .px { color: var(--bid); }
+.lvl.ask .px { color: var(--ask); }
+.lvl:hover { outline: 1px solid var(--rule); }
+
+/* ---------- DOM ---------- */
+.dom-row {
+  display: grid; grid-template-columns: 1fr 74px 1fr;
+  align-items: center; gap: 4px; height: 15px;
+}
+.dom-row.at-mid { background: var(--surface-2); border-radius: 3px; }
+.dom-row .px { font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.dom-row.at-mid .px { color: var(--text-1); font-weight: 600; }
+.dom-bar { height: 9px; border-radius: 3px; }
+.dom-cell { display: flex; align-items: center; min-width: 0; }
+.dom-cell.left { justify-content: flex-end; }
+.dom-cell.left .dom-bar { background: var(--bid); }
+.dom-cell.right .dom-bar { background: var(--ask); }
+
+/* ---------- sparkline ---------- */
+.spark { display: block; width: 100%; height: 88px; margin-top: 14px; overflow: visible; }
+.spark path { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.spark-caption { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 4px; }
+
+/* ---------- klines & trades tape ---------- */
+.kline-grid, .trades-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.kline-col h3, .trades-col h3 {
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2);
+  margin-bottom: 6px;
+}
+.kline-badge {
+  display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: 0.03em;
+  text-transform: uppercase; padding: 1px 6px; border-radius: 4px; margin-left: 6px;
+}
+.kline-badge.closed { color: var(--good); background: color-mix(in srgb, var(--good) 16%, transparent); }
+.kline-badge.forming { color: var(--warning); background: color-mix(in srgb, var(--warning) 16%, transparent); }
+.trade-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 8px;
+  font-size: 12px; font-variant-numeric: tabular-nums; padding: 2px 4px; border-radius: 3px;
+}
+.trade-row:hover { background: var(--surface-2); }
+.trade-row .px { font-weight: 600; }
+.trade-row.buy .px { color: var(--bid); }
+.trade-row.sell .px { color: var(--ask); }
+.trade-row .qty { color: var(--text-2); text-align: right; }
+.trade-row .age { color: var(--muted); text-align: right; min-width: 40px; }
+
+/* ---------- polymarket ---------- */
+.pm-books { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+.pm-book { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px 10px; }
+.pm-book h3 { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2); }
+.pm-quote { display: flex; justify-content: space-between; align-items: baseline; margin: 6px 0 8px; font-variant-numeric: tabular-nums; }
+.pm-quote .side { font-size: 17px; font-weight: 600; }
+.arb-row {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 14px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--grid);
+}
+.countdown { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* ---------- raw json ---------- */
+#raw {
+  display: none; grid-column: 1 / -1;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; margin: 0;
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-2); max-height: 460px; overflow: auto; white-space: pre;
+}
+body.show-raw #raw { display: block; }
+
+.empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
+.reasons { font-size: 11px; color: var(--muted); margin-top: 6px; word-break: break-word; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-top">
+    <h1>Live View<small>Binance spot + futures · Chainlink · Polymarket</small></h1>
+    <span class="badge is-idle" id="stream-badge"><span class="dot"></span><span id="stream-text">connexion…</span></span>
+    <span class="badge is-idle" id="ready-badge"><span class="dot"></span><span id="ready-text">en attente</span></span>
+    <span class="spacer"></span>
+    <span class="num dim" id="meta">—</span>
+    <button id="freeze" aria-pressed="false" title="Gèle l'affichage pour inspecter une valeur">Geler</button>
+    <button id="toggle-raw" aria-pressed="false" title="Affiche la trame JSON brute">JSON</button>
+  </div>
+  <div class="health-strip" id="health"></div>
+  <div class="reasons" id="reasons"></div>
+</header>
+
+<main>
+
+  <section class="panel span2">
+    <div class="panel-head"><h2>Prix BTC</h2><span class="note" id="basis-note">—</span></div>
+    <div class="tiles">
+      <div class="tile">
+        <div class="label">Binance spot · mid</div>
+        <div class="value num" id="spot-mid">—</div>
+        <div class="sub" id="spot-last">—</div>
+      </div>
+      <div class="tile">
+        <div class="label">Futures · mark</div>
+        <div class="value num sm" id="fut-mark">—</div>
+        <div class="sub" id="fut-basis">—</div>
+      </div>
+      <div class="tile">
+        <div class="label">Chainlink · RTDS</div>
+        <div class="value num sm" id="cl-price">—</div>
+        <div class="sub" id="cl-basis">—</div>
+      </div>
+    </div>
+    <svg class="spark" id="spark-mid" viewBox="0 0 300 88" preserveAspectRatio="none" role="img"
+         aria-label="Évolution du mid spot Binance sur la dernière minute"><path id="spark-mid-path"></path></svg>
+    <div class="spark-caption" id="spark-mid-range">mid spot · 60 s</div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Microstructure spot</h2><span class="note" id="spot-note">—</span></div>
+    <div class="kv">
+      <div><div class="label">Best bid</div><div class="value bid-ink" id="spot-bid">—</div></div>
+      <div><div class="label">Best ask</div><div class="value ask-ink" id="spot-ask">—</div></div>
+      <div><div class="label">Spread</div><div class="value" id="spot-spread">—</div></div>
+      <div><div class="label">Microprice</div><div class="value" id="spot-micro">—</div></div>
+      <div><div class="label">Imbalance L1</div><div class="value" id="spot-imb1">—</div></div>
+      <div><div class="label">Imbalance L20</div><div class="value" id="spot-imb20">—</div></div>
+      <div><div class="label">Notionnel bid</div><div class="value bid-ink" id="spot-bidnot">—</div></div>
+      <div><div class="label">Notionnel ask</div><div class="value ask-ink" id="spot-asknot">—</div></div>
+    </div>
+    <table style="margin-top:12px">
+      <thead><tr><th>Fenêtre</th><th>Achat BTC</th><th>Vente BTC</th><th>Delta</th><th>VWAP</th></tr></thead>
+      <tbody id="rolling"></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Futures perpétuel</h2><span class="note" id="fut-note">—</span></div>
+    <div class="kv">
+      <div><div class="label">Dernier trade</div><div class="value" id="fut-last">—</div></div>
+      <div><div class="label">Index</div><div class="value" id="fut-index">—</div></div>
+      <div><div class="label">Funding</div><div class="value" id="fut-funding">—</div></div>
+      <div><div class="label">Prochain funding</div><div class="value" id="fut-next">—</div></div>
+      <div><div class="label">Open interest</div><div class="value" id="fut-oi">—</div></div>
+      <div><div class="label">Long/short</div><div class="value" id="fut-ls">—</div></div>
+      <div><div class="label">Comptes long</div><div class="value" id="fut-long">—</div></div>
+    </div>
+    <div style="margin-top:12px">
+      <div class="label" style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em">Dernière liquidation</div>
+      <div class="value num" id="fut-liq" style="font-size:14px">—</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Carnet spot · 15 niveaux</h2><span class="note" id="depth-note">—</span></div>
+    <div class="ladder">
+      <div class="ladder-col">
+        <div class="ladder-head"><span>Bid</span><span>Qté</span></div>
+        <div id="depth-bids"></div>
+      </div>
+      <div class="ladder-col">
+        <div class="ladder-head"><span>Ask</span><span>Qté</span></div>
+        <div id="depth-asks"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>DOM spot</h2><span class="note" id="dom-spot-note">—</span></div>
+    <div id="dom-spot"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>DOM futures</h2><span class="note" id="dom-fut-note">—</span></div>
+    <div id="dom-futures"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Stats 24h · spot</h2><span class="note" id="t24-spot-note">—</span></div>
+    <div id="t24-spot" class="tiles"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Stats 24h · futures</h2><span class="note" id="t24-fut-note">—</span></div>
+    <div id="t24-futures" class="tiles"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Bougie 1 min</h2><span class="note" id="kline-note">—</span></div>
+    <div class="kline-grid">
+      <div class="kline-col">
+        <h3>Spot</h3>
+        <div id="kline-spot" class="kv"></div>
+      </div>
+      <div class="kline-col">
+        <h3>Futures</h3>
+        <div id="kline-futures" class="kv"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Trades récents</h2><span class="note" id="trades-note">—</span></div>
+    <div class="trades-grid">
+      <div class="trades-col">
+        <h3>Spot</h3>
+        <div id="trades-spot"></div>
+      </div>
+      <div class="trades-col">
+        <h3>Futures</h3>
+        <div id="trades-futures"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel span2" id="pm-5m"></section>
+  <section class="panel span2" id="pm-15m"></section>
+
+  <pre id="raw"></pre>
+</main>
+
+<script>
+"use strict";
+
+const SPARK_POINTS = 240;          // 240 trames à 250 ms = 60 s
+const STALE_STREAM_MS = 3000;
+
+const el = (id) => document.getElementById(id);
+const state = { frozen: false, last: null, midHistory: [], lastFrameAt: 0, fps: 0 };
+
+/* ---------- formatage ---------- */
+const nf = (min, max) => new Intl.NumberFormat("fr-FR", { minimumFractionDigits: min, maximumFractionDigits: max });
+const f2 = nf(2, 2), f0 = nf(0, 0), f3 = nf(3, 3), f4 = nf(4, 4);
+
+const has = (v) => v !== null && v !== undefined && !Number.isNaN(v);
+const px = (v) => has(v) ? f2.format(v) : "—";
+const qty = (v) => has(v) ? (Math.abs(v) >= 1000 ? f0.format(v) : f3.format(v)) : "—";
+const pct = (v, d = 2) => has(v) ? (v * 100).toFixed(d) + " %" : "—";
+// un spread spot tient souvent sous 0,01 bps : la précision suit l'ordre de grandeur
+const bpsValue = (v) => Math.abs(v) < 1 ? v.toFixed(3) : v.toFixed(2);
+const bps = (v) => has(v) ? (v >= 0 ? "+" : "") + bpsValue(v) + " bps" : "—";
+const signed = (v, fmt) => has(v) ? (v >= 0 ? "+" : "") + fmt.format(v) : "—";
+const cents = (v) => has(v) ? (v * 100).toFixed(1) + " ¢" : "—";
+
+function age(ms) {
+  if (!has(ms)) return "—";
+  if (ms < 1000) return Math.round(ms) + " ms";
+  if (ms < 60000) return (ms / 1000).toFixed(1) + " s";
+  return Math.floor(ms / 60000) + " min";
+}
+
+function clock(ms) {
+  if (!has(ms)) return "—";
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return String(Math.floor(total / 60)).padStart(2, "0") + ":" + String(total % 60).padStart(2, "0");
+}
+
+function setSign(node, value, text) {
+  node.textContent = text;
+  node.classList.toggle("pos", has(value) && value > 0);
+  node.classList.toggle("neg", has(value) && value < 0);
+}
+
+/* ---------- réutilisation de lignes (évite le clignotement à 4 Hz) ---------- */
+function syncRows(container, count, factory) {
+  while (container.children.length > count) container.lastElementChild.remove();
+  while (container.children.length < count) container.appendChild(factory());
+  return container.children;
+}
+
+/* ---------- carnets ---------- */
+function makeLevel(side) {
+  const row = document.createElement("div");
+  row.className = "lvl " + side;
+  row.innerHTML = '<div class="bar"></div><span class="px"></span><span class="qty num"></span>';
+  return row;
+}
+
+function renderLadder(container, levels, side) {
+  const rows = syncRows(container, levels.length, () => makeLevel(side));
+  const max = levels.reduce((acc, [, q]) => Math.max(acc, q), 0) || 1;
+  levels.forEach(([price, quantity], index) => {
+    const row = rows[index];
+    row.children[0].style.width = (quantity / max * 100).toFixed(1) + "%";
+    row.children[1].textContent = px(price);
+    row.children[2].textContent = qty(quantity);
+    row.title = `${side === "bid" ? "Bid" : "Ask"} ${px(price)} · ${qty(quantity)} BTC · ${f0.format(price * quantity)} USDT`;
+  });
+  if (!levels.length) container.innerHTML = '<div class="empty">aucune donnée</div>';
+}
+
+function renderDom(container, dom, noteNode) {
+  if (!dom) {
+    container.innerHTML = '<div class="empty">aucune donnée</div>';
+    noteNode.textContent = "—";
+    return;
+  }
+  noteNode.textContent = `mid ${px(dom.mid)} · pas ${f0.format(dom.bucket_size)}`;
+  const buckets = dom.buckets.slice().reverse();   // prix décroissant, comme un carnet
+  const max = buckets.reduce((acc, [, b, a]) => Math.max(acc, b, a), 0) || 1;
+  const rows = syncRows(container, buckets.length, () => {
+    const row = document.createElement("div");
+    row.className = "dom-row";
+    row.innerHTML = '<div class="dom-cell left"><div class="dom-bar"></div></div>'
+      + '<div class="px num"></div>'
+      + '<div class="dom-cell right"><div class="dom-bar"></div></div>';
+    return row;
+  });
+  buckets.forEach(([price, bid, ask], index) => {
+    const row = rows[index];
+    const atMid = price <= dom.mid && dom.mid < price + dom.bucket_size;
+    row.classList.toggle("at-mid", atMid);
+    row.children[0].firstElementChild.style.width = (bid / max * 100).toFixed(1) + "%";
+    row.children[1].textContent = f0.format(price);
+    row.children[2].firstElementChild.style.width = (ask / max * 100).toFixed(1) + "%";
+    row.title = `${f0.format(price)} – ${f0.format(price + dom.bucket_size)} · bid ${qty(bid)} · ask ${qty(ask)} BTC`;
+  });
+}
+
+/* ---------- stats 24h ---------- */
+function renderTicker24h(container, ticker, noteNode) {
+  if (!ticker) {
+    container.innerHTML = '<div class="empty">aucune donnée</div>';
+    noteNode.textContent = "—";
+    return;
+  }
+  const rows = [
+    ["Dernier prix", px(ticker.last_price), ""],
+    ["Variation 24h", signed(ticker.price_change, f2), ticker.price_change >= 0 ? "pos" : "neg"],
+    ["Variation %", (ticker.price_change_percent >= 0 ? "+" : "") + ticker.price_change_percent.toFixed(2) + " %",
+      ticker.price_change_percent >= 0 ? "pos" : "neg"],
+    ["Plus haut", px(ticker.high_price), ""],
+    ["Plus bas", px(ticker.low_price), ""],
+    ["Volume BTC", qty(ticker.base_volume), ""],
+  ];
+  const tiles = syncRows(container, rows.length, () => {
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    tile.innerHTML = '<div class="label"></div><div class="value sm num"></div>';
+    return tile;
+  });
+  rows.forEach(([label, value, tone], index) => {
+    const tile = tiles[index];
+    tile.children[0].textContent = label;
+    tile.children[1].textContent = value;
+    tile.children[1].className = "value sm num " + tone;
+  });
+  noteNode.textContent = `moy. pondérée ${px(ticker.weighted_avg_price)}`;
+}
+
+/* ---------- bougie 1 min ---------- */
+function renderKline(container, kline) {
+  if (!kline) {
+    container.innerHTML = '<div class="empty">aucune donnée</div>';
+    return;
+  }
+  const badge = kline.is_closed
+    ? '<span class="kline-badge closed">clôturée</span>'
+    : '<span class="kline-badge forming">en cours</span>';
+  const change = kline.close - kline.open;
+  const rows = [
+    ["État", badge, true],
+    ["Ouverture", px(kline.open), false],
+    ["Clôture", signed(change, f2) + `  (${px(kline.close)})`, false, change >= 0 ? "pos" : "neg"],
+    ["Haut", px(kline.high), false],
+    ["Bas", px(kline.low), false],
+    ["Volume BTC", qty(kline.base_volume), false],
+    ["Trades", f0.format(kline.trade_count), false],
+  ];
+  const tiles = syncRows(container, rows.length, () => {
+    const row = document.createElement("div");
+    row.innerHTML = '<div class="label"></div><div class="value num"></div>';
+    return row;
+  });
+  rows.forEach(([label, value, isHtml, tone], index) => {
+    const row = tiles[index];
+    row.children[0].textContent = label;
+    if (isHtml) row.children[1].innerHTML = value; else row.children[1].textContent = value;
+    row.children[1].className = "value num " + (tone || "");
+  });
+}
+
+/* ---------- trades récents ---------- */
+function renderTrades(container, trades, nowNs) {
+  if (!trades.length) {
+    container.innerHTML = '<div class="empty">aucun trade</div>';
+    return;
+  }
+  const rows = syncRows(container, trades.length, () => {
+    const row = document.createElement("div");
+    row.innerHTML = '<span class="px num"></span><span class="qty num"></span><span class="age num"></span>';
+    return row;
+  });
+  trades.forEach((trade, index) => {
+    const row = rows[index];
+    row.className = "trade-row " + (trade.taker_side === "buy" ? "buy" : "sell");
+    row.children[0].textContent = px(trade.price);
+    row.children[1].textContent = qty(trade.quantity);
+    row.children[2].textContent = age(Math.max(0, (nowNs - trade.trade_timestamp_ns) / 1e6));
+    row.title = `${trade.taker_side === "buy" ? "achat agressif" : "vente agressive"} · ${px(trade.price)} × ${qty(trade.quantity)} BTC`;
+  });
+}
+
+/* ---------- sparkline ---------- */
+function renderSpark(pathNode, rangeNode, history, label, stroke, format) {
+  if (history.length < 2) {
+    pathNode.removeAttribute("d");
+    rangeNode.textContent = label;
+    return;
+  }
+  const min = Math.min(...history), max = Math.max(...history);
+  const span = max - min || 1;
+  const step = 300 / (history.length - 1);
+  pathNode.setAttribute("d", history
+    .map((value, index) => `${index ? "L" : "M"}${(index * step).toFixed(2)} ${(84 - (value - min) / span * 80).toFixed(2)}`)
+    .join(" "));
+  pathNode.setAttribute("stroke", stroke);
+  rangeNode.textContent = `${label} · bas ${format(min)} · haut ${format(max)}`;
+}
+
+/* ---------- santé des sources ---------- */
+function healthTone(row) {
+  if (!row.connected) return "critical";
+  if (row.stale) return "warning";
+  return "good";
+}
+
+function renderHealth(frame) {
+  const rows = syncRows(el("health"), frame.health.length, () => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.innerHTML = '<span class="dot"></span><span class="name"></span><span class="age"></span>';
+    return chip;
+  });
+  frame.health.forEach((row, index) => {
+    const chip = rows[index];
+    const tone = healthTone(row);
+    chip.children[0].style.background = `var(--${tone})`;
+    chip.children[1].textContent = row.source.replace(/_/g, " ");
+    chip.children[2].textContent = row.connected ? age(row.age_ms) : "hors ligne";
+    chip.title = [
+      row.source,
+      row.connected ? "connecté" : "déconnecté",
+      row.stale ? "données périmées" : "à jour",
+      `reconnexions ${row.reconnects}`,
+      `invalides ${row.invalid}`,
+      `doublons ${row.duplicates}`,
+      `divergences ${row.divergences}`,
+      `erreurs protocole ${row.protocol_errors}`,
+    ].join(" · ");
+  });
+}
+
+/* ---------- Polymarket ---------- */
+function pmTemplate(id, title) {
+  return `
+    <div class="panel-head">
+      <h2>${title}</h2>
+      <span class="note"><span class="countdown" id="${id}-cd">—</span> restant</span>
+    </div>
+    <div class="kv">
+      <div><div class="label">Marché</div><div class="value" id="${id}-market" style="font-size:12px">—</div></div>
+      <div><div class="label">État</div><div class="value" id="${id}-state">—</div></div>
+      <div><div class="label">Somme des mids</div><div class="value" id="${id}-sum">—</div></div>
+    </div>
+    <div class="pm-books">
+      <div class="pm-book">
+        <h3>UP</h3>
+        <div class="pm-quote">
+          <span class="side bid-ink num" id="${id}-up-bid">—</span>
+          <span class="dim num" id="${id}-up-mid">—</span>
+          <span class="side ask-ink num" id="${id}-up-ask">—</span>
+        </div>
+        <div class="ladder">
+          <div class="ladder-col"><div class="ladder-head"><span>Bid</span><span>Qté</span></div><div id="${id}-up-bids"></div></div>
+          <div class="ladder-col"><div class="ladder-head"><span>Ask</span><span>Qté</span></div><div id="${id}-up-asks"></div></div>
+        </div>
+      </div>
+      <div class="pm-book">
+        <h3>DOWN</h3>
+        <div class="pm-quote">
+          <span class="side bid-ink num" id="${id}-down-bid">—</span>
+          <span class="dim num" id="${id}-down-mid">—</span>
+          <span class="side ask-ink num" id="${id}-down-ask">—</span>
+        </div>
+        <div class="ladder">
+          <div class="ladder-col"><div class="ladder-head"><span>Bid</span><span>Qté</span></div><div id="${id}-down-bids"></div></div>
+          <div class="ladder-col"><div class="ladder-head"><span>Ask</span><span>Qté</span></div><div id="${id}-down-asks"></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="arb-row">
+      <div><div class="label">Achat des deux jambes</div><div class="value num" id="${id}-buy">—</div></div>
+      <div><div class="label">Marge à l'achat</div><div class="value num" id="${id}-buyedge">—</div></div>
+      <div><div class="label">Vente des deux jambes</div><div class="value num" id="${id}-sell">—</div></div>
+      <div><div class="label">Marge à la vente</div><div class="value num" id="${id}-selledge">—</div></div>
+    </div>
+    <div class="reasons" id="${id}-reasons"></div>`;
+}
+
+el("pm-5m").innerHTML = pmTemplate("m5", "Polymarket · fenêtre 5 min");
+el("pm-15m").innerHTML = pmTemplate("m15", "Polymarket · fenêtre 15 min");
+
+function renderPolymarket(id, market) {
+  const reasons = el(`${id}-reasons`);
+  if (!market) {
+    el(`${id}-cd`).textContent = "—";
+    el(`${id}-market`).textContent = "aucun marché actif";
+    el(`${id}-state`).textContent = "—";
+    reasons.textContent = "";
+    return;
+  }
+  el(`${id}-cd`).textContent = clock(market.remaining_ms);
+  el(`${id}-market`).textContent = market.market_id ?? "—";
+  el(`${id}-market`).title = `condition ${market.condition_id ?? "—"}`;
+  el(`${id}-state`).textContent = market.resolved ? "résolu" : (market.ready ? "prêt" : "incomplet");
+  el(`${id}-state`).className = "value " + (market.ready ? "pos" : "dim");
+  el(`${id}-sum`).textContent = has(market.mid_sum) ? f4.format(market.mid_sum) : "—";
+
+  for (const side of ["up", "down"]) {
+    const book = market[side];
+    el(`${id}-${side}-bid`).textContent = book ? cents(book.best_bid) : "—";
+    el(`${id}-${side}-ask`).textContent = book ? cents(book.best_ask) : "—";
+    el(`${id}-${side}-mid`).textContent = book && has(book.mid) ? `mid ${cents(book.mid)}` : "—";
+    renderLadder(el(`${id}-${side}-bids`), book ? book.bids : [], "bid");
+    renderLadder(el(`${id}-${side}-asks`), book ? book.asks : [], "ask");
+  }
+
+  el(`${id}-buy`).textContent = has(market.buy_both_cost) ? f4.format(market.buy_both_cost) : "—";
+  el(`${id}-sell`).textContent = has(market.sell_both_credit) ? f4.format(market.sell_both_credit) : "—";
+  setSign(el(`${id}-buyedge`), market.buy_both_edge, cents(market.buy_both_edge));
+  setSign(el(`${id}-selledge`), market.sell_both_edge, cents(market.sell_both_edge));
+  reasons.textContent = market.not_ready.length ? "blocages : " + market.not_ready.join(", ") : "";
+}
+
+/* ---------- rendu principal ---------- */
+function render(frame) {
+  const spot = frame.spot, fut = frame.futures, basis = frame.basis;
+
+  el("meta").textContent = `#${frame.seq} · ${state.fps.toFixed(1)} trames/s`;
+  const readyBadge = el("ready-badge");
+  readyBadge.className = "badge " + (frame.ready ? "is-good" : "is-warning");
+  el("ready-text").textContent = frame.ready ? "prêt" : `${frame.not_ready.length} blocage(s)`;
+  el("reasons").textContent = frame.not_ready.length ? "non prêt : " + frame.not_ready.join(", ") : "";
+  renderHealth(frame);
+
+  el("spot-mid").textContent = px(spot.mid);
+  el("spot-last").textContent = has(spot.last)
+    ? `dernier ${px(spot.last)} · ${spot.taker_side === "buy" ? "achat agressif" : spot.taker_side === "sell" ? "vente agressive" : "—"}`
+    : "—";
+  el("fut-mark").textContent = px(fut.mark);
+  setSign(el("fut-basis"), basis.futures_minus_spot,
+    has(basis.futures_minus_spot) ? `${signed(basis.futures_minus_spot, f2)} vs spot · ${bps(basis.futures_minus_spot_bps)}` : "—");
+  el("cl-price").textContent = px(frame.chainlink.price);
+  setSign(el("cl-basis"), basis.chainlink_minus_spot,
+    has(basis.chainlink_minus_spot) ? `${signed(basis.chainlink_minus_spot, f2)} vs spot · ${age(frame.chainlink.age_ms)}` : "—");
+  el("basis-note").textContent = has(basis.futures_minus_spot_bps) ? `base futures ${bps(basis.futures_minus_spot_bps)}` : "—";
+
+  el("spot-bid").textContent = has(spot.bid) ? `${px(spot.bid)}  ×${qty(spot.bid_qty)}` : "—";
+  el("spot-ask").textContent = has(spot.ask) ? `${px(spot.ask)}  ×${qty(spot.ask_qty)}` : "—";
+  el("spot-spread").textContent = has(spot.spread)
+    ? `${f2.format(spot.spread)}${has(spot.spread_bps) ? ` · ${bpsValue(spot.spread_bps)} bps` : ""}`
+    : "—";
+  el("spot-micro").textContent = px(spot.microprice);
+  setSign(el("spot-imb1"), spot.top1_imbalance, pct(spot.top1_imbalance));
+  setSign(el("spot-imb20"), spot.depth_imbalance, pct(spot.depth_imbalance));
+  el("spot-bidnot").textContent = has(spot.bid_notional) ? f0.format(spot.bid_notional) : "—";
+  el("spot-asknot").textContent = has(spot.ask_notional) ? f0.format(spot.ask_notional) : "—";
+  el("spot-note").textContent = has(spot.spread_bps) ? `spread ${bpsValue(spot.spread_bps)} bps` : "—";
+
+  const rollingRows = syncRows(el("rolling"), spot.rolling.length, () => {
+    const row = document.createElement("tr");
+    row.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
+    return row;
+  });
+  spot.rolling.forEach((window, index) => {
+    const cells = rollingRows[index].children;
+    cells[0].textContent = window.seconds + " s";
+    cells[1].textContent = qty(window.buy);
+    cells[1].className = "bid-ink";
+    cells[2].textContent = qty(window.sell);
+    cells[2].className = "ask-ink";
+    const delta = window.buy - window.sell;
+    cells[3].textContent = signed(delta, nf(3, 3));
+    cells[3].className = delta > 0 ? "pos" : delta < 0 ? "neg" : "";
+    cells[4].textContent = px(window.vwap);
+  });
+
+  el("fut-last").textContent = has(fut.last)
+    ? `${px(fut.last)} · ${fut.taker_side === "buy" ? "achat agressif" : fut.taker_side === "sell" ? "vente agressive" : "—"}`
+    : "—";
+  el("fut-index").textContent = px(fut.index);
+  setSign(el("fut-funding"), fut.funding_rate, has(fut.funding_rate) ? (fut.funding_rate * 100).toFixed(4) + " %" : "—");
+  el("fut-next").textContent = has(fut.next_funding_ns)
+    ? clock(fut.next_funding_ns / 1e6 - Date.now()) : "—";
+  el("fut-oi").textContent = has(fut.open_interest) ? f0.format(fut.open_interest) + " BTC" : "—";
+  el("fut-ls").textContent = has(fut.long_short_ratio) ? f3.format(fut.long_short_ratio) : "—";
+  el("fut-long").textContent = pct(fut.long_account_ratio, 1);
+  const liq = fut.last_liquidation;
+  el("fut-liq").textContent = liq
+    ? `${liq.side === "SELL" ? "long liquidé" : "short liquidé"} · ${qty(liq.quantity)} BTC @ ${px(liq.price)}`
+    : "—";
+  el("fut-liq").className = "value num " + (liq ? (liq.side === "SELL" ? "neg" : "pos") : "");
+  el("fut-note").textContent = has(fut.mark) ? `mark ${px(fut.mark)}` : "—";
+
+  renderLadder(el("depth-bids"), spot.bids, "bid");
+  renderLadder(el("depth-asks"), spot.asks, "ask");
+  el("depth-note").textContent = has(spot.mid) ? `mid ${px(spot.mid)}` : "—";
+
+  renderDom(el("dom-spot"), frame.dom.spot, el("dom-spot-note"));
+  renderDom(el("dom-futures"), frame.dom.futures, el("dom-fut-note"));
+
+  renderTicker24h(el("t24-spot"), frame.ticker_24h.spot, el("t24-spot-note"));
+  renderTicker24h(el("t24-futures"), frame.ticker_24h.futures, el("t24-fut-note"));
+
+  renderKline(el("kline-spot"), frame.klines.spot);
+  renderKline(el("kline-futures"), frame.klines.futures);
+  const spotKline = frame.klines.spot, futKline = frame.klines.futures;
+  el("kline-note").textContent = spotKline
+    ? `${spotKline.interval} · clôture ${clock(spotKline.close_time_ns / 1e6 - Date.now())}`
+    : (futKline ? `${futKline.interval} · clôture ${clock(futKline.close_time_ns / 1e6 - Date.now())}` : "—");
+
+  renderTrades(el("trades-spot"), frame.trades.spot, frame.ts_ns);
+  renderTrades(el("trades-futures"), frame.trades.futures, frame.ts_ns);
+  el("trades-note").textContent = `${frame.trades.spot.length + frame.trades.futures.length} récents`;
+
+  renderPolymarket("m5", frame.polymarket["5m"]);
+  renderPolymarket("m15", frame.polymarket["15m"]);
+
+  renderSpark(el("spark-mid-path"), el("spark-mid-range"), state.midHistory,
+    "mid spot · 60 s", "var(--bid)", px);
+
+  if (document.body.classList.contains("show-raw")) {
+    el("raw").textContent = JSON.stringify(frame, null, 2);
+  }
+}
+
+/* ---------- flux SSE ---------- */
+function setStream(tone, text) {
+  el("stream-badge").className = "badge is-" + tone;
+  el("stream-text").textContent = text;
+}
+
+function onFrame(frame) {
+  const now = performance.now();
+  if (state.lastFrameAt) {
+    const instant = 1000 / Math.max(1, now - state.lastFrameAt);
+    state.fps = state.fps ? state.fps * 0.8 + instant * 0.2 : instant;
+  }
+  state.lastFrameAt = now;
+  state.last = frame;
+
+  if (has(frame.spot.mid)) {
+    state.midHistory.push(frame.spot.mid);
+    if (state.midHistory.length > SPARK_POINTS) state.midHistory.shift();
+  }
+  if (!state.frozen) render(frame);
+}
+
+function connect() {
+  const source = new EventSource("/stream");
+  source.onopen = () => setStream("good", "flux actif");
+  source.onmessage = (event) => {
+    setStream("good", "flux actif");
+    try {
+      onFrame(JSON.parse(event.data));
+    } catch (error) {
+      console.error("trame illisible", error);
+    }
+  };
+  source.onerror = () => setStream("critical", "flux interrompu · reconnexion");
+}
+
+el("freeze").addEventListener("click", () => {
+  state.frozen = !state.frozen;
+  el("freeze").setAttribute("aria-pressed", String(state.frozen));
+  el("freeze").textContent = state.frozen ? "Reprendre" : "Geler";
+  if (!state.frozen && state.last) render(state.last);
+});
+
+el("toggle-raw").addEventListener("click", () => {
+  const shown = document.body.classList.toggle("show-raw");
+  el("toggle-raw").setAttribute("aria-pressed", String(shown));
+  if (shown && state.last) el("raw").textContent = JSON.stringify(state.last, null, 2);
+});
+
+setInterval(() => {
+  if (state.lastFrameAt && performance.now() - state.lastFrameAt > STALE_STREAM_MS) {
+    setStream("warning", "aucune trame reçue");
+  }
+}, 1000);
+
+connect();
+</script>
+</body>
+</html>

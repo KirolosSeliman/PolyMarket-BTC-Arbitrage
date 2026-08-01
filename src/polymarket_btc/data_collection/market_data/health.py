@@ -26,9 +26,20 @@ class _SourceHealth:
     last_disconnect_reason: str | None = None
 
 
+_DEFAULT_INSTRUMENT = "BTC"
+
+
 class HealthRegistry:
     def __init__(self) -> None:
-        self._sources = {source: _SourceHealth() for source in EventSource}
+        # Keyed by (source, instrument) rather than source alone, so a second
+        # symbol's health never overwrites the first's. Every EventSource is
+        # pre-populated at the default instrument (today's BTC-only shape,
+        # unchanged); extra instruments can't be pre-enumerated (arbitrary
+        # symbols picked at run time) so they're created lazily on first write
+        # -- see the record_* methods below.
+        self._sources = {
+            (source, _DEFAULT_INSTRUMENT): _SourceHealth() for source in EventSource
+        }
         self._runtime: dict[str, object] = {
             "schema_version": 2,
             "process_started_at": datetime.now(UTC).isoformat(),
@@ -38,40 +49,56 @@ class HealthRegistry:
             "last_fatal_error": None,
         }
 
-    def record_connection(self, source: EventSource, session_id: str | None, now_ns: int) -> None:
-        row = self._sources[source]
+    def record_connection(
+        self, source: EventSource, session_id: str | None, now_ns: int,
+        *, instrument: str | None = None,
+    ) -> None:
+        row = self._sources.setdefault((source, instrument or _DEFAULT_INSTRUMENT), _SourceHealth())
         row.connected = True
         row.current_session_id = session_id
         row.last_valid_message_ns = now_ns
         row.last_disconnect_reason = None
 
-    def record_disconnection(self, source: EventSource, session_id: str | None, reason: str | None) -> None:
-        row = self._sources[source]
+    def record_disconnection(
+        self, source: EventSource, session_id: str | None, reason: str | None,
+        *, instrument: str | None = None,
+    ) -> None:
+        row = self._sources.setdefault((source, instrument or _DEFAULT_INSTRUMENT), _SourceHealth())
         row.connected = False
         row.current_session_id = session_id
         row.last_disconnect_reason = reason
         self._runtime["ready"] = False
 
-    def record_message(self, source: EventSource, now_ns: int) -> None:
-        self._sources[source].last_valid_message_ns = now_ns
+    def record_message(
+        self, source: EventSource, now_ns: int, *, instrument: str | None = None,
+    ) -> None:
+        self._sources.setdefault(
+            (source, instrument or _DEFAULT_INSTRUMENT), _SourceHealth()
+        ).last_valid_message_ns = now_ns
 
-    def record_reconnect(self, source: EventSource) -> None:
-        self._sources[source].reconnect_count += 1
+    def record_reconnect(self, source: EventSource, *, instrument: str | None = None) -> None:
+        self._sources.setdefault((source, instrument or _DEFAULT_INSTRUMENT), _SourceHealth()).reconnect_count += 1
 
-    def record_invalid(self, source: EventSource) -> None:
-        self._sources[source].invalid_count += 1
+    def record_invalid(self, source: EventSource, *, instrument: str | None = None) -> None:
+        self._sources.setdefault((source, instrument or _DEFAULT_INSTRUMENT), _SourceHealth()).invalid_count += 1
 
-    def record_duplicate(self, source: EventSource) -> None:
-        self._sources[source].duplicate_count += 1
+    def record_duplicate(self, source: EventSource, *, instrument: str | None = None) -> None:
+        self._sources.setdefault((source, instrument or _DEFAULT_INSTRUMENT), _SourceHealth()).duplicate_count += 1
 
-    def record_stale_session(self, source: EventSource) -> None:
-        self._sources[source].stale_session_count += 1
+    def record_stale_session(self, source: EventSource, *, instrument: str | None = None) -> None:
+        self._sources.setdefault(
+            (source, instrument or _DEFAULT_INSTRUMENT), _SourceHealth()
+        ).stale_session_count += 1
 
-    def record_divergence(self, source: EventSource) -> None:
-        self._sources[source].divergence_count += 1
+    def record_divergence(self, source: EventSource, *, instrument: str | None = None) -> None:
+        self._sources.setdefault(
+            (source, instrument or _DEFAULT_INSTRUMENT), _SourceHealth()
+        ).divergence_count += 1
 
-    def record_protocol_error(self, source: EventSource) -> None:
-        self._sources[source].protocol_error_count += 1
+    def record_protocol_error(self, source: EventSource, *, instrument: str | None = None) -> None:
+        self._sources.setdefault(
+            (source, instrument or _DEFAULT_INSTRUMENT), _SourceHealth()
+        ).protocol_error_count += 1
 
     def record_fatal(self, exception: BaseException, now_ns: int) -> None:
         self._runtime.update({
@@ -87,8 +114,10 @@ class HealthRegistry:
     def update_runtime(self, **values: object) -> None:
         self._runtime.update(values)
 
-    def source_snapshot(self, source: EventSource, now_ns: int) -> SourceHealthSnapshot:
-        row = self._sources[source]
+    def source_snapshot(
+        self, source: EventSource, now_ns: int, *, instrument: str | None = None,
+    ) -> SourceHealthSnapshot:
+        row = self._sources.get((source, instrument or _DEFAULT_INSTRUMENT), _SourceHealth())
         age = None if row.last_valid_message_ns is None else max(
             0, (now_ns - row.last_valid_message_ns) // 1_000_000
         )
@@ -102,12 +131,24 @@ class HealthRegistry:
     def all_source_snapshots(self, now_ns: int) -> tuple[tuple[EventSource, SourceHealthSnapshot], ...]:
         return tuple((source, self.source_snapshot(source, now_ns)) for source in EventSource)
 
+    def all_source_snapshots_multi(
+        self, now_ns: int,
+    ) -> tuple[tuple[EventSource, str, SourceHealthSnapshot], ...]:
+        """Same as all_source_snapshots, but covers every (source, instrument)
+        pair actually recorded -- BTC plus whatever extra symbols a run
+        enabled -- for the control panel's per-run status to consume."""
+        return tuple(
+            (source, instrument, self.source_snapshot(source, now_ns, instrument=instrument))
+            for (source, instrument) in self._sources
+        )
+
     def to_health_file_payload(self, now_ns: int) -> dict[str, object]:
         payload = dict(self._runtime)
         payload["not_ready_reasons"] = list(payload.get("not_ready_reasons", ()))
         payload["sources"] = {
             source.value: asdict(row)
-            for source, row in self._sources.items()
+            for (source, instrument), row in self._sources.items()
+            if instrument == _DEFAULT_INSTRUMENT
         }
         payload["updated_at_ns"] = now_ns
         return payload
