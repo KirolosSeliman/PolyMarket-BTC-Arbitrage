@@ -20,6 +20,7 @@ import json
 import logging
 from pathlib import Path
 import re
+import shutil
 import time
 import uuid
 
@@ -41,18 +42,26 @@ from ..market_data.gateway import (
 )
 from ..market_data.sources.binance_futures_historical import HISTORICAL_FETCHERS
 from ..market_data.storage import RawEventStorage
+from .concepts import discover_concepts
+from .config_schema import config_field_to_dict
+from .execution import discover_execution_profiles
+from .management import discover_management_profiles
+from .microsystems import discover_microsystems
 from .plugins import PluginContext, discover_plugins, run_plugin
 
 _LOGGER = logging.getLogger(__name__)
 
 PLUGIN_LOG_LINES = 200
 
-# Mirrors discover_plugins' own rules: a simple flat filename, no path
-# separators or traversal, and not starting with "_" (that prefix means
-# "skip me" to the scanner, so a leading underscore is rejected here too --
-# an imported plugin that discovery would silently ignore is worse than one
-# rejected up front with a clear reason).
-PLUGIN_FILENAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*\.py$")
+# Mirrors discover_plugins' own rules (and discover_concepts'/
+# discover_microsystems'/discover_execution_profiles', which all copy the
+# same scanner): a simple flat filename, no path separators or traversal,
+# and not starting with "_" (that prefix means "skip me" to the scanner, so
+# a leading underscore is rejected here too -- an imported script that
+# discovery would silently ignore is worse than one rejected up front with
+# a clear reason). Shared by every import_*_file method below, not just
+# plugins, hence the generic name.
+SCRIPT_FILENAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*\.py$")
 
 
 def _iso(now_ns: int) -> str:
@@ -94,6 +103,68 @@ class RunState:
     task: asyncio.Task | None = None
 
 
+# Reverses _run_historical_source's own (base_key, symbol) -> EventSource
+# mapping: a raw segment's own on-disk EventSource value matches its
+# catalog base key directly for three of the four access-mode sources;
+# open interest and long-short ratio share one EventSource
+# (BINANCE_FUTURES_REST) for a catalog key that has no EventSource of its
+# own at all.
+_EVENT_SOURCE_TO_BASE_KEY = {
+    "binance_futures_kline": "binance_futures_kline",
+    "binance_futures_trade": "binance_futures_trade",
+    "binance_futures_mark_price": "binance_futures_mark_price",
+    "binance_futures_rest": "binance_futures_open_interest_long_short",
+}
+
+
+def _catalog_key_for_raw_path(path: Path) -> str | None:
+    """A raw segment's directory already encodes `source=<EventSource
+    value>` and `instrument=<SYMBOL>USDT` (RawEventStorage's own layout) --
+    reconstructs the catalog key (base_key, or "base_key:ASSET" for a
+    non-BTC instrument) so per-key coverage can be grouped correctly. None
+    for anything outside the four access-mode base keys (nothing else needs
+    per-key access-mode coverage)."""
+    source_part = next((p for p in path.parts if p.startswith("source=")), None)
+    instrument_part = next((p for p in path.parts if p.startswith("instrument=")), None)
+    if source_part is None or instrument_part is None:
+        return None
+    base_key = _EVENT_SOURCE_TO_BASE_KEY.get(source_part.removeprefix("source="))
+    if base_key is None:
+        return None
+    asset = instrument_part.removeprefix("instrument=").removesuffix("USDT")
+    return base_key if asset == "BTC" else f"{base_key}:{asset}"
+
+
+def _access_mode_source_coverage(raw_paths: list[Path]) -> dict[str, dict[str, str | None]]:
+    """Per catalog key: the time range *actually* written, read from each
+    raw segment's own sidecar manifest -- never the run's requested range,
+    which a fetch that came up short for one key (no history that far back,
+    a transient failure, anything) would otherwise misrepresent for every
+    other key collected in the same run. A segment with a missing/corrupt
+    sidecar is skipped, not fatal, same tolerance as raw_event_count above."""
+    bounds: dict[str, tuple[int, int]] = {}
+    for path in raw_paths:
+        key = _catalog_key_for_raw_path(path)
+        if key is None:
+            continue
+        try:
+            sidecar_path = path.with_name(path.name.removesuffix(".jsonl.zst") + ".manifest.json")
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            first_ns = int(sidecar["first_received_timestamp_ns"])
+            last_ns = int(sidecar["last_received_timestamp_ns"])
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+        if key in bounds:
+            existing_first, existing_last = bounds[key]
+            bounds[key] = (min(existing_first, first_ns), max(existing_last, last_ns))
+        else:
+            bounds[key] = (first_ns, last_ns)
+    return {
+        key: {"start_ts_utc": _iso(first_ns), "end_ts_utc": _iso(last_ns)}
+        for key, (first_ns, last_ns) in bounds.items()
+    }
+
+
 def export_run(state: RunState) -> dict:
     """Consolidates every Parquet snapshot part the run produced into one
     dataset.parquet, and writes manifest.json describing the run. Runs
@@ -119,9 +190,43 @@ def export_run(state: RunState) -> dict:
         if path.is_file() and path.suffix in (".jsonl", ".csv", ".log")
     ) if state.data_dir.is_dir() else []
     raw_root = state.data_dir / "raw"
-    raw_files = sorted(
-        str(path.relative_to(state.data_dir)) for path in raw_root.rglob("*.jsonl.zst")
-    ) if raw_root.is_dir() else []
+    raw_paths = sorted(raw_root.rglob("*.jsonl.zst")) if raw_root.is_dir() else []
+    raw_files = [str(path.relative_to(state.data_dir)) for path in raw_paths]
+    # snapshot_row_count only ever reflects dataset.parquet, which access-mode
+    # runs never produce (no gateway/reducer runs, so snapshots/ stays empty)
+    # -- an access-mode run's real yield lives in each raw segment's own
+    # sidecar manifest instead. A missing/corrupt sidecar contributes 0
+    # rather than failing the whole export, same tolerance as everywhere
+    # else raw segments are read.
+    raw_event_count = 0
+    for path in raw_paths:
+        try:
+            sidecar_path = path.with_name(path.name.removesuffix(".jsonl.zst") + ".manifest.json")
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            raw_event_count += int(sidecar.get("event_count") or 0)
+        except (OSError, ValueError, TypeError):
+            continue
+
+    if state.mode == "access":
+        source_coverage = _access_mode_source_coverage(raw_paths)
+    else:
+        # One live gateway, one dataset -- every requested source/plugin
+        # shares the same actually-observed span. Derived from the real
+        # snapshot timestamps when there are any (accurate even if the run
+        # stopped earlier than requested); falls back to the requested
+        # range only when there's no data to derive it from at all (in
+        # which case there's nothing for a later reader to serve anyway).
+        if dataset_file is not None:
+            timestamps = combined.column("snapshot_timestamp_ns").to_pylist()
+            run_start, run_end = _iso(min(timestamps)), _iso(max(timestamps))
+        else:
+            run_start = _iso(state.start_ts_ns) if state.start_ts_ns is not None else None
+            run_end = _iso(state.end_ts_ns) if state.end_ts_ns is not None else None
+        source_coverage = {
+            key: {"start_ts_utc": run_start, "end_ts_utc": run_end}
+            for key in [*state.sources, *state.plugins]
+        }
+
     manifest = {
         "run_id": state.run_id,
         "mode": state.mode,
@@ -133,6 +238,8 @@ def export_run(state: RunState) -> dict:
         "sources": state.sources,
         "plugins": state.plugins,
         "snapshot_row_count": row_count,
+        "raw_event_count": raw_event_count,
+        "source_coverage": source_coverage,
         "dataset_file": dataset_file,
         "plugin_files": plugin_files,
         "raw_files": raw_files,
@@ -152,11 +259,19 @@ class CollectionRunManager:
         config_path: Path,
         collections_dir: Path,
         plugins_dir: Path,
+        concepts_dir: Path,
+        microsystems_dir: Path,
+        execution_dir: Path,
+        management_dir: Path,
         symbol_cache_path: Path | None = None,
     ) -> None:
         self.config_path = config_path
         self.collections_dir = collections_dir
         self.plugins_dir = plugins_dir
+        self.concepts_dir = concepts_dir
+        self.microsystems_dir = microsystems_dir
+        self.execution_dir = execution_dir
+        self.management_dir = management_dir
         # Shared/global cache, deliberately outside collections_dir -- it's
         # not per-run data, it's Binance's tradable-symbol list.
         self.symbol_cache_path = symbol_cache_path or (
@@ -184,6 +299,48 @@ class CollectionRunManager:
             _LOGGER.exception("binance symbol catalog unavailable, falling back to BTC-only sources")
             extra = {}
         return {**SOURCE_CATALOG, **extra}
+
+    def _data_requirements_for(self, keys: list[str]) -> list[dict[str, object]]:
+        """Groups a concept's data_sources (or a microsystem's data_inputs)
+        by *type* rather than literal key, so the UI can offer "this concept
+        needs candles" instead of "this concept needs BTC's candles"
+        specifically. A catalog key's type is its `tag` (the same axis
+        "Par tag" already groups the collector's own source browser by) when
+        the entry is asset-scoped; otherwise (a plugin, or a non-asset-scoped
+        built-in like chainlink/polymarket, or a stale/unknown key) the key
+        itself is its own atomic type -- there's no cross-asset
+        generalization mechanism for those, so nothing to swap to.
+
+        A type with exactly one asset-scoped key is "swappable" -- the
+        author happened to pick one asset, but any other asset offering the
+        same tag works just as well, so a strategy instance is free to
+        rebind it. A type with more than one key (whatever their assets) is
+        "locked": the author deliberately named specific keys together (most
+        often a cross-asset comparison), so those exact keys stay fixed."""
+        catalog = self._merged_catalog()
+        groups: dict[str, list[tuple[str, str | None]]] = {}
+        order: list[str] = []
+        for key in keys:
+            info = catalog.get(key)
+            if info is not None and info.asset is not None and info.tag is not None:
+                type_label, asset = info.tag, info.asset
+            else:
+                type_label, asset = key, None
+            if type_label not in groups:
+                groups[type_label] = []
+                order.append(type_label)
+            groups[type_label].append((key, asset))
+        requirements: list[dict[str, object]] = []
+        for type_label in order:
+            entries = groups[type_label]
+            swappable = len(entries) == 1 and entries[0][1] is not None
+            requirements.append({
+                "type": type_label,
+                "swappable": swappable,
+                "keys": [key for key, _asset in entries],
+                "default_asset": entries[0][1] if swappable else None,
+            })
+        return requirements
 
     def available_sources(self) -> list[dict[str, str | None]]:
         return [
@@ -219,7 +376,7 @@ class CollectionRunManager:
         picker. Same trust level as copying the file there by hand -- this
         just does the copying -- so validation is about safety (no path
         escape, no silent clobber) rather than sandboxing untrusted code."""
-        if not PLUGIN_FILENAME_RE.match(filename):
+        if not SCRIPT_FILENAME_RE.match(filename):
             raise ValueError(
                 "filename must be a simple name ending in .py (letters, digits, "
                 "underscores, not starting with '_')"
@@ -231,6 +388,221 @@ class CollectionRunManager:
         target.write_text(content, encoding="utf-8")
         recognized = any(info.id == target.stem for info in discover_plugins(self.plugins_dir))
         return {"filename": filename, "recognized": recognized}
+
+    def available_concepts(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": info.id, "label": info.label, "description": info.description,
+                "category": info.category, "detail": info.detail,
+                "data_sources": list(info.data_sources),
+                "data_requirements": self._data_requirements_for(list(info.data_sources)),
+                "config_schema": [config_field_to_dict(f) for f in info.config_schema],
+            }
+            for info in discover_concepts(self.concepts_dir)
+        ]
+
+    def import_concept_file(
+        self, filename: str, content: str, *, overwrite: bool = False,
+    ) -> dict[str, object]:
+        """Same contract/trust level as import_plugin_file, targeting
+        concepts_dir instead."""
+        if not SCRIPT_FILENAME_RE.match(filename):
+            raise ValueError(
+                "filename must be a simple name ending in .py (letters, digits, "
+                "underscores, not starting with '_')"
+            )
+        self.concepts_dir.mkdir(parents=True, exist_ok=True)
+        target = self.concepts_dir / filename
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"{filename} already exists in {self.concepts_dir}")
+        target.write_text(content, encoding="utf-8")
+        recognized = any(info.id == target.stem for info in discover_concepts(self.concepts_dir))
+        return {"filename": filename, "recognized": recognized}
+
+    def available_microsystems(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": info.id, "label": info.label, "description": info.description,
+                "category": info.category, "detail": info.detail,
+                "concept_inputs": list(info.concept_inputs),
+                "data_inputs": list(info.data_inputs),
+                "data_requirements": self._data_requirements_for(list(info.data_inputs)),
+                "config_schema": [config_field_to_dict(f) for f in info.config_schema],
+            }
+            for info in discover_microsystems(self.microsystems_dir)
+        ]
+
+    def import_microsystem_file(
+        self, filename: str, content: str, *, overwrite: bool = False,
+    ) -> dict[str, object]:
+        """Same contract/trust level as import_plugin_file, targeting
+        microsystems_dir instead."""
+        if not SCRIPT_FILENAME_RE.match(filename):
+            raise ValueError(
+                "filename must be a simple name ending in .py (letters, digits, "
+                "underscores, not starting with '_')"
+            )
+        self.microsystems_dir.mkdir(parents=True, exist_ok=True)
+        target = self.microsystems_dir / filename
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"{filename} already exists in {self.microsystems_dir}")
+        target.write_text(content, encoding="utf-8")
+        recognized = any(info.id == target.stem for info in discover_microsystems(self.microsystems_dir))
+        return {"filename": filename, "recognized": recognized}
+
+    def available_execution_profiles(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": info.id, "label": info.label, "description": info.description,
+                "category": info.category, "detail": info.detail,
+                "config_schema": [config_field_to_dict(f) for f in info.config_schema],
+            }
+            for info in discover_execution_profiles(self.execution_dir)
+        ]
+
+    def import_execution_profile_file(
+        self, filename: str, content: str, *, overwrite: bool = False,
+    ) -> dict[str, object]:
+        """Same contract/trust level as import_plugin_file, targeting
+        execution_dir instead."""
+        if not SCRIPT_FILENAME_RE.match(filename):
+            raise ValueError(
+                "filename must be a simple name ending in .py (letters, digits, "
+                "underscores, not starting with '_')"
+            )
+        self.execution_dir.mkdir(parents=True, exist_ok=True)
+        target = self.execution_dir / filename
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"{filename} already exists in {self.execution_dir}")
+        target.write_text(content, encoding="utf-8")
+        recognized = any(
+            info.id == target.stem for info in discover_execution_profiles(self.execution_dir)
+        )
+        return {"filename": filename, "recognized": recognized}
+
+    def available_management_profiles(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": info.id, "label": info.label, "description": info.description,
+                "category": info.category, "detail": info.detail,
+                "config_schema": [config_field_to_dict(f) for f in info.config_schema],
+            }
+            for info in discover_management_profiles(self.management_dir)
+        ]
+
+    def import_management_profile_file(
+        self, filename: str, content: str, *, overwrite: bool = False,
+    ) -> dict[str, object]:
+        """Same contract/trust level as import_plugin_file, targeting
+        management_dir instead."""
+        if not SCRIPT_FILENAME_RE.match(filename):
+            raise ValueError(
+                "filename must be a simple name ending in .py (letters, digits, "
+                "underscores, not starting with '_')"
+            )
+        self.management_dir.mkdir(parents=True, exist_ok=True)
+        target = self.management_dir / filename
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"{filename} already exists in {self.management_dir}")
+        target.write_text(content, encoding="utf-8")
+        recognized = any(
+            info.id == target.stem for info in discover_management_profiles(self.management_dir)
+        )
+        return {"filename": filename, "recognized": recognized}
+
+    def read_plugin_source(self, plugin_id: str) -> dict[str, str]:
+        """{"id","filename","content"} for a discovered plugin's own .py
+        file -- lets a concept/microsystem author see exactly what a
+        plugin-backed data source looks like before writing code against
+        it. Raises FileNotFoundError if plugin_id doesn't resolve."""
+        for info in discover_plugins(self.plugins_dir):
+            if info.id == plugin_id:
+                return {"id": info.id, "filename": info.path.name, "content": info.path.read_text(encoding="utf-8")}
+        raise FileNotFoundError(f"no plugin named {plugin_id!r}")
+
+    def read_concept_source(self, concept_id: str) -> dict[str, str]:
+        """Same shape as read_plugin_source, for a discovered concept --
+        lets a microsystem author see exactly what a concept it depends on
+        looks like."""
+        for info in discover_concepts(self.concepts_dir):
+            if info.id == concept_id:
+                return {"id": info.id, "filename": info.path.name, "content": info.path.read_text(encoding="utf-8")}
+        raise FileNotFoundError(f"no concept named {concept_id!r}")
+
+    def _data_context_blocks(self, *, sources: list[str], plugins: list[str]) -> list[str]:
+        """One markdown block per selected data-catalog entry: built-in
+        sources get their label/description/detail/mode (no code -- there
+        is none); plugins get the same plus their full .py source, so an AI
+        writing a concept/microsystem sees exactly what the data looks
+        like. Unknown keys are silently dropped, matching start()'s own
+        `key in catalog` filtering leniency -- this is best-effort
+        scaffolding for a prompt, not something that must reject a stale
+        selection."""
+        blocks: list[str] = []
+        catalog = self._merged_catalog()
+        for key in sources:
+            info = catalog.get(key)
+            if info is None:
+                continue
+            blocks.append(
+                f"### Source : `{key}`\n"
+                f"- Label : {info.label}\n"
+                f"- Description : {info.description}\n"
+                f"- Détail : {info.detail or '(aucun)'}\n"
+                f"- Mode : {info.mode}\n"
+            )
+        plugin_infos = {info.id: info for info in discover_plugins(self.plugins_dir)}
+        for plugin_id in plugins:
+            info = plugin_infos.get(plugin_id)
+            if info is None:
+                continue
+            source = self.read_plugin_source(plugin_id)
+            blocks.append(
+                f"### Plugin : `{plugin_id}`\n"
+                f"- Label : {info.label}\n"
+                f"- Description : {info.description}\n"
+                f"- Détail : {info.detail or '(aucun)'}\n"
+                f"- Code source (`{source['filename']}`) :\n\n"
+                f"```python\n{source['content']}\n```\n"
+            )
+        return blocks
+
+    def build_concept_prompt(self, *, sources: list[str], plugins: list[str], template: str) -> str:
+        """Appends a "Contexte : données sélectionnées" section to
+        `template` (the raw docs/nouveau_concept_prompt.md text) so an AI
+        writing a concept sees exactly what the selected data looks like.
+        Raises ValueError if sources and plugins are both empty -- a
+        concept prompt with no data context defeats the point."""
+        if not sources and not plugins:
+            raise ValueError("select at least one data source or plugin to build a concept prompt")
+        blocks = self._data_context_blocks(sources=sources, plugins=plugins)
+        return template + "\n\n---\n\n## Contexte : données sélectionnées\n\n" + "\n".join(blocks)
+
+    def build_microsystem_prompt(
+        self, *, concepts: list[str], sources: list[str], plugins: list[str], template: str,
+    ) -> str:
+        """Same mechanism as build_concept_prompt, also embedding each
+        selected concept's full .py source so an AI writing a microsystem
+        sees exactly what the concepts it wires to look like. Raises
+        ValueError if concepts, sources, and plugins are all empty."""
+        if not concepts and not sources and not plugins:
+            raise ValueError("select at least one concept, data source, or plugin to build a microsystem prompt")
+        blocks = self._data_context_blocks(sources=sources, plugins=plugins)
+        concept_infos = {info.id: info for info in discover_concepts(self.concepts_dir)}
+        for concept_id in concepts:
+            info = concept_infos.get(concept_id)
+            if info is None:
+                continue
+            source = self.read_concept_source(concept_id)
+            blocks.append(
+                f"### Concept : `{concept_id}`\n"
+                f"- Label : {info.label}\n"
+                f"- Description : {info.description}\n"
+                f"- Détail : {info.detail or '(aucun)'}\n"
+                f"- Code source (`{source['filename']}`) :\n\n"
+                f"```python\n{source['content']}\n```\n"
+            )
+        return template + "\n\n---\n\n## Contexte : données et concepts sélectionnés\n\n" + "\n".join(blocks)
 
     def start(
         self,
@@ -349,6 +721,26 @@ class CollectionRunManager:
             except (OSError, ValueError):
                 continue
         return runs
+
+    def delete_run(self, run_id: str) -> None:
+        """Permanently removes a past collection run's entire directory --
+        raw segments, exported dataset, manifest, everything under
+        collections_dir/run_id. Irreversible; the control panel's own
+        "supprimer" button is expected to confirm with the user before
+        calling this. Refuses to delete the run currently in progress (stop
+        it first -- same "one run at a time" reasoning start() already
+        enforces) so a collection can never be pulled out from under itself
+        mid-flight."""
+        if self.current is not None and self.current.run_id == run_id and self.current.ended_at_ns is None:
+            raise RuntimeError("cannot delete a collection run that is still in progress -- stop it first")
+        target = (self.collections_dir / run_id).resolve()
+        try:
+            target.relative_to(self.collections_dir.resolve())
+        except ValueError:
+            raise ValueError(f"invalid run_id: {run_id!r}") from None
+        if target == self.collections_dir.resolve() or not target.is_dir():
+            raise FileNotFoundError(f"no collection run named {run_id!r}")
+        shutil.rmtree(target)
 
     async def _run(self, state: RunState, base_config: MarketDataConfig) -> None:
         if state.mode == "access":

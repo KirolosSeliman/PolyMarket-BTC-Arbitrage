@@ -1,0 +1,61 @@
+{
+  "name": "caca",
+  "concepts": [
+    {
+      "instance_id": "concept_1",
+      "concept_id": "fvg",
+      "config": {
+        "candle_seconds": 5,
+        "lookback_candles": 500,
+        "min_gap_pct": 0,
+        "direction": "both",
+        "fill_threshold_pct": 100,
+        "require_displacement": "true"
+      },
+      "data_bindings": {
+        "Trades": "binance_futures_trade"
+      }
+    },
+    {
+      "instance_id": "concept_2",
+      "concept_id": "liquidity_sweep",
+      "config": {
+        "candle_seconds": 5,
+        "lookback_candles": 500,
+        "swing_lookback": 3,
+        "equal_level_tolerance_pct": 0.05,
+        "confirmation_candles": 3,
+        "min_wick_pct": 0,
+        "min_pool_touches": 1,
+        "direction": "both"
+      },
+      "data_bindings": {
+        "Trades": "binance_futures_trade"
+      }
+    }
+  ],
+  "microsystems": [],
+  "execution": {
+    "execution_id": "fvg_rebound_entry",
+    "config": {
+      "body_tolerance_pct": 10,
+      "confirmation_mode": "close",
+      "candle_seconds": 5,
+      "timeout_candles": 10,
+      "require_ce_touch": "false",
+      "allowed_direction": "both",
+      "position_size_usd": 500
+    }
+  },
+  "management": {
+    "management_id": "fvg_stop_leg_target",
+    "config": {
+      "confirmation_margin_pct": 20,
+      "sl_buffer_pct": 0,
+      "tp_buffer_pct": 0,
+      "min_reward_risk_ratio": 0
+    }
+  },
+  "created_at_utc": "2026-08-20T21:32:54.241049+00:00",
+  "updated_at_utc": "2026-08-20T21:32:54.241049+00:00"
+}

@@ -3,110 +3,1002 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Backtest — sélection des données</title>
+<title>Backtest</title>
 <style>
 :root {
-  color-scheme: dark;
-  --surface-0: #0d0d0d; --surface-1: #1a1a19; --surface-2: #212120;
-  --text-1: #ffffff; --text-2: #c3c2b7; --muted: #898781;
-  --border: rgba(255,255,255,0.10); --accent: #3987e5; --grid: #2c2c2a;
-}
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --surface-0: #f9f9f7; --surface-1: #fcfcfb; --surface-2: #f2f1ed;
-    --text-1: #0b0b0b; --text-2: #52514e; --muted: #898781;
-    --border: rgba(11,11,11,0.10); --accent: #2a78d6; --grid: #e1e0d9;
-  }
+  --surface-0: #000000; --surface-1: #111111; --surface-2: #1c1c1c;
+  --text-1: #f2f2f0; --text-2: #b7b6b0; --muted: #7a7972;
+  --border: rgba(255,255,255,0.12); --accent: #3987e5; --warning: #d99a2b; --critical: #d0554d;
+  --good: #3f9142;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--surface-0); color: var(--text-1); font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--surface-1); display: flex; align-items: center; gap: 12px; }
-header a { color: var(--muted); text-decoration: none; font-size: 12px; }
-header h1 { font-size: 14px; margin: 0; }
+body {
+  margin: 0; min-height: 100vh; background: var(--surface-0); color: var(--text-1);
+  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header { padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--surface-1); }
+header a.back { color: var(--muted); text-decoration: none; font-size: 12px; }
+header a.back:hover { color: var(--text-2); }
+header h1 { font-size: 16px; margin: 8px 0 4px; }
+header p { color: var(--muted); margin: 0; font-size: 12.5px; }
+
 main { max-width: 900px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
 .panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
-.run-row {
-  display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center;
-  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px;
-  cursor: pointer;
+.panel h2 { font-size: 13px; margin: 0 0 10px; }
+.panel > p:first-of-type { margin-top: 0; color: var(--text-2); font-size: 12px; }
+.empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.field { display: grid; gap: 4px; }
+.field label { font-size: 12px; color: var(--text-2); }
+input[type="text"], input[type="number"], input[type="datetime-local"], select {
+  font: inherit; font-size: 12.5px; color: var(--text-1); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
 }
-.run-row:hover { border-color: var(--accent); }
-.run-row.selected { border-color: var(--accent); background: var(--surface-2); }
-.run-row .id { font-weight: 600; font-size: 12.5px; }
-.run-row .meta { font-size: 11px; color: var(--muted); grid-column: 1 / -1; }
-.run-row .rows { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-2); text-align: right; }
-.empty { color: var(--muted); font-size: 12.5px; padding: 10px 0; }
+input:focus, select:focus { outline: none; border-color: var(--accent); }
 button {
-  font: inherit; font-size: 12.5px; color: var(--text-1); background: var(--accent);
-  border: none; border-radius: 6px; padding: 9px 16px; cursor: pointer;
+  font: inherit; font-size: 12.5px; color: #fff; background: var(--accent);
+  border: none; border-radius: 6px; padding: 9px 18px; cursor: pointer; white-space: nowrap;
 }
+button:hover { filter: brightness(1.1); }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
-.status { font-size: 12px; color: var(--muted); margin-top: 10px; white-space: pre-wrap; }
+button.secondary { color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border); }
+button.secondary:hover { border-color: var(--accent); filter: none; }
+
+label.check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
+
+.blocking { border: 1px solid var(--warning); background: rgba(217,154,43,0.08); border-radius: 8px; padding: 12px 14px; }
+.blocking.critical { border-color: var(--critical); background: rgba(208,85,77,0.08); }
+.blocking a { color: var(--accent); }
+.blocking ul { margin: 6px 0 0; padding-left: 18px; }
+
+.coverage-list { font-size: 12px; color: var(--text-2); margin: 6px 0 12px; }
+.coverage-list span { display: inline-block; margin-right: 10px; }
+
+.mode-row { display: flex; gap: 18px; margin-bottom: 12px; }
+.mode-row label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; }
+
+.var-field { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.var-field .var-label { font-size: 12.5px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+.var-field .var-label .name { color: var(--text-1); }
+.var-field .var-label .sweep-toggle { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.var-field .range-row { display: flex; gap: 8px; align-items: center; }
+.var-field .range-row input { width: 100px; }
+.var-field .range-row span { color: var(--muted); font-size: 11px; }
+.var-field .options-row { display: flex; gap: 14px; flex-wrap: wrap; }
+
+.results-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+.results-table th, .results-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.results-table tr.best { background: rgba(63,145,66,0.12); }
+.results-table .rate { font-variant-numeric: tabular-nums; }
+.results-table .rate.good { color: var(--good); }
+
+.status-line { font-size: 12px; color: var(--text-2); margin-top: 10px; white-space: pre-wrap; }
+.status-line.error { color: var(--critical); }
+
+#replay-chart { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; }
+#replay-chart .price-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+#replay-chart .axis-line { stroke: var(--border); stroke-width: 1; }
+#replay-chart .axis-label { fill: var(--muted); font-size: 10px; }
+#replay-chart .grid-line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.6; }
+#replay-chart .sl-line { stroke: var(--critical); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.8; }
+#replay-chart .tp-line { stroke: var(--good); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.8; }
+#replay-chart .level-label { font-size: 9.5px; }
+#replay-chart .entry-marker { fill: var(--text-1); stroke: var(--surface-2); stroke-width: 1.5; }
+#replay-chart .exit-marker.win { fill: var(--good); stroke: var(--surface-2); stroke-width: 1.5; }
+#replay-chart .exit-marker.loss { fill: var(--critical); stroke: var(--surface-2); stroke-width: 1.5; }
+#replay-chart .exit-marker.selected, #replay-chart .entry-marker.selected { stroke: var(--accent); stroke-width: 2; }
+#replay-chart .cursor-line { stroke: var(--text-2); stroke-width: 1; }
+#replay-chart .cursor-dot { fill: var(--text-1); }
+#replay-chart .hover-target { fill: transparent; cursor: crosshair; }
+#replay-chart .chart-tooltip-bg { fill: var(--surface-1); stroke: var(--border); }
+#replay-chart .chart-tooltip-text { fill: var(--text-1); font-size: 10.5px; }
+
+.replay-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--text-2); align-items: center; }
+.replay-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.replay-legend .dot.entry { background: var(--text-1); }
+.replay-legend .dot.good { background: var(--good); }
+.replay-legend .dot.critical { background: var(--critical); }
+.replay-cursor-label { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+.replay-trades-list { max-height: 200px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; }
+.replay-trade-row {
+  display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; font-size: 11.5px;
+  border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.replay-trade-row:last-child { border-bottom: none; }
+.replay-trade-row:hover { background: var(--surface-2); }
+.replay-trade-row.selected { background: var(--surface-2); border-left: 2px solid var(--accent); }
+.replay-trade-row .outcome.win { color: var(--good); }
+.replay-trade-row .outcome.loss { color: var(--critical); }
+
+.date-picker { position: relative; }
+.date-display {
+  font: inherit; font-size: 12.5px; color: var(--text-1); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; cursor: pointer;
+  min-width: 150px; text-align: left;
+}
+.date-display:hover { border-color: var(--accent); }
+.calendar-popover {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5); padding: 10px; width: 240px;
+}
+.cal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 12px; }
+.cal-header span { text-transform: capitalize; }
+.cal-nav {
+  background: none; border: none; color: var(--text-2); font-size: 15px; padding: 2px 8px;
+  cursor: pointer; border-radius: 4px;
+}
+.cal-nav:hover { background: var(--surface-2); color: var(--text-1); filter: none; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.cal-dow { font-size: 10px; color: var(--muted); text-align: center; padding: 2px 0; }
+.cal-day {
+  font: inherit; font-size: 11.5px; padding: 6px 0; text-align: center; border-radius: 5px;
+  border: none; cursor: pointer; background: none; color: var(--text-1);
+}
+.cal-day.available { color: var(--text-1); }
+.cal-day.available:hover { background: var(--surface-2); border-color: var(--accent); }
+.cal-day.unavailable { color: var(--muted); background: rgba(255,255,255,0.03); }
+.cal-day.unavailable:hover { background: rgba(255,255,255,0.06); }
+.cal-day.selected { background: var(--accent); color: #fff; }
+.cal-legend { margin-top: 8px; font-size: 10.5px; color: var(--muted); }
+.time-input { width: 70px; }
 </style>
 </head>
 <body>
-<header><a href="/">← retour</a><h1>Backtest — sélection des données</h1></header>
+<header>
+  <a class="back" href="/menu">← retour</a>
+  <h1>Backtest</h1>
+  <p id="strategy-name-line"></p>
+</header>
+
 <main>
-  <div class="panel">
-    <p style="margin-top:0;color:var(--text-2)">Choisis un jeu de données déjà collecté. L'analyseur de backtest n'est pas encore implémenté — cette page ne fait que sélectionner et vérifier le fichier.</p>
-    <div id="runs"></div>
+  <div class="panel" id="eligibility-panel">
+    <h2>Données disponibles</h2>
+    <div id="eligibility-content" class="empty">Chargement…</div>
   </div>
-  <div class="panel">
-    <button id="analyze" disabled>Lancer l'analyse</button>
-    <div class="status" id="status"></div>
+
+  <div class="panel" id="range-panel" style="display:none">
+    <h2>Période à tester</h2>
+    <div class="coverage-list" id="coverage-list"></div>
+    <div class="coverage-list" id="narrowest-key-hint"></div>
+    <div class="cal-legend">Dans le calendrier : les jours en clair sont couverts par une collecte, les jours grisés ne le sont pas (mais restent sélectionnables).</div>
+    <div class="row" style="margin-top:10px">
+      <div class="field">
+        <label>Du</label>
+        <div class="row" style="gap:6px">
+          <div class="date-picker" id="start-date-picker">
+            <button type="button" class="date-display" id="start-date-display">—</button>
+            <div class="calendar-popover" id="start-calendar" style="display:none"></div>
+          </div>
+          <input type="time" id="start-time-input" class="time-input" value="00:00">
+        </div>
+      </div>
+      <div class="field">
+        <label>Au</label>
+        <div class="row" style="gap:6px">
+          <div class="date-picker" id="end-date-picker">
+            <button type="button" class="date-display" id="end-date-display">—</button>
+            <div class="calendar-popover" id="end-calendar" style="display:none"></div>
+          </div>
+          <input type="time" id="end-time-input" class="time-input" value="23:59">
+        </div>
+      </div>
+      <div class="field">
+        <label>Actif simulé</label>
+        <input type="text" id="instrument-input" style="width:90px">
+      </div>
+      <div class="field">
+        <label>Granularité d'évaluation (secondes)</label>
+        <input type="number" id="cadence-input" value="60" min="1" style="width:90px">
+      </div>
+    </div>
+    <div class="status-line" id="range-hint"></div>
+  </div>
+
+  <div class="panel" id="variables-panel" style="display:none">
+    <h2>Variables</h2>
+    <div class="mode-row">
+      <label><input type="radio" name="mode" value="fixed" id="mode-fixed" checked> Valeurs définies</label>
+      <label><input type="radio" name="mode" value="sweep" id="mode-sweep"> Meilleure combinaison</label>
+    </div>
+    <div id="execution-vars"></div>
+    <div id="management-vars"></div>
+  </div>
+
+  <div class="panel" id="metrics-panel" style="display:none">
+    <h2>Statistiques à calculer</h2>
+    <label class="check"><input type="checkbox" checked disabled> Taux de réussite</label>
+  </div>
+
+  <div class="panel" id="run-panel" style="display:none">
+    <button type="button" id="backtest-btn">Backtest</button>
+    <div class="status-line" id="run-status"></div>
+    <div id="results"></div>
+    <button type="button" class="secondary" id="show-replay-btn" style="display:none;margin-top:12px">Voir les trades pris</button>
+  </div>
+
+  <div class="panel" id="replay-panel" style="display:none">
+    <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <h2 style="margin:0">Trades pris -- rejouer</h2>
+      <div class="row" style="gap:8px">
+        <button type="button" class="secondary" id="replay-play-btn">▶ Lecture</button>
+        <select id="replay-speed">
+          <option value="slow">Lent</option>
+          <option value="normal" selected>Normal</option>
+          <option value="fast">Rapide</option>
+          <option value="instant">Instantané</option>
+        </select>
+      </div>
+    </div>
+    <svg id="replay-chart" width="100%" height="240" style="margin-top:10px;display:block"></svg>
+    <div class="replay-legend">
+      <span><span class="dot entry"></span>Entrée</span>
+      <span><span class="dot good"></span>Sortie -- gain</span>
+      <span><span class="dot critical"></span>Sortie -- perte</span>
+      <span class="replay-cursor-label" id="replay-cursor-label"></span>
+    </div>
+    <div class="row" style="gap:16px;align-items:flex-start;margin-top:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:220px">
+        <strong style="font-size:12px">Trades (clique pour centrer)</strong>
+        <div id="replay-trades-list" class="replay-trades-list"></div>
+      </div>
+      <div style="flex:1;min-width:220px">
+        <strong style="font-size:12px">Concepts / microsystèmes à l'instant courant</strong>
+        <table class="results-table" id="replay-readout-table"><tbody></tbody></table>
+      </div>
+    </div>
   </div>
 </main>
+
 <script>
 "use strict";
-let selected = null;
 
-function fmtBytes(n) {
-  if (!n) return "—";
-  const units = ["o", "Ko", "Mo", "Go"];
-  let i = 0;
-  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-  return n.toFixed(1) + " " + units[i];
+function el(id) { return document.getElementById(id); }
+function escapeAttr(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-async function load() {
-  const res = await fetch("/api/runs");
-  const data = await res.json();
-  const container = document.getElementById("runs");
-  if (!data.runs.length) {
-    container.innerHTML = '<div class="empty">Aucune collecte terminée pour l\'instant — lance-en une depuis la page Collecte de données.</div>';
-    return;
-  }
-  container.innerHTML = "";
-  data.runs.forEach((run) => {
-    const row = document.createElement("div");
-    row.className = "run-row";
-    row.dataset.runId = run.run_id;
-    row.innerHTML = `
-      <span class="id">${run.run_id}</span>
-      <span class="rows">${run.snapshot_row_count ?? 0} lignes</span>
-      <span class="meta">${(run.sources || []).join(", ")}${run.plugins && run.plugins.length ? " + " + run.plugins.join(", ") : ""}</span>
-      <span class="meta">${run.started_at_utc || "—"} → ${run.ended_at_utc || "en cours"}${run.dataset_file ? " · " + run.dataset_file : " · aucun fichier"}</span>
-    `;
-    row.addEventListener("click", () => {
-      document.querySelectorAll(".run-row").forEach((el) => el.classList.remove("selected"));
-      row.classList.add("selected");
-      selected = run;
-      document.getElementById("analyze").disabled = !run.dataset_file;
-      document.getElementById("status").textContent = "";
-    });
-    container.appendChild(row);
+const params = new URLSearchParams(window.location.search);
+const strategyName = params.get("strategy");
+if (!strategyName) {
+  window.location.href = "/";
+}
+el("strategy-name-line").textContent = `Stratégie : ${strategyName}`;
+
+let strategy = null;
+let eligibility = null;
+let executionInfo = null;
+let managementInfo = null;
+let sweepMode = false;
+// {field_name: {enabled, min, max, step}} for number fields swept, or
+// {field_name: {enabled, values: Set}} for select fields swept.
+const sweepState = { execution: {}, management: {} };
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+const _dateFmt = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" });
+function formatCoverageDate(iso) {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : _dateFmt.format(date);
+}
+
+// startDateStr/endDateStr are "YYYY-MM-DD" (picked via the calendars below);
+// the paired time inputs supply hour:minute -- combineDateTime joins them
+// into the epoch seconds every other computation here already expects.
+let startDateStr = null;
+let endDateStr = null;
+
+function combineDateTime(dateStr, timeStr) {
+  if (!dateStr) return null;
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  const [h, m] = (timeStr || "00:00").split(":").map(Number);
+  return new Date(y, mo - 1, d, h, m, 0).getTime() / 1000;
+}
+
+// --- Custom calendar day-picker: native datetime-local inputs can't style
+// individual days, so a real range-availability calendar (grey out days no
+// collection covers) needs its own component. Two independent instances
+// (start/end), each a month grid with prev/next navigation; picking a day
+// closes the popover and updates the paired time input's ephemeral state
+// via onSelect. Available/unavailable is per-day (does this day overlap any
+// covered interval at all), not blocking -- clicking an unavailable day is
+// still allowed, since spanning a gap is a legitimate choice the backtest
+// itself already tolerates (see computeCoverageOverlap's gap-skip). ---
+
+function dayOverlapsCoverage(year, month, day, coverage) {
+  const dayStart = new Date(year, month, day, 0, 0, 0).getTime();
+  const dayEnd = new Date(year, month, day + 1, 0, 0, 0).getTime();
+  return coverage.some(([s, e]) => {
+    const cs = new Date(s).getTime(), ce = new Date(e).getTime();
+    return ce > dayStart && cs < dayEnd;
   });
 }
 
-document.getElementById("analyze").addEventListener("click", () => {
-  if (!selected) return;
-  document.getElementById("status").textContent =
-    `Analyseur de backtest non implémenté — fichier prêt : ${selected.data_dir}/${selected.dataset_file}\n` +
-    `(${selected.snapshot_row_count} snapshots, sources : ${(selected.sources || []).join(", ")})`;
+const _monthFmt = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric" });
+const _dayFmt = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", year: "numeric" });
+
+function createDayPicker({ buttonEl, popoverEl, onSelect }) {
+  let viewYear = new Date().getFullYear();
+  let viewMonth = new Date().getMonth();
+  let selectedDateStr = null;
+  let coverage = [];
+
+  function render() {
+    const first = new Date(viewYear, viewMonth, 1);
+    const startWeekday = (first.getDay() + 6) % 7; // Monday-first
+    const numDays = new Date(viewYear, viewMonth + 1, 0).getDate();
+    let html = `<div class="cal-header">`
+      + `<button type="button" class="cal-nav" data-dir="-1">‹</button>`
+      + `<span>${_monthFmt.format(first)}</span>`
+      + `<button type="button" class="cal-nav" data-dir="1">›</button>`
+      + `</div><div class="cal-grid">`;
+    ["L", "M", "M", "J", "V", "S", "D"].forEach((d) => { html += `<span class="cal-dow">${d}</span>`; });
+    for (let i = 0; i < startWeekday; i++) html += `<span></span>`;
+    for (let day = 1; day <= numDays; day++) {
+      const available = dayOverlapsCoverage(viewYear, viewMonth, day, coverage);
+      const dateStr = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`;
+      const isSelected = dateStr === selectedDateStr;
+      html += `<button type="button" class="cal-day ${available ? "available" : "unavailable"} ${isSelected ? "selected" : ""}" data-date="${dateStr}">${day}</button>`;
+    }
+    html += `</div>`;
+    popoverEl.innerHTML = html;
+    popoverEl.querySelectorAll(".cal-day").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        selectedDateStr = btn.dataset.date;
+        setDisplay(selectedDateStr);
+        onSelect(selectedDateStr);
+        popoverEl.style.display = "none";
+      });
+    });
+    popoverEl.querySelectorAll(".cal-nav").forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        viewMonth += parseInt(btn.dataset.dir, 10);
+        if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+        if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+        render();
+      });
+    });
+  }
+
+  function setDisplay(dateStr) {
+    if (!dateStr) { buttonEl.textContent = "—"; return; }
+    const [y, m, d] = dateStr.split("-").map(Number);
+    buttonEl.textContent = _dayFmt.format(new Date(y, m - 1, d));
+  }
+
+  buttonEl.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const isOpen = popoverEl.style.display === "block";
+    document.querySelectorAll(".calendar-popover").forEach((p) => { p.style.display = "none"; });
+    if (isOpen) return;
+    render();
+    popoverEl.style.display = "block";
+  });
+  popoverEl.addEventListener("click", (event) => event.stopPropagation());
+
+  return {
+    setCoverage(newCoverage) { coverage = newCoverage; },
+    setSelected(dateStr) {
+      selectedDateStr = dateStr;
+      if (dateStr) {
+        const [y, m] = dateStr.split("-").map(Number);
+        viewYear = y;
+        viewMonth = m - 1;
+      }
+      setDisplay(dateStr);
+    },
+  };
+}
+
+document.addEventListener("click", () => {
+  document.querySelectorAll(".calendar-popover").forEach((p) => { p.style.display = "none"; });
 });
 
-load();
+const startPicker = createDayPicker({
+  buttonEl: el("start-date-display"), popoverEl: el("start-calendar"),
+  onSelect: (dateStr) => { startDateStr = dateStr; renderRangeHint(); },
+});
+const endPicker = createDayPicker({
+  buttonEl: el("end-date-display"), popoverEl: el("end-calendar"),
+  onSelect: (dateStr) => { endDateStr = dateStr; renderRangeHint(); },
+});
+el("start-time-input").addEventListener("change", renderRangeHint);
+el("end-time-input").addEventListener("change", renderRangeHint);
+
+// --- Overlap between a chosen [startTs, endTs] (epoch seconds) and the
+// covered intervals: how much of the choice is actually backed by data, and
+// which sub-ranges inside the choice are gaps (uncovered) -- used both for
+// the live hint under the date pickers and as a pre-flight check before
+// submitting, so a fully-uncovered pick is caught immediately instead of
+// round-tripping to the server for a generic error, and a pick that spans a
+// real gap is allowed through (the engine already skips gaps) but explained. ---
+
+function computeCoverageOverlap(startTs, endTs, coverage) {
+  const intervals = coverage
+    .map(([s, e]) => [new Date(s).getTime() / 1000, new Date(e).getTime() / 1000])
+    .filter(([s, e]) => e > startTs && s < endTs)
+    .map(([s, e]) => [Math.max(s, startTs), Math.min(e, endTs)])
+    .sort((a, b) => a[0] - b[0]);
+  let covered = 0;
+  const gaps = [];
+  let cursor = startTs;
+  for (const [s, e] of intervals) {
+    if (s > cursor) gaps.push([cursor, s]);
+    covered += e - Math.max(s, cursor);
+    cursor = Math.max(cursor, e);
+  }
+  if (cursor < endTs) gaps.push([cursor, endTs]);
+  return { covered, gaps };
+}
+
+function renderRangeHint() {
+  const hintEl = el("range-hint");
+  if (!startDateStr || !endDateStr || !eligibility) { hintEl.textContent = ""; return; }
+  const startTs = combineDateTime(startDateStr, el("start-time-input").value);
+  const endTs = combineDateTime(endDateStr, el("end-time-input").value);
+  if (!(endTs > startTs)) { hintEl.textContent = ""; return; }
+  const { covered, gaps } = computeCoverageOverlap(startTs, endTs, eligibility.coverage);
+  if (covered <= 0) {
+    hintEl.className = "status-line error";
+    hintEl.textContent = "Aucune donnée dans cette période -- choisis une période dans les plages couvertes ci-dessus.";
+  } else if (gaps.length) {
+    hintEl.className = "status-line";
+    hintEl.textContent = `${gaps.length} période(s) non couverte(s) dans cet intervalle seront ignorées (le backtest saute les trous).`;
+  } else {
+    hintEl.className = "status-line";
+    hintEl.textContent = "";
+  }
+}
+
+function renderEligibility() {
+  const content = el("eligibility-content");
+  if (eligibility.missing_execution || eligibility.missing_management) {
+    const missing = [];
+    if (eligibility.missing_execution) missing.push("un profil d'exécution");
+    if (eligibility.missing_management) missing.push("un profil de gestion");
+    content.innerHTML = `<div class="blocking critical">Cette stratégie n'a pas encore ${missing.join(" ni ")}. `
+      + `<a href="/strategy/build?name=${encodeURIComponent(strategyName)}">Complète-la dans le constructeur</a> avant de backtester.</div>`;
+    return;
+  }
+  if (eligibility.missing_data_keys.length) {
+    content.innerHTML = `<div class="blocking">Aucune collecte ne couvre encore : `
+      + `<strong>${eligibility.missing_data_keys.map(escapeAttr).join(", ")}</strong>. `
+      + `<a href="/collect">Lance une collecte</a> pour cette stratégie avant de backtester.</div>`;
+    return;
+  }
+  if (!eligibility.coverage.length) {
+    content.innerHTML = `<div class="blocking">Chaque donnée requise a été collectée séparément, mais leurs périodes ne `
+      + `se recoupent jamais -- il n'y a donc aucune date testable. La donnée la moins couverte est `
+      + `<strong>${escapeAttr(eligibility.narrowest_key || "")}</strong> : `
+      + `<a href="/collect">collecte-la</a> sur la même période que le reste avant de backtester.</div>`;
+    return;
+  }
+  content.innerHTML = `<div style="color:var(--good)">Données disponibles pour cette stratégie.</div>`;
+  el("range-panel").style.display = "grid";
+  el("variables-panel").style.display = "grid";
+  el("metrics-panel").style.display = "grid";
+  el("run-panel").style.display = "grid";
+
+  const coverageList = el("coverage-list");
+  coverageList.innerHTML = eligibility.coverage
+    .map(([start, end]) => `<span>${formatCoverageDate(start)} → ${formatCoverageDate(end)}</span>`).join(" · ")
+    || "Aucune période couverte.";
+  el("narrowest-key-hint").textContent = eligibility.narrowest_key
+    ? `Limité par : ${eligibility.narrowest_key} (la donnée la moins couverte parmi celles requises).`
+    : "";
+
+  startPicker.setCoverage(eligibility.coverage);
+  endPicker.setCoverage(eligibility.coverage);
+
+  const first = eligibility.coverage[0];
+  const last = eligibility.coverage[eligibility.coverage.length - 1];
+  if (first) {
+    const d = new Date(first[0]);
+    startDateStr = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    startPicker.setSelected(startDateStr);
+    el("start-time-input").value = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+  if (last) {
+    const d = new Date(last[1]);
+    endDateStr = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    endPicker.setSelected(endDateStr);
+    el("end-time-input").value = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+  el("instrument-input").value = eligibility.default_instrument;
+  renderRangeHint();
+}
+
+// --- Variable rendering: fixed mode reuses a plain input per field;
+// sweep mode adds a per-field "plage" toggle -- number fields get
+// min/max/step, select fields get a checkbox per option. ---
+
+function renderVarField(containerEl, field, savedConfig, sweepBucket) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "var-field";
+  wrapper.dataset.field = field.name;
+  wrapper.dataset.type = field.type;
+  const savedValue = savedConfig[field.name] !== undefined ? savedConfig[field.name] : field.default;
+
+  const showSweep = sweepMode;
+  const state = sweepBucket[field.name] || (sweepBucket[field.name] = {
+    enabled: false,
+    min: field.type === "number" ? savedValue : undefined,
+    max: field.type === "number" ? savedValue : undefined,
+    step: 1,
+    values: field.type === "select" ? new Set([savedValue]) : undefined,
+  });
+
+  let toggleHtml = "";
+  if (showSweep) {
+    toggleHtml = `<label class="sweep-toggle"><input type="checkbox" class="sweep-enable" ${state.enabled ? "checked" : ""}> tester une plage</label>`;
+  }
+  wrapper.innerHTML = `<div class="var-label"><span class="name">${field.label}</span>${toggleHtml}</div>`;
+
+  const body = document.createElement("div");
+  if (!showSweep || !state.enabled) {
+    if (field.type === "select") {
+      body.innerHTML = `<select class="fixed-input">${field.options.map((opt) =>
+        `<option value="${escapeAttr(opt)}" ${opt === savedValue ? "selected" : ""}>${opt}</option>`
+      ).join("")}</select>`;
+    } else if (field.type === "number") {
+      body.innerHTML = `<input type="number" step="any" class="fixed-input" value="${escapeAttr(String(savedValue))}">`;
+    } else {
+      body.innerHTML = `<input type="text" class="fixed-input" value="${escapeAttr(String(savedValue))}">`;
+    }
+  } else if (field.type === "select") {
+    body.className = "options-row";
+    body.innerHTML = field.options.map((opt) => `
+      <label class="check"><input type="checkbox" class="sweep-option" value="${escapeAttr(opt)}" ${state.values.has(opt) ? "checked" : ""}> ${opt}</label>
+    `).join("");
+  } else {
+    body.className = "range-row";
+    body.innerHTML = `
+      <input type="number" step="any" class="sweep-min" placeholder="min" value="${escapeAttr(String(state.min))}">
+      <span>à</span>
+      <input type="number" step="any" class="sweep-max" placeholder="max" value="${escapeAttr(String(state.max))}">
+      <span>pas de</span>
+      <input type="number" step="any" class="sweep-step" placeholder="pas" value="${escapeAttr(String(state.step))}">
+    `;
+  }
+  wrapper.appendChild(body);
+  containerEl.appendChild(wrapper);
+
+  const enableBox = wrapper.querySelector(".sweep-enable");
+  if (enableBox) {
+    enableBox.addEventListener("change", () => {
+      state.enabled = enableBox.checked;
+      renderVariables();
+    });
+  }
+}
+
+function renderVariables() {
+  const executionContainer = el("execution-vars");
+  const managementContainer = el("management-vars");
+  executionContainer.innerHTML = "";
+  managementContainer.innerHTML = "";
+  if (executionInfo) {
+    const savedConfig = (strategy.execution && strategy.execution.config) || {};
+    if (executionInfo.config_schema.length) {
+      const heading = document.createElement("strong");
+      heading.style.cssText = "font-size:12px;display:block;margin-bottom:6px";
+      heading.textContent = "Exécution";
+      executionContainer.appendChild(heading);
+    }
+    executionInfo.config_schema.forEach((field) => renderVarField(executionContainer, field, savedConfig, sweepState.execution));
+  }
+  if (managementInfo) {
+    const savedConfig = (strategy.management && strategy.management.config) || {};
+    if (managementInfo.config_schema.length) {
+      const heading = document.createElement("strong");
+      heading.style.cssText = "font-size:12px;display:block;margin-bottom:6px";
+      heading.textContent = "Gestion";
+      managementContainer.appendChild(heading);
+    }
+    managementInfo.config_schema.forEach((field) => renderVarField(managementContainer, field, savedConfig, sweepState.management));
+  }
+}
+
+el("mode-fixed").addEventListener("change", () => { sweepMode = false; renderVariables(); });
+el("mode-sweep").addEventListener("change", () => { sweepMode = true; renderVariables(); });
+
+function collectFixedConfig(containerEl, schema) {
+  const result = {};
+  schema.forEach((field) => {
+    const wrapper = containerEl.querySelector(`[data-field="${CSS.escape(field.name)}"]`);
+    const input = wrapper.querySelector(".fixed-input");
+    if (!input) return; // this field is currently being swept -- no fixed value to read
+    result[field.name] = field.type === "number" ? parseFloat(input.value) : input.value;
+  });
+  return result;
+}
+
+function collectSweepSpec(containerEl, schema, sweepBucket) {
+  const spec = {};
+  schema.forEach((field) => {
+    const state = sweepBucket[field.name];
+    if (!state || !state.enabled) return;
+    const wrapper = containerEl.querySelector(`[data-field="${CSS.escape(field.name)}"]`);
+    if (field.type === "select") {
+      const checked = Array.from(wrapper.querySelectorAll(".sweep-option:checked")).map((c) => c.value);
+      if (checked.length) spec[field.name] = checked;
+    } else {
+      const min = parseFloat(wrapper.querySelector(".sweep-min").value);
+      const max = parseFloat(wrapper.querySelector(".sweep-max").value);
+      const step = parseFloat(wrapper.querySelector(".sweep-step").value);
+      if (!Number.isNaN(min) && !Number.isNaN(max) && !Number.isNaN(step) && step > 0) {
+        spec[field.name] = { min, max, step };
+      }
+    }
+  });
+  return spec;
+}
+
+function renderResults(result) {
+  const container = el("results");
+  if (!result.results.length) {
+    container.innerHTML = '<p class="empty">Aucun résultat.</p>';
+    return;
+  }
+  if (result.results.length === 1) {
+    const r = result.results[0];
+    const pct = r.win_rate === null ? "—" : `${(r.win_rate * 100).toFixed(1)}%`;
+    container.innerHTML = `<p style="margin-top:12px">Taux de réussite : <strong class="rate ${r.win_rate >= 0.5 ? "good" : ""}">${pct}</strong> `
+      + `(${r.wins} / ${r.trades} trades)</p>`;
+    return;
+  }
+  // Reference equality (r === result.best) never matches: the two objects
+  // came from the same JSON payload but were deserialized independently,
+  // so they're structurally equal, never identical -- compare by value.
+  const bestKey = JSON.stringify([result.best.execution_config, result.best.management_config]);
+  const rows = result.results.map((r) => {
+    const pct = r.win_rate === null ? "—" : `${(r.win_rate * 100).toFixed(1)}%`;
+    const isBest = JSON.stringify([r.execution_config, r.management_config]) === bestKey;
+    const config = { ...r.execution_config, ...r.management_config };
+    const configText = Object.entries(config).map(([k, v]) => `${k}=${v}`).join(", ");
+    return `<tr class="${isBest ? "best" : ""}"><td>${escapeAttr(configText)}</td><td>${r.trades}</td>`
+      + `<td class="rate ${r.win_rate >= 0.5 ? "good" : ""}">${pct}</td></tr>`;
+  }).join("");
+  container.innerHTML = `<table class="results-table"><thead><tr><th>Combinaison</th><th>Trades</th><th>Taux de réussite</th></tr></thead>`
+    + `<tbody>${rows}</tbody></table>`;
+}
+
+async function runBacktest() {
+  const status = el("run-status");
+  status.className = "status-line";
+  el("results").innerHTML = "";
+  el("show-replay-btn").style.display = "none";
+  el("replay-panel").style.display = "none";
+  stopReplay();
+  const instrument = el("instrument-input").value.trim();
+  const cadenceSeconds = parseFloat(el("cadence-input").value);
+  const missing = [];
+  if (!startDateStr) missing.push("la date de début (choisis un jour dans le calendrier)");
+  if (!endDateStr) missing.push("la date de fin (choisis un jour dans le calendrier)");
+  if (!instrument) missing.push("l'actif simulé");
+  if (!cadenceSeconds) missing.push("la granularité d'évaluation");
+  if (missing.length) {
+    status.className = "status-line error";
+    status.textContent = "Il manque : " + missing.join(", ") + ".";
+    return;
+  }
+  const startTs = combineDateTime(startDateStr, el("start-time-input").value);
+  const endTs = combineDateTime(endDateStr, el("end-time-input").value);
+  if (endTs <= startTs) {
+    status.className = "status-line error";
+    status.textContent = "La date de fin doit être après la date de début.";
+    return;
+  }
+  if (computeCoverageOverlap(startTs, endTs, eligibility.coverage).covered <= 0) {
+    status.className = "status-line error";
+    status.textContent = "Aucune donnée dans cette période -- choisis une période dans les plages couvertes plus haut.";
+    return;
+  }
+
+  const executionConfig = collectFixedConfig(el("execution-vars"), executionInfo.config_schema);
+  const managementConfig = managementInfo ? collectFixedConfig(el("management-vars"), managementInfo.config_schema) : {};
+  const executionSweep = sweepMode ? collectSweepSpec(el("execution-vars"), executionInfo.config_schema, sweepState.execution) : {};
+  const managementSweep = (sweepMode && managementInfo) ? collectSweepSpec(el("management-vars"), managementInfo.config_schema, sweepState.management) : {};
+  // executionConfig/managementConfig only ever has entries for fields NOT
+  // currently swept (collectFixedConfig skips swept fields, which have no
+  // .fixed-input to read) -- the engine uses them as the fixed value for
+  // those fields and ignores them for fields present in the sweep spec.
+
+  el("backtest-btn").disabled = true;
+  status.textContent = "Lancement…";
+
+  const runRes = await fetch("/api/backtest/run", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      strategy: strategyName, instrument, start_ts: startTs, end_ts: endTs, cadence_seconds: cadenceSeconds,
+      execution_sweep: executionSweep, management_sweep: managementSweep,
+      execution_config: executionConfig, management_config: managementConfig,
+    }),
+  });
+  const runData = await runRes.json();
+  if (!runRes.ok) {
+    status.className = "status-line error";
+    status.textContent = runData.error || "échec du lancement";
+    el("backtest-btn").disabled = false;
+    return;
+  }
+
+  status.textContent = "Backtest en cours…";
+  const jobId = runData.job_id;
+  const poll = async () => {
+    const res = await fetch(`/api/backtest/status?id=${encodeURIComponent(jobId)}`);
+    const data = await res.json();
+    const elapsed = formatElapsed(data.elapsed_seconds);
+    if (!data.done) {
+      status.textContent = `Backtest en cours… (${elapsed})`;
+      setTimeout(poll, 1000);
+      return;
+    }
+    el("backtest-btn").disabled = false;
+    if (data.error) {
+      status.className = "status-line error";
+      status.textContent = `${data.error} (après ${elapsed})`;
+      return;
+    }
+    status.textContent = `Terminé en ${elapsed} -- ${data.result.evaluation_steps} évaluations.`;
+    renderResults(data.result);
+    prepareReplay(data.result.replay);
+  };
+  poll();
+}
+
+function formatElapsed(seconds) {
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return `${minutes} min ${rest} s`;
+}
+
+el("backtest-btn").addEventListener("click", runBacktest);
+
+// ============================================================
+// Trade replay: a chart of the priced instrument over the tested period,
+// every trade's entry/exit, SL/TP for the selected trade, and a cursor
+// that scrubs (by hover, by clicking a trade, or via play/pause) through
+// the same timeline the concept/microsystem readout below is synced to --
+// so the aggregate win rate can actually be checked against what happened,
+// not just trusted.
+// ============================================================
+
+const CHART_W = 800, CHART_H = 240;
+const CHART_PAD = { top: 10, right: 46, bottom: 22, left: 10 };
+
+let replayData = null;
+let replayCurrentIndex = 0;
+let replaySelectedTradeIndex = null;
+let replayTimer = null;
+
+function timeScale(ts, minTs, maxTs) {
+  const span = maxTs - minTs || 1;
+  return CHART_PAD.left + ((ts - minTs) / span) * (CHART_W - CHART_PAD.left - CHART_PAD.right);
+}
+function priceScale(price, minPrice, maxPrice) {
+  const span = maxPrice - minPrice || 1;
+  return CHART_H - CHART_PAD.bottom - ((price - minPrice) / span) * (CHART_H - CHART_PAD.top - CHART_PAD.bottom);
+}
+
+function renderReplayChart() {
+  const svg = el("replay-chart");
+  svg.setAttribute("viewBox", `0 0 ${CHART_W} ${CHART_H}`);
+  if (!replayData || !replayData.price_path.length) { svg.innerHTML = ""; return; }
+
+  const timestamps = replayData.price_path.map((p) => p.timestamp);
+  const prices = replayData.price_path.map((p) => p.price);
+  const minTs = Math.min(...timestamps), maxTs = Math.max(...timestamps);
+  const minPrice = Math.min(...prices), maxPrice = Math.max(...prices);
+  const x = (ts) => timeScale(ts, minTs, maxTs);
+  const y = (price) => priceScale(price, minPrice, maxPrice);
+
+  let svgContent = "";
+
+  [minPrice, (minPrice + maxPrice) / 2, maxPrice].forEach((p) => {
+    const py = y(p);
+    svgContent += `<line class="grid-line" x1="${CHART_PAD.left}" x2="${CHART_W - CHART_PAD.right}" y1="${py}" y2="${py}"></line>`;
+    svgContent += `<text class="axis-label" x="${CHART_W - CHART_PAD.right + 4}" y="${py + 3}">${p.toFixed(2)}</text>`;
+  });
+
+  const pathD = replayData.price_path
+    .map((p, i) => `${i === 0 ? "M" : "L"}${x(p.timestamp).toFixed(1)},${y(p.price).toFixed(1)}`).join(" ");
+  svgContent += `<path class="price-line" d="${pathD}"></path>`;
+
+  const activeTrade = replaySelectedTradeIndex !== null ? replayData.trades[replaySelectedTradeIndex] : null;
+  if (activeTrade) {
+    const ex1 = x(activeTrade.entry_time), ex2 = x(activeTrade.exit_time);
+    if (activeTrade.stop_loss !== null) {
+      const sy = y(activeTrade.stop_loss);
+      svgContent += `<line class="sl-line" x1="${ex1}" x2="${ex2}" y1="${sy}" y2="${sy}"></line>`;
+      svgContent += `<text class="level-label" x="${ex1}" y="${sy - 3}" fill="var(--critical)">SL ${activeTrade.stop_loss.toFixed(2)}</text>`;
+    }
+    if (activeTrade.take_profit !== null) {
+      const ty = y(activeTrade.take_profit);
+      svgContent += `<line class="tp-line" x1="${ex1}" x2="${ex2}" y1="${ty}" y2="${ty}"></line>`;
+      svgContent += `<text class="level-label" x="${ex1}" y="${ty - 3}" fill="var(--good)">TP ${activeTrade.take_profit.toFixed(2)}</text>`;
+    }
+  }
+
+  replayData.trades.forEach((trade, i) => {
+    const isSelected = i === replaySelectedTradeIndex;
+    svgContent += `<circle class="entry-marker ${isSelected ? "selected" : ""}" cx="${x(trade.entry_time)}" cy="${y(trade.entry_price)}" r="4" data-trade="${i}"></circle>`;
+    svgContent += `<circle class="exit-marker ${trade.outcome} ${isSelected ? "selected" : ""}" cx="${x(trade.exit_time)}" cy="${y(trade.exit_price)}" r="4" data-trade="${i}"></circle>`;
+  });
+
+  const currentStep = replayData.timeline[replayCurrentIndex];
+  if (currentStep) {
+    const cursorX = x(currentStep.timestamp);
+    svgContent += `<line class="cursor-line" x1="${cursorX}" x2="${cursorX}" y1="${CHART_PAD.top}" y2="${CHART_H - CHART_PAD.bottom}"></line>`;
+  }
+
+  svgContent += `<rect class="hover-target" x="0" y="0" width="${CHART_W}" height="${CHART_H}"></rect>`;
+  svg.innerHTML = svgContent;
+
+  svg.querySelectorAll("[data-trade]").forEach((markerEl) => {
+    markerEl.addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectReplayTrade(parseInt(markerEl.dataset.trade, 10));
+    });
+  });
+  svg.querySelector(".hover-target").addEventListener("mousemove", onReplayChartHover);
+}
+
+function onReplayChartHover(event) {
+  if (!replayData || !replayData.timeline.length) return;
+  const rect = el("replay-chart").getBoundingClientRect();
+  if (!rect.width) return;
+  const mouseX = (event.clientX - rect.left) * (CHART_W / rect.width);
+  const timestamps = replayData.timeline.map((s) => s.timestamp);
+  const minTs = timestamps[0], maxTs = timestamps[timestamps.length - 1];
+  const targetTs = minTs + ((mouseX - CHART_PAD.left) / (CHART_W - CHART_PAD.left - CHART_PAD.right)) * (maxTs - minTs);
+  let nearest = 0, nearestDist = Infinity;
+  timestamps.forEach((ts, i) => {
+    const dist = Math.abs(ts - targetTs);
+    if (dist < nearestDist) { nearestDist = dist; nearest = i; }
+  });
+  setReplayIndex(nearest);
+}
+
+function renderReplayReadout() {
+  const step = replayData.timeline[replayCurrentIndex];
+  const tbody = el("replay-readout-table").querySelector("tbody");
+  if (!step) { tbody.innerHTML = ""; return; }
+  const rows = [];
+  Object.entries(step.concepts || {}).forEach(([id, value]) => {
+    rows.push(`<tr><td>concept · ${escapeAttr(id)}</td><td>${escapeAttr(JSON.stringify(value))}</td></tr>`);
+  });
+  Object.entries(step.microsystems || {}).forEach(([id, value]) => {
+    rows.push(`<tr><td>microsystème · ${escapeAttr(id)}</td><td>${escapeAttr(JSON.stringify(value))}</td></tr>`);
+  });
+  tbody.innerHTML = rows.join("") || '<tr><td colspan="2" class="empty">Rien à cet instant.</td></tr>';
+}
+
+function renderReplayTradesList() {
+  const container = el("replay-trades-list");
+  container.innerHTML = replayData.trades.map((trade, i) => {
+    const entryDate = new Date(trade.entry_time * 1000).toLocaleString("fr-FR");
+    return `<div class="replay-trade-row ${i === replaySelectedTradeIndex ? "selected" : ""}" data-trade="${i}">`
+      + `<span>${trade.direction === "long" ? "Long" : "Short"} · ${entryDate}</span>`
+      + `<span class="outcome ${trade.outcome}">${trade.outcome === "win" ? "Gain" : "Perte"}</span>`
+      + `</div>`;
+  }).join("") || '<div class="empty">Aucun trade pris.</div>';
+  container.querySelectorAll("[data-trade]").forEach((row) => {
+    row.addEventListener("click", () => selectReplayTrade(parseInt(row.dataset.trade, 10)));
+  });
+}
+
+function selectReplayTrade(index) {
+  replaySelectedTradeIndex = index;
+  const trade = replayData.trades[index];
+  let nearestStepIndex = 0, nearestDist = Infinity;
+  replayData.timeline.forEach((step, i) => {
+    const dist = Math.abs(step.timestamp - trade.entry_time);
+    if (dist < nearestDist) { nearestDist = dist; nearestStepIndex = i; }
+  });
+  renderReplayTradesList();
+  setReplayIndex(nearestStepIndex);
+}
+
+function setReplayIndex(index) {
+  if (!replayData) return;
+  replayCurrentIndex = Math.max(0, Math.min(index, replayData.timeline.length - 1));
+  const step = replayData.timeline[replayCurrentIndex];
+  el("replay-cursor-label").textContent = step ? new Date(step.timestamp * 1000).toLocaleString("fr-FR") : "";
+  renderReplayChart();
+  renderReplayReadout();
+}
+
+function stopReplay() {
+  if (replayTimer) { clearInterval(replayTimer); replayTimer = null; }
+  el("replay-play-btn").textContent = "▶ Lecture";
+}
+
+// Target wall-clock duration for the *whole* replay, independent of the
+// backtest's own evaluation cadence -- a cadence of 12h (common for a
+// multi-day/week backtest) would otherwise make "accéléré" tick every real
+// 36 minutes at a naive cadence/speed ratio. Per-step tick is this total
+// spread evenly across every step, clamped to stay both visible (not
+// faster than a frame) and watchable (not painfully slow for a short
+// backtest with few steps).
+const REPLAY_TARGET_SECONDS = { slow: 30, normal: 10, fast: 3 };
+
+function startReplay() {
+  if (!replayData || !replayData.timeline.length) return;
+  const speedKey = el("replay-speed").value;
+  stopReplay();
+  if (speedKey === "instant") {
+    setReplayIndex(replayData.timeline.length - 1);
+    return;
+  }
+  el("replay-play-btn").textContent = "⏸ Pause";
+  const totalSeconds = REPLAY_TARGET_SECONDS[speedKey] || REPLAY_TARGET_SECONDS.normal;
+  const steps = Math.max(replayData.timeline.length - 1, 1);
+  const tickMs = Math.min(500, Math.max(16, (totalSeconds * 1000) / steps));
+  if (replayCurrentIndex >= replayData.timeline.length - 1) replayCurrentIndex = 0;
+  replayTimer = setInterval(() => {
+    if (replayCurrentIndex >= replayData.timeline.length - 1) { stopReplay(); return; }
+    setReplayIndex(replayCurrentIndex + 1);
+  }, tickMs);
+}
+
+el("replay-play-btn").addEventListener("click", () => {
+  if (replayTimer) stopReplay();
+  else startReplay();
+});
+
+function prepareReplay(replay) {
+  replayData = replay;
+  replayCurrentIndex = 0;
+  replaySelectedTradeIndex = null;
+  if (!replay || !replay.trades.length) {
+    el("show-replay-btn").style.display = "none";
+    return;
+  }
+  el("show-replay-btn").style.display = "inline-block";
+  renderReplayTradesList();
+  setReplayIndex(0);
+}
+
+el("show-replay-btn").addEventListener("click", () => {
+  const panel = el("replay-panel");
+  const opening = panel.style.display === "none";
+  panel.style.display = opening ? "block" : "none";
+  if (opening) { renderReplayChart(); panel.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
+});
+
+async function init() {
+  const [strategyRes, eligibilityRes, executionProfilesRes, managementProfilesRes] = await Promise.all([
+    fetch(`/api/strategy?name=${encodeURIComponent(strategyName)}`),
+    fetch(`/api/backtest/eligibility?strategy=${encodeURIComponent(strategyName)}`),
+    fetch("/api/execution-profiles"),
+    fetch("/api/management-profiles"),
+  ]);
+  if (!strategyRes.ok || !eligibilityRes.ok) {
+    el("eligibility-content").innerHTML = '<div class="blocking critical">Stratégie introuvable.</div>';
+    return;
+  }
+  strategy = await strategyRes.json();
+  eligibility = await eligibilityRes.json();
+  const executionProfiles = (await executionProfilesRes.json()).execution_profiles || [];
+  const managementProfiles = (await managementProfilesRes.json()).management_profiles || [];
+
+  if (strategy.execution) {
+    executionInfo = executionProfiles.find((e) => e.id === strategy.execution.execution_id) || null;
+  }
+  if (strategy.management) {
+    managementInfo = managementProfiles.find((m) => m.id === strategy.management.management_id) || null;
+  }
+
+  renderEligibility();
+  if (executionInfo) renderVariables();
+}
+
+init();
 </script>
 </body>
 </html>

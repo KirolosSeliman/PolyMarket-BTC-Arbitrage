@@ -28,8 +28,11 @@ body {
   padding: 40px 20px;
 }
 header { text-align: center; }
+header a.back { display: inline-block; color: var(--muted); text-decoration: none; font-size: 12px; margin-bottom: 10px; }
+header a.back:hover { color: var(--text-2); }
 h1 { font-size: 20px; margin: 0 0 6px; letter-spacing: 0.01em; }
 header p { color: var(--muted); margin: 0; font-size: 13px; }
+header p.strategy { color: var(--accent); margin-top: 4px; font-size: 12.5px; }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; max-width: 900px; width: 100%; }
 a.card {
   display: block; text-decoration: none; color: inherit;
@@ -45,21 +48,23 @@ a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
 </head>
 <body>
 <header>
+  <a class="back" href="/">← changer de stratégie</a>
   <h1>PolyMarket BTC — Centre de contrôle</h1>
   <p>Le collecteur alimente trois destinations. Choisis-en une.</p>
+  <p class="strategy" id="strategy-line" style="display:none"></p>
 </header>
 <div class="cards">
-  <a class="card" href="/live">
+  <a class="card" href="/live" id="live-card">
     <span class="icon">▮</span>
     <h2>Trading en direct</h2>
     <p>Analyse en temps réel des données collectées. Rien n'est implémenté pour l'instant — juste la page.</p>
-    <span class="status">Aucune stratégie · placeholder</span>
+    <span class="status" id="live-card-status">placeholder</span>
   </a>
-  <a class="card" href="/backtest">
+  <a class="card" href="/backtest" id="backtest-card">
     <span class="icon">▤</span>
     <h2>Backtest</h2>
-    <p>Sélectionne un jeu de données déjà collecté pour l'analyser hors-ligne, comme en direct.</p>
-    <span class="status">Sélection de données · analyseur à venir</span>
+    <p>Teste ta stratégie sur les données déjà collectées, sur la période de ton choix.</p>
+    <span class="status" id="backtest-card-status">Fonctionnel</span>
   </a>
   <a class="card" href="/collect">
     <span class="icon">●</span>
@@ -68,5 +73,25 @@ a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
     <span class="status">Fonctionnel</span>
   </a>
 </div>
+<script>
+"use strict";
+// A strategy is chosen up front on "/" before ever reaching this page --
+// arriving here without one (a stale bookmark, a manual URL edit) means
+// that step was skipped, so send it back rather than show a menu with
+// nothing behind it.
+const params = new URLSearchParams(window.location.search);
+const strategy = params.get("strategy");
+if (!strategy) {
+  window.location.href = "/";
+} else {
+  const isNew = params.get("new") === "1";
+  const line = document.getElementById("strategy-line");
+  line.textContent = (isNew ? "Nouvelle stratégie : " : "Stratégie : ") + strategy;
+  line.style.display = "block";
+  document.getElementById("live-card").href = `/live?${params.toString()}`;
+  document.getElementById("live-card-status").textContent = strategy;
+  document.getElementById("backtest-card").href = `/backtest?${params.toString()}`;
+}
+</script>
 </body>
 </html>

@@ -19,12 +19,22 @@ from polymarket_btc.data_collection.control.runs import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _iso_for_test(ns: int) -> str:
+    return datetime.fromtimestamp(ns / 1_000_000_000, tz=UTC).isoformat()
+
+
+class _KlineHeaders:
+    def get(self, _name: str) -> str | None:
+        return None
+
+
 class _KlineResponse:
     """Same fake urlopen response shape used throughout the REST-source
     tests (see test_binance_futures_historical.py / test_futures_rest_streams.py)."""
 
     def __init__(self, payload: object) -> None:
         self._body = json.dumps(payload).encode()
+        self.headers = _KlineHeaders()
 
     def read(self) -> bytes:
         return self._body
@@ -55,8 +65,10 @@ class ExportRunTests(unittest.TestCase):
             data_dir = Path(directory)
             snapshots = data_dir / "snapshots" / "date=2026-07-30" / "hour=12"
             snapshots.mkdir(parents=True)
-            for index, sequence in enumerate((1, 2)):
-                table = pa.table({"snapshot_sequence": [sequence], "value": [f"row-{index}"]})
+            for index, (sequence, ts_ns) in enumerate(((1, 1_000_000_000), (2, 2_000_000_000))):
+                table = pa.table({
+                    "snapshot_sequence": [sequence], "snapshot_timestamp_ns": [ts_ns], "value": [f"row-{index}"],
+                })
                 pq.write_table(table, snapshots / f"part-{index}.parquet")
             (data_dir / "funding_history.jsonl").write_text('{"a": 1}\n', encoding="utf-8")
 
@@ -72,6 +84,10 @@ class ExportRunTests(unittest.TestCase):
             self.assertEqual(manifest["plugin_files"], ["funding_history.jsonl"])
             self.assertEqual(manifest["mode"], "collect")
             self.assertIsNone(manifest["error"])
+            self.assertEqual(
+                manifest["source_coverage"]["chainlink"],
+                {"start_ts_utc": "1970-01-01T00:00:01+00:00", "end_ts_utc": "1970-01-01T00:00:02+00:00"},
+            )
             self.assertTrue((data_dir / "dataset.parquet").is_file())
             self.assertTrue((data_dir / "manifest.json").is_file())
 
@@ -87,6 +103,106 @@ class ExportRunTests(unittest.TestCase):
             self.assertIsNone(manifest["dataset_file"])
             self.assertEqual(manifest["snapshot_row_count"], 0)
 
+    def test_access_mode_run_reports_raw_event_count_not_zero(self) -> None:
+        """An access-mode run never populates dataset.parquet (no gateway/
+        reducer runs), so snapshot_row_count is always 0 for it -- the real
+        yield has to come from summing each raw segment's own sidecar
+        manifest instead. Regression test for the "0 lignes" collect.html
+        display bug: access-mode collections were showing 0 despite really
+        having collected data."""
+        from decimal import Decimal
+
+        from polymarket_btc.data_collection.market_data.models import (
+            BinanceAggTradePayload, EventSource, EventStream, MarketDataEvent, TakerSide,
+        )
+        from polymarket_btc.data_collection.market_data.storage import RawEventStorage
+
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            storage = RawEventStorage(data_dir, zstd_level=3)
+            for i in range(3):
+                payload = BinanceAggTradePayload(
+                    symbol="BTCUSDT", aggregate_trade_id=i, price=Decimal("100"), quantity=Decimal("0.1"),
+                    first_trade_id=i, last_trade_id=i, trade_timestamp_ns=i, taker_side=TakerSide.BUY,
+                )
+                event = MarketDataEvent(
+                    schema_version=2, ingest_sequence=i, event_id=f"evt-{i}",
+                    source=EventSource.BINANCE_FUTURES_TRADE, stream=EventStream.BINANCE_FUTURES_AGG_TRADE,
+                    instrument="BTCUSDT", source_timestamp_ns=i, server_timestamp_ns=i,
+                    received_wall_timestamp_ns=i, received_monotonic_ns=time.monotonic_ns(),
+                    source_sequence=None, timeframe=None, market_id=None, condition_id=None,
+                    asset_id=None, outcome=None, payload=payload,
+                )
+                storage.write(event)
+            storage.close()
+
+            state = RunState(
+                run_id="access-run", sources=["binance_futures_trade"], plugins=[],
+                duration_seconds=None, data_dir=data_dir, started_at_ns=time.time_ns(), mode="access",
+            )
+            state.ended_at_ns = time.time_ns()
+            manifest = export_run(state)
+
+            self.assertEqual(manifest["snapshot_row_count"], 0)
+            self.assertEqual(manifest["raw_event_count"], 3)
+
+    def test_source_coverage_is_per_key_not_the_runs_requested_range(self) -> None:
+        """The exact reported bug: a run requested for one wide range where
+        one key (BTC kline) genuinely got the whole thing but another
+        (ETH kline) only actually got a narrow slice at the end -- the
+        manifest's own start_ts_utc/end_ts_utc (the *requested* range) must
+        never be read as if it applied to every key; source_coverage must
+        report each key's own true, independently-observed range."""
+        from decimal import Decimal
+
+        from polymarket_btc.data_collection.market_data.models import (
+            BinanceKlinePayload, EventSource, EventStream, MarketDataEvent,
+        )
+        from polymarket_btc.data_collection.market_data.storage import RawEventStorage
+
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            storage = RawEventStorage(data_dir, zstd_level=3)
+
+            def write_kline(instrument: str, ts_ns: int, sequence: int) -> None:
+                payload = BinanceKlinePayload(
+                    market="futures", interval="1m", open_time_ns=ts_ns - 60_000_000_000, close_time_ns=ts_ns,
+                    open=Decimal("100"), high=Decimal("100"), low=Decimal("100"), close=Decimal("100"),
+                    base_volume=Decimal("1"), quote_volume=Decimal("1"), trade_count=1, is_closed=True,
+                )
+                event = MarketDataEvent(
+                    schema_version=2, ingest_sequence=sequence, event_id=f"kline-{instrument}-{sequence}",
+                    source=EventSource.BINANCE_FUTURES_KLINE, stream=EventStream.BINANCE_KLINE,
+                    instrument=instrument, source_timestamp_ns=ts_ns, server_timestamp_ns=ts_ns,
+                    received_wall_timestamp_ns=ts_ns, received_monotonic_ns=time.monotonic_ns(),
+                    source_sequence=None, timeframe=None, market_id=None, condition_id=None,
+                    asset_id=None, outcome=None, payload=payload,
+                )
+                storage.write(event)
+
+            day1_ns, day18_ns, day19_ns = 1 * 86_400 * 1_000_000_000, 18 * 86_400 * 1_000_000_000, 19 * 86_400 * 1_000_000_000
+            write_kline("BTCUSDT", day1_ns, 0)
+            write_kline("BTCUSDT", day19_ns, 1)
+            write_kline("ETHUSDT", day18_ns, 2)
+            write_kline("ETHUSDT", day19_ns, 3)
+            storage.close()
+
+            state = RunState(
+                run_id="mixed-run", sources=["binance_futures_kline", "binance_futures_kline:ETH"], plugins=[],
+                duration_seconds=None, data_dir=data_dir, started_at_ns=time.time_ns(), mode="access",
+                start_ts_ns=day1_ns, end_ts_ns=day19_ns,
+            )
+            state.ended_at_ns = time.time_ns()
+            manifest = export_run(state)
+
+            # The requested range (misleading if read per-key) still covers day 1-19.
+            self.assertEqual(manifest["start_ts_utc"], _iso_for_test(day1_ns))
+            # But each key's OWN actual coverage must differ:
+            self.assertEqual(manifest["source_coverage"]["binance_futures_kline"]["start_ts_utc"], _iso_for_test(day1_ns))
+            self.assertEqual(manifest["source_coverage"]["binance_futures_kline"]["end_ts_utc"], _iso_for_test(day19_ns))
+            self.assertEqual(manifest["source_coverage"]["binance_futures_kline:ETH"]["start_ts_utc"], _iso_for_test(day18_ns))
+            self.assertEqual(manifest["source_coverage"]["binance_futures_kline:ETH"]["end_ts_utc"], _iso_for_test(day19_ns))
+
 
 class CollectionRunManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_start_validates_and_rejects_overlapping_runs(self) -> None:
@@ -97,6 +213,10 @@ class CollectionRunManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 collections_dir=root / "collections",
                 symbol_cache_path=_seeded_symbol_cache(root),
                 plugins_dir=root / "plugins",
+                concepts_dir=root / "concepts",
+                microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles",
+                management_dir=root / "management_profiles",
             )
             with self.assertRaises(ValueError):
                 manager.start(sources=[], plugins=[], duration_seconds=None)
@@ -112,6 +232,10 @@ class CollectionRunManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 collections_dir=root / "collections",
                 symbol_cache_path=_seeded_symbol_cache(root),
                 plugins_dir=root / "plugins",
+                concepts_dir=root / "concepts",
+                microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles",
+                management_dir=root / "management_profiles",
             )
             state = manager.start(sources=["chainlink"], plugins=[], duration_seconds=None)
             self.assertEqual(manager.status()["run_id"], state.run_id)
@@ -142,6 +266,82 @@ class CollectionRunManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.05)
 
 
+class DeleteRunTests(unittest.IsolatedAsyncioTestCase):
+    def _manager(self, root: Path) -> CollectionRunManager:
+        return CollectionRunManager(
+            config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
+            collections_dir=root / "collections",
+            symbol_cache_path=_seeded_symbol_cache(root),
+            plugins_dir=root / "plugins",
+            concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems",
+            execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles",
+        )
+
+    async def _finished_run(self, manager: CollectionRunManager) -> str:
+        state = manager.start(sources=["chainlink"], plugins=[], duration_seconds=None)
+        manager.stop()
+        for _ in range(200):
+            if not manager.status()["running"]:
+                break
+            await asyncio.sleep(0.05)
+        return state.run_id
+
+    async def test_deletes_the_runs_directory_and_it_disappears_from_list_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            run_id = await self._finished_run(manager)
+            self.assertEqual([r["run_id"] for r in manager.list_runs()], [run_id])
+
+            manager.delete_run(run_id)
+
+            self.assertEqual(manager.list_runs(), [])
+            self.assertFalse((manager.collections_dir / run_id).exists())
+
+    async def test_unknown_run_id_raises_file_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(FileNotFoundError):
+                manager.delete_run("no-such-run")
+
+    async def test_path_traversal_run_id_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(ValueError):
+                manager.delete_run("../outside")
+
+    async def test_cannot_delete_the_currently_running_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            state = manager.start(sources=["chainlink"], plugins=[], duration_seconds=None)
+            try:
+                with self.assertRaises(RuntimeError):
+                    manager.delete_run(state.run_id)
+            finally:
+                manager.stop()
+                for _ in range(200):
+                    if not manager.status()["running"]:
+                        break
+                    await asyncio.sleep(0.05)
+
+    async def test_a_different_past_run_can_be_deleted_while_another_is_running(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            old_run_id = await self._finished_run(manager)
+
+            state = manager.start(sources=["chainlink"], plugins=[], duration_seconds=None)
+            try:
+                manager.delete_run(old_run_id)
+                self.assertFalse((manager.collections_dir / old_run_id).exists())
+            finally:
+                manager.stop()
+                for _ in range(200):
+                    if not manager.status()["running"]:
+                        break
+                    await asyncio.sleep(0.05)
+
+
 class MergedCatalogTests(unittest.IsolatedAsyncioTestCase):
     """available_sources()/start() both go through _merged_catalog() --
     BTC's static entries plus every extra symbol the (cached) Binance
@@ -153,6 +353,10 @@ class MergedCatalogTests(unittest.IsolatedAsyncioTestCase):
             collections_dir=root / "collections",
             symbol_cache_path=_seeded_symbol_cache(root),
             plugins_dir=root / "plugins",
+            concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems",
+            execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles",
         )
 
     def test_available_sources_includes_generated_entries_for_cached_symbols(self) -> None:
@@ -185,6 +389,10 @@ class MergedCatalogTests(unittest.IsolatedAsyncioTestCase):
                 # taking /api/sources down with it.
                 symbol_cache_path=root / "cache" / "not_json_at_all.json",
                 plugins_dir=root / "plugins",
+                concepts_dir=root / "concepts",
+                microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles",
+                management_dir=root / "management_profiles",
             )
             (root / "cache").mkdir(parents=True, exist_ok=True)
             (root / "cache" / "not_json_at_all.json").write_text("not json", encoding="utf-8")
@@ -225,6 +433,10 @@ class AccessModeTests(unittest.IsolatedAsyncioTestCase):
             collections_dir=root / "collections",
             symbol_cache_path=_seeded_symbol_cache(root),
             plugins_dir=plugins_dir,
+            concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems",
+            execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles",
         )
 
     async def test_access_run_skips_the_gateway_and_runs_only_the_plugin_once(self) -> None:
@@ -374,6 +586,10 @@ class ImportPluginFileTests(unittest.TestCase):
             collections_dir=root / "collections",
             symbol_cache_path=_seeded_symbol_cache(root),
             plugins_dir=root / "plugins",
+            concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems",
+            execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles",
         )
 
     def test_valid_plugin_is_written_and_recognized(self) -> None:
@@ -418,6 +634,322 @@ class ImportPluginFileTests(unittest.TestCase):
             plugins_dir = Path(directory) / "plugins"
             self.assertFalse((plugins_dir / "escape.py").exists())
             self.assertFalse((Path(directory) / "escape.py").exists())
+
+
+_CONCEPT_SOURCE = (
+    'CONCEPT_INFO = {"label": "Test", "description": "...", "data_sources": ["chainlink"]}\n'
+    "def compute(context):\n    pass\n"
+)
+_MICROSYSTEM_SOURCE = (
+    'MICROSYSTEM_INFO = {"label": "Test", "description": "...", "concept_inputs": ["x"]}\n'
+    "def compute(context):\n    pass\n"
+)
+_EXECUTION_SOURCE = (
+    'EXECUTION_INFO = {"label": "Test", "description": "..."}\n'
+    "def execute(context):\n    pass\n"
+)
+_MANAGEMENT_SOURCE = (
+    'MANAGEMENT_INFO = {"label": "Test", "description": "..."}\n'
+    "def manage(context):\n    pass\n"
+)
+
+
+class ImportConceptFileTests(unittest.TestCase):
+    def _manager(self, root: Path) -> CollectionRunManager:
+        return CollectionRunManager(
+            config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
+            collections_dir=root / "collections",
+            symbol_cache_path=_seeded_symbol_cache(root),
+            plugins_dir=root / "plugins",
+            concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems",
+            execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles",
+        )
+
+    def test_valid_concept_is_written_and_recognized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._manager(root)
+            result = manager.import_concept_file("mon_concept.py", _CONCEPT_SOURCE)
+            self.assertEqual(result, {"filename": "mon_concept.py", "recognized": True})
+            self.assertEqual((root / "concepts" / "mon_concept.py").read_text(encoding="utf-8"), _CONCEPT_SOURCE)
+
+    def test_malformed_content_is_written_but_flagged_unrecognized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            result = manager.import_concept_file("mon_concept.py", "not a valid concept at all")
+            self.assertFalse(result["recognized"])
+
+    def test_duplicate_filename_requires_explicit_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_concept_file("mon_concept.py", "# v1")
+            with self.assertRaises(FileExistsError):
+                manager.import_concept_file("mon_concept.py", "# v2")
+            manager.import_concept_file("mon_concept.py", "# v2", overwrite=True)
+
+    def test_unsafe_filename_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(ValueError):
+                manager.import_concept_file("../escape.py", "# content")
+
+
+class ImportMicrosystemExecutionAndManagementFileTests(unittest.TestCase):
+    def _manager(self, root: Path) -> CollectionRunManager:
+        return CollectionRunManager(
+            config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
+            collections_dir=root / "collections",
+            symbol_cache_path=_seeded_symbol_cache(root),
+            plugins_dir=root / "plugins",
+            concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems",
+            execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles",
+        )
+
+    def test_valid_microsystem_is_written_and_recognized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._manager(root)
+            result = manager.import_microsystem_file("mon_micro.py", _MICROSYSTEM_SOURCE)
+            self.assertEqual(result, {"filename": "mon_micro.py", "recognized": True})
+            self.assertEqual((root / "microsystems" / "mon_micro.py").read_text(encoding="utf-8"), _MICROSYSTEM_SOURCE)
+
+    def test_duplicate_microsystem_filename_requires_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_microsystem_file("mon_micro.py", "# v1")
+            with self.assertRaises(FileExistsError):
+                manager.import_microsystem_file("mon_micro.py", "# v2")
+
+    def test_valid_execution_profile_is_written_and_recognized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._manager(root)
+            result = manager.import_execution_profile_file("mon_profil.py", _EXECUTION_SOURCE)
+            self.assertEqual(result, {"filename": "mon_profil.py", "recognized": True})
+            self.assertEqual(
+                (root / "execution_profiles" / "mon_profil.py").read_text(encoding="utf-8"), _EXECUTION_SOURCE,
+            )
+
+    def test_duplicate_execution_filename_requires_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_execution_profile_file("mon_profil.py", "# v1")
+            with self.assertRaises(FileExistsError):
+                manager.import_execution_profile_file("mon_profil.py", "# v2")
+
+    def test_valid_management_profile_is_written_and_recognized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._manager(root)
+            result = manager.import_management_profile_file("mon_profil_gestion.py", _MANAGEMENT_SOURCE)
+            self.assertEqual(result, {"filename": "mon_profil_gestion.py", "recognized": True})
+            self.assertEqual(
+                (root / "management_profiles" / "mon_profil_gestion.py").read_text(encoding="utf-8"),
+                _MANAGEMENT_SOURCE,
+            )
+
+    def test_duplicate_management_filename_requires_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_management_profile_file("mon_profil_gestion.py", "# v1")
+            with self.assertRaises(FileExistsError):
+                manager.import_management_profile_file("mon_profil_gestion.py", "# v2")
+
+
+class ReadSourceTests(unittest.TestCase):
+    def _manager(self, root: Path) -> CollectionRunManager:
+        return CollectionRunManager(
+            config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
+            collections_dir=root / "collections",
+            symbol_cache_path=_seeded_symbol_cache(root),
+            plugins_dir=root / "plugins",
+            concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems",
+            execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles",
+        )
+
+    def test_read_plugin_source_found(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_plugin_file(
+                "mon_plugin.py",
+                'PLUGIN_INFO = {"label": "x", "description": "y"}\nasync def run(context): pass\n',
+            )
+            result = manager.read_plugin_source("mon_plugin")
+            self.assertEqual(result["id"], "mon_plugin")
+            self.assertEqual(result["filename"], "mon_plugin.py")
+            self.assertIn("PLUGIN_INFO", result["content"])
+
+    def test_read_plugin_source_not_found_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(FileNotFoundError):
+                manager.read_plugin_source("nope")
+
+    def test_read_concept_source_found(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_concept_file("mon_concept.py", _CONCEPT_SOURCE)
+            result = manager.read_concept_source("mon_concept")
+            self.assertEqual(result["filename"], "mon_concept.py")
+            self.assertIn("CONCEPT_INFO", result["content"])
+
+    def test_read_concept_source_not_found_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(FileNotFoundError):
+                manager.read_concept_source("nope")
+
+
+class BuildPromptTests(unittest.TestCase):
+    def _manager(self, root: Path) -> CollectionRunManager:
+        return CollectionRunManager(
+            config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
+            collections_dir=root / "collections",
+            symbol_cache_path=_seeded_symbol_cache(root),
+            plugins_dir=root / "plugins",
+            concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems",
+            execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles",
+        )
+
+    def test_concept_prompt_embeds_source_and_plugin_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_plugin_file(
+                "mon_plugin.py",
+                'PLUGIN_INFO = {"label": "Mon Plugin", "description": "collecte X"}\n'
+                "async def run(context): pass\n",
+            )
+            content = manager.build_concept_prompt(
+                sources=["chainlink"], plugins=["mon_plugin"], template="TEMPLATE_TEXT",
+            )
+            self.assertIn("TEMPLATE_TEXT", content)
+            self.assertIn("Contexte : données sélectionnées", content)
+            self.assertIn("chainlink", content)
+            self.assertIn("Mon Plugin", content)
+            self.assertIn("PLUGIN_INFO", content)  # the plugin's own source code embedded
+
+    def test_concept_prompt_empty_selection_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(ValueError):
+                manager.build_concept_prompt(sources=[], plugins=[], template="TEMPLATE_TEXT")
+
+    def test_concept_prompt_silently_drops_unknown_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            content = manager.build_concept_prompt(
+                sources=["not_a_real_source"], plugins=["not_a_real_plugin"], template="TEMPLATE_TEXT",
+            )
+            self.assertIn("TEMPLATE_TEXT", content)
+            self.assertNotIn("not_a_real_source", content)
+
+    def test_microsystem_prompt_embeds_concept_source_too(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_concept_file("mon_concept.py", _CONCEPT_SOURCE)
+            content = manager.build_microsystem_prompt(
+                concepts=["mon_concept"], sources=[], plugins=[], template="TEMPLATE_TEXT",
+            )
+            self.assertIn("mon_concept", content)
+            self.assertIn("CONCEPT_INFO", content)  # the concept's own source code embedded
+
+    def test_microsystem_prompt_all_empty_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(ValueError):
+                manager.build_microsystem_prompt(concepts=[], sources=[], plugins=[], template="TEMPLATE_TEXT")
+
+
+class DataRequirementsForTests(unittest.TestCase):
+    def _manager(self, root: Path) -> CollectionRunManager:
+        return CollectionRunManager(
+            config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
+            collections_dir=root / "collections",
+            symbol_cache_path=_seeded_symbol_cache(root),
+            plugins_dir=root / "plugins",
+            concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems",
+            execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles",
+        )
+
+    def test_single_asset_key_is_swappable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            requirements = manager._data_requirements_for(["binance_futures_kline"])
+            self.assertEqual(requirements, [{
+                "type": "Bougies", "swappable": True,
+                "keys": ["binance_futures_kline"], "default_asset": "BTC",
+            }])
+
+    def test_two_assets_same_tag_is_locked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            requirements = manager._data_requirements_for(
+                ["binance_futures_kline", "binance_futures_kline:ETH"],
+            )
+            self.assertEqual(len(requirements), 1)
+            self.assertEqual(requirements[0]["type"], "Bougies")
+            self.assertFalse(requirements[0]["swappable"])
+            self.assertEqual(
+                requirements[0]["keys"], ["binance_futures_kline", "binance_futures_kline:ETH"],
+            )
+            self.assertIsNone(requirements[0]["default_asset"])
+
+    def test_plugin_key_is_locked_and_type_is_its_own_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_plugin_file(
+                "mon_plugin.py",
+                'PLUGIN_INFO = {"label": "x", "description": "y"}\nasync def run(context): pass\n',
+            )
+            requirements = manager._data_requirements_for(["mon_plugin"])
+            self.assertEqual(requirements, [{
+                "type": "mon_plugin", "swappable": False, "keys": ["mon_plugin"], "default_asset": None,
+            }])
+
+    def test_non_asset_scoped_source_is_locked_and_type_is_its_own_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            requirements = manager._data_requirements_for(["chainlink"])
+            self.assertEqual(requirements, [{
+                "type": "chainlink", "swappable": False, "keys": ["chainlink"], "default_asset": None,
+            }])
+
+    def test_mixed_swappable_and_locked_types_are_both_present(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            requirements = manager._data_requirements_for(["binance_futures_kline", "chainlink"])
+            by_type = {r["type"]: r for r in requirements}
+            self.assertTrue(by_type["Bougies"]["swappable"])
+            self.assertFalse(by_type["chainlink"]["swappable"])
+
+    def test_available_concepts_and_microsystems_expose_data_requirements(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._manager(root)
+            manager.import_concept_file(
+                "zscore.py",
+                'CONCEPT_INFO = {"label": "x", "description": "y", "data_sources": ["binance_futures_kline"]}\n'
+                "def compute(context):\n    pass\n",
+            )
+            manager.import_microsystem_file(
+                "trend.py",
+                'MICROSYSTEM_INFO = {"label": "x", "description": "y", "data_inputs": ["chainlink"]}\n'
+                "def compute(context):\n    pass\n",
+            )
+            concept_row = manager.available_concepts()[0]
+            self.assertEqual(concept_row["data_requirements"][0]["type"], "Bougies")
+            microsystem_row = manager.available_microsystems()[0]
+            self.assertEqual(microsystem_row["data_requirements"][0]["type"], "chainlink")
 
 
 if __name__ == "__main__":

@@ -71,8 +71,25 @@ def _parser() -> argparse.ArgumentParser:
     control.add_argument("--port", type=int, default=8780)
     control.add_argument("--collections-dir", type=Path, default=Path("data/collections"))
     control.add_argument("--plugins-dir", type=Path, default=Path("plugins"))
+    control.add_argument("--concepts-dir", type=Path, default=Path("concepts"))
+    control.add_argument("--microsystems-dir", type=Path, default=Path("microsystems"))
+    control.add_argument("--execution-dir", type=Path, default=Path("execution_profiles"))
+    control.add_argument("--management-dir", type=Path, default=Path("management_profiles"))
+    control.add_argument("--strategies-dir", type=Path, default=Path("strategies"))
     control.add_argument(
         "--plugin-prompt", type=Path, default=Path("docs/nouveau_plugin_prompt.md"),
+    )
+    control.add_argument(
+        "--concept-prompt", type=Path, default=Path("docs/nouveau_concept_prompt.md"),
+    )
+    control.add_argument(
+        "--microsystem-prompt", type=Path, default=Path("docs/nouveau_microsystem_prompt.md"),
+    )
+    control.add_argument(
+        "--execution-prompt", type=Path, default=Path("docs/nouveau_execution_prompt.md"),
+    )
+    control.add_argument(
+        "--management-prompt", type=Path, default=Path("docs/nouveau_management_prompt.md"),
     )
     status = commands.add_parser("status")
     status.add_argument("--health-file", type=Path, required=True)
@@ -287,15 +304,27 @@ def _live(args: argparse.Namespace) -> int:
 
 async def _run_control(
     config_path: Path, host: str, port: int, collections_dir: Path, plugins_dir: Path,
-    plugin_prompt: Path,
+    concepts_dir: Path, microsystems_dir: Path, execution_dir: Path, management_dir: Path,
+    strategies_dir: Path,
+    plugin_prompt: Path, concept_prompt: Path, microsystem_prompt: Path, execution_prompt: Path,
+    management_prompt: Path,
 ) -> None:
     from ..control.runs import CollectionRunManager
     from ..control.server import ControlPanelServer
+    from ..control.strategies import StrategyManager
 
     manager = CollectionRunManager(
         config_path=config_path, collections_dir=collections_dir, plugins_dir=plugins_dir,
+        concepts_dir=concepts_dir, microsystems_dir=microsystems_dir, execution_dir=execution_dir,
+        management_dir=management_dir,
     )
-    server = ControlPanelServer(runs=manager, host=host, port=port, prompt_doc_path=plugin_prompt)
+    strategy_manager = StrategyManager(strategies_dir=strategies_dir, runs=manager)
+    server = ControlPanelServer(
+        runs=manager, strategies=strategy_manager, host=host, port=port,
+        prompt_doc_path=plugin_prompt, concept_prompt_doc_path=concept_prompt,
+        microsystem_prompt_doc_path=microsystem_prompt, execution_prompt_doc_path=execution_prompt,
+        management_prompt_doc_path=management_prompt,
+    )
     await server.start()
     print(f"control panel ready: {server.url}", flush=True)
     stop = asyncio.Event()
@@ -321,7 +350,10 @@ def _control(args: argparse.Namespace) -> int:
     _configure_logging(config.service.log_level)
     asyncio.run(_run_control(
         args.config, args.host, args.port, args.collections_dir, args.plugins_dir,
-        args.plugin_prompt,
+        args.concepts_dir, args.microsystems_dir, args.execution_dir, args.management_dir,
+        args.strategies_dir,
+        args.plugin_prompt, args.concept_prompt, args.microsystem_prompt, args.execution_prompt,
+        args.management_prompt,
     ))
     return 0
 

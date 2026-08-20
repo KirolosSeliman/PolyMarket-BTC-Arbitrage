@@ -8,14 +8,30 @@
 html, body {
   margin: 0; height: 100%; background: #000; color: #3a3a3a;
   font: 12px system-ui, -apple-system, "Segoe UI", sans-serif;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
 }
 a { color: #555; text-decoration: none; }
 a:hover { color: #888; }
 .note { position: fixed; bottom: 20px; left: 20px; }
+.strategy-name { color: #888; font-size: 13px; }
+.strategy-sub { color: #444; font-size: 11px; }
 </style>
 </head>
 <body>
+<div id="strategy-info" style="display:none">
+  <div class="strategy-name" id="strategy-name"></div>
+  <div class="strategy-sub" id="strategy-sub">Rien n'est implémenté pour l'instant -- juste la page.</div>
+</div>
 <a class="note" href="/">← retour</a>
+<script>
+"use strict";
+const params = new URLSearchParams(window.location.search);
+const strategy = params.get("strategy");
+if (strategy) {
+  document.getElementById("strategy-name").textContent =
+    (params.get("new") === "1" ? "Nouvelle stratégie : " : "Stratégie : ") + strategy;
+  document.getElementById("strategy-info").style.display = "block";
+}
+</script>
 </body>
 </html>

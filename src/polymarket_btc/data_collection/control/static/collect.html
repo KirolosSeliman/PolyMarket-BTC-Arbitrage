@@ -141,9 +141,12 @@ table { width: 100%; border-collapse: collapse; margin-top: 10px; font-variant-n
 th { font-size: 10.5px; text-align: left; color: var(--muted); text-transform: uppercase; padding: 0 8px 4px 0; border-bottom: 1px solid var(--grid); }
 td { padding: 3px 8px 3px 0; font-size: 12px; color: var(--text-2); }
 .log { font: 11px ui-monospace, monospace; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 8px 10px; margin-top: 6px; max-height: 120px; overflow: auto; white-space: pre-wrap; }
-.run-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; font-size: 12px; }
+.run-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; font-size: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .run-row .id { font-weight: 600; }
 .run-row .meta { color: var(--muted); font-size: 11px; }
+.run-row .row-main { flex: 1; min-width: 0; }
+.run-row .delete-run-btn { flex-shrink: 0; border: 1px solid var(--critical); color: var(--critical); background: transparent; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
+.run-row .delete-run-btn:hover { background: var(--critical); color: #fff; }
 
 .view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
 .view-toggle button {
@@ -1082,7 +1085,10 @@ function renderStatus(run) {
     `<div><strong>${id}</strong><div class="log">${lines.join("\n") || "—"}</div></div>`).join("");
 
   const exportInfo = run.export
-    ? `<p style="color:var(--good)">Export prêt : ${run.export.data_dir}/${run.export.dataset_file || "(aucun fichier parquet)"} — ${run.export.snapshot_row_count} lignes.</p>`
+    ? `<p style="color:var(--good)">Export prêt : ${run.export.data_dir}/${run.export.dataset_file || "(aucun fichier parquet)"} — `
+      + `${run.export.raw_event_count} événement(s) collecté(s)`
+      + (run.export.snapshot_row_count ? ` · ${run.export.snapshot_row_count} lignes de snapshot` : "")
+      + `.</p>`
     : "";
 
   const rangeInfo = run.mode === "access" && (run.start_ts_utc || run.end_ts_utc)
@@ -1209,12 +1215,37 @@ async function loadPastRuns() {
   if (!data.runs.length) { container.innerHTML = '<div class="empty">Aucune collecte encore.</div>'; return; }
   container.innerHTML = data.runs.map((run) => `
     <div class="run-row">
-      <span class="id">${run.run_id}</span>
-      <span class="mode-badge ${run.mode === "access" ? "access" : "collect"}">${run.mode === "access" ? "Accès" : "Collecte"}</span> —
-      <span class="meta">${(run.sources || []).join(", ")} · ${run.snapshot_row_count ?? 0} lignes · ${run.dataset_file || "aucun fichier"}</span>
+      <div class="row-main">
+        <span class="id">${run.run_id}</span>
+        <span class="mode-badge ${run.mode === "access" ? "access" : "collect"}">${run.mode === "access" ? "Accès" : "Collecte"}</span> —
+        <span class="meta">${(run.sources || []).join(", ")} · ${run.raw_event_count ?? 0} événement(s)${run.snapshot_row_count ? ` · ${run.snapshot_row_count} lignes de snapshot` : ""} · ${run.dataset_file || "aucun fichier"}</span>
+      </div>
+      <button class="delete-run-btn" data-run-id="${run.run_id}" title="Supprimer définitivement cette collecte">Supprimer</button>
     </div>
   `).join("");
 }
+
+async function deleteRun(runId) {
+  const confirmed = confirm(
+    `Supprimer définitivement la collecte ${runId} ?\n\nCela efface toutes les données récupérées pour cette collecte. Cette action est irréversible.`
+  );
+  if (!confirmed) return;
+  const res = await fetch("/api/runs/delete", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ run_id: runId }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert(`Échec de la suppression : ${data.error || res.status}`);
+    return;
+  }
+  await loadPastRuns();
+}
+
+el("past-runs").addEventListener("click", (event) => {
+  const button = event.target.closest(".delete-run-btn");
+  if (button) deleteRun(button.dataset.runId);
+});
 
 el("start").addEventListener("click", start);
 el("stop").addEventListener("click", stop);

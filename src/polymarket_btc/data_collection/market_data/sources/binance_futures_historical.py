@@ -47,15 +47,41 @@ _USER_AGENT = "polymarket-btc-historical-collector"
 OPEN_INTEREST_HISTORY_LIMIT_DAYS = 30
 _DEFAULT_RANGE_MS = 24 * 3600 * 1000
 
+# Binance's own documented per-IP budget (confirmed live against
+# /fapi/v1/exchangeInfo's rateLimits, not assumed): 2400 request-weight per
+# rolling minute. Every response already reports the account's current
+# usage via X-MBX-USED-WEIGHT-1M -- _paginate_by_time throttles off that
+# real number instead of a flat guessed delay, so a small fetch (plenty of
+# headroom) runs at full speed and a big one (many pages, e.g. aggTrades
+# over a wide range) backs off before it would actually get rate-limited,
+# rather than either wastefully sleeping when there's no need to or risking
+# a 429 that would silently truncate what got collected.
+_WEIGHT_BUDGET_PER_MINUTE = 2400
+_WEIGHT_SAFE_CEILING = int(_WEIGHT_BUDGET_PER_MINUTE * 0.75)  # leaves headroom for sibling sources fetching concurrently
 
-def _get_json_sync(url: str, timeout: float) -> object:
+
+def _get_json_sync(url: str, timeout: float) -> tuple[object, int | None]:
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read())
+        used_weight = response.headers.get("x-mbx-used-weight-1m")
+        return json.loads(response.read()), (int(used_weight) if used_weight is not None else None)
 
 
-async def _get_json(url: str, *, timeout: float = 15.0) -> object:
+async def _get_json(url: str, *, timeout: float = 15.0) -> tuple[object, int | None]:
     return await asyncio.to_thread(_get_json_sync, url, timeout)
+
+
+def _adaptive_delay(used_weight: int | None) -> float:
+    """No delay while comfortably under the safety ceiling (the common case
+    for any reasonably-sized fetch); ramps up smoothly as usage approaches
+    it, capping at a firm backoff right at the ceiling. Missing weight info
+    (network hiccup, unexpected response shape) falls back to the original
+    flat courtesy delay rather than assuming it's safe to go fast."""
+    if used_weight is None:
+        return 0.15
+    if used_weight >= _WEIGHT_SAFE_CEILING:
+        return 1.0
+    return 0.25 * (used_weight / _WEIGHT_SAFE_CEILING)
 
 
 def _positive_int(value: object, field: str) -> int:
@@ -78,7 +104,7 @@ def _resolve_range_ms(start_ts_ns: int | None, end_ts_ns: int | None) -> tuple[i
 
 
 async def _paginate_by_time(
-    fetch_page: Callable[[int, int, int], Awaitable[list]],
+    fetch_page: Callable[[int, int, int], Awaitable[tuple[list, int | None]]],
     *,
     start_ms: int,
     end_ms: int,
@@ -95,11 +121,16 @@ async def _paginate_by_time(
     on_progress, when given, is called with a 0..1 fraction of the
     [start_ms, end_ms) span covered so far after every page -- this is the
     one place that already tracks the cursor, so it's the natural place to
-    report it rather than duplicating the bookkeeping in every caller."""
+    report it rather than duplicating the bookkeeping in every caller.
+    fetch_page returns (rows, used_weight) -- used_weight (Binance's own
+    X-MBX-USED-WEIGHT-1M, as reported on that response) drives the delay
+    before the next page via _adaptive_delay, so a small fetch isn't slowed
+    down needlessly and a big one backs off before actually hitting the
+    2400/minute budget."""
     current = start_ms
     span = max(1, end_ms - start_ms)
     while current < end_ms:
-        page = await fetch_page(current, end_ms, page_limit)
+        page, used_weight = await fetch_page(current, end_ms, page_limit)
         if not page:
             return
         yield page
@@ -109,7 +140,7 @@ async def _paginate_by_time(
         current = next_start
         if on_progress is not None:
             on_progress(min(1.0, (current - start_ms) / span))
-        await asyncio.sleep(0.15)  # rate-limit courtesy, not a real constraint at this volume
+        await asyncio.sleep(_adaptive_delay(used_weight))
 
 
 # --- Klines / mark price klines (identical 12-column row shape, confirmed
@@ -167,13 +198,13 @@ async def fetch_and_store_historical_klines(
 ) -> int:
     start_ms, end_ms = _resolve_range_ms(start_ts_ns, end_ts_ns)
 
-    async def fetch_page(page_start: int, page_end: int, limit: int) -> list:
+    async def fetch_page(page_start: int, page_end: int, limit: int) -> tuple[list, int | None]:
         url = (
             f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}"
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
-        data = await _get_json(url)
-        return data if isinstance(data, list) else []
+        data, used_weight = await _get_json(url)
+        return (data if isinstance(data, list) else []), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -205,13 +236,13 @@ async def fetch_and_store_historical_agg_trades(
 ) -> int:
     start_ms, end_ms = _resolve_range_ms(start_ts_ns, end_ts_ns)
 
-    async def fetch_page(page_start: int, page_end: int, limit: int) -> list:
+    async def fetch_page(page_start: int, page_end: int, limit: int) -> tuple[list, int | None]:
         url = (
             f"https://fapi.binance.com/fapi/v1/aggTrades?symbol={symbol}"
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
-        data = await _get_json(url)
-        return data if isinstance(data, list) else []
+        data, used_weight = await _get_json(url)
+        return (data if isinstance(data, list) else []), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -288,13 +319,13 @@ async def fetch_and_store_historical_mark_price(
     klines_progress = None if on_progress is None else (lambda f: on_progress(f * 0.5))
     funding_progress = None if on_progress is None else (lambda f: on_progress(0.5 + f * 0.5))
 
-    async def fetch_klines_page(page_start: int, page_end: int, limit: int) -> list:
+    async def fetch_klines_page(page_start: int, page_end: int, limit: int) -> tuple[list, int | None]:
         url = (
             f"https://fapi.binance.com/fapi/v1/markPriceKlines?symbol={symbol}&interval={interval}"
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
-        data = await _get_json(url)
-        return data if isinstance(data, list) else []
+        data, used_weight = await _get_json(url)
+        return (data if isinstance(data, list) else []), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -312,13 +343,13 @@ async def fetch_and_store_historical_mark_price(
     log(f"mark price : {count} bougies récupérées")
     total += count
 
-    async def fetch_funding_page(page_start: int, page_end: int, limit: int) -> list:
+    async def fetch_funding_page(page_start: int, page_end: int, limit: int) -> tuple[list, int | None]:
         url = (
             f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}"
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
-        data = await _get_json(url)
-        return data if isinstance(data, list) else []
+        data, used_weight = await _get_json(url)
+        return (data if isinstance(data, list) else []), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -434,13 +465,13 @@ async def fetch_and_store_historical_open_interest_and_long_short(
     oi_progress = None if on_progress is None else (lambda f: on_progress(f * 0.5))
     long_short_progress = None if on_progress is None else (lambda f: on_progress(0.5 + f * 0.5))
 
-    async def fetch_oi_page(page_start: int, page_end: int, limit: int) -> list:
+    async def fetch_oi_page(page_start: int, page_end: int, limit: int) -> tuple[list, int | None]:
         url = (
             f"https://fapi.binance.com/futures/data/openInterestHist?symbol={symbol}&period=5m"
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
-        data = await _get_json(url)
-        return data if isinstance(data, list) else []
+        data, used_weight = await _get_json(url)
+        return (data if isinstance(data, list) else []), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -455,13 +486,13 @@ async def fetch_and_store_historical_open_interest_and_long_short(
     log(f"open interest : {count} points récupérés")
     total += count
 
-    async def fetch_long_short_page(page_start: int, page_end: int, limit: int) -> list:
+    async def fetch_long_short_page(page_start: int, page_end: int, limit: int) -> tuple[list, int | None]:
         url = (
             f"https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol={symbol}&period=5m"
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
-        data = await _get_json(url)
-        return data if isinstance(data, list) else []
+        data, used_weight = await _get_json(url)
+        return (data if isinstance(data, list) else []), used_weight
 
     count = 0
     async for page in _paginate_by_time(

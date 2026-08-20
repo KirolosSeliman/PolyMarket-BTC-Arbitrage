@@ -10,6 +10,8 @@ import zstandard
 from polymarket_btc.data_collection.market_data.models import EventSource, EventStream
 from polymarket_btc.data_collection.market_data.sources.binance_futures_historical import (
     OPEN_INTEREST_HISTORY_LIMIT_DAYS,
+    _WEIGHT_SAFE_CEILING,
+    _adaptive_delay,
     _paginate_by_time,
     fetch_and_store_historical_agg_trades,
     fetch_and_store_historical_klines,
@@ -19,9 +21,20 @@ from polymarket_btc.data_collection.market_data.sources.binance_futures_historic
 from polymarket_btc.data_collection.market_data.storage import RawEventStorage
 
 
+class _Headers:
+    def __init__(self, used_weight: int | None) -> None:
+        self._used_weight = used_weight
+
+    def get(self, name: str) -> str | None:
+        if name == "x-mbx-used-weight-1m" and self._used_weight is not None:
+            return str(self._used_weight)
+        return None
+
+
 class _Response:
-    def __init__(self, payload: object) -> None:
+    def __init__(self, payload: object, *, used_weight: int | None = None) -> None:
         self._body = json.dumps(payload).encode()
+        self.headers = _Headers(used_weight)
 
     def read(self) -> bytes:
         return self._body
@@ -87,8 +100,8 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
     async def test_pages_until_end_ms_reached_or_page_empty(self) -> None:
         pages = [[1, 2], [3, 4], []]
 
-        async def fetch_page(start: int, end: int, limit: int) -> list:
-            return pages.pop(0)
+        async def fetch_page(start: int, end: int, limit: int) -> tuple[list, int | None]:
+            return pages.pop(0), None
 
         collected = []
         async for page in _paginate_by_time(
@@ -100,10 +113,10 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
     async def test_stops_defensively_if_advance_does_not_move_forward(self) -> None:
         calls = 0
 
-        async def fetch_page(start: int, end: int, limit: int) -> list:
+        async def fetch_page(start: int, end: int, limit: int) -> tuple[list, int | None]:
             nonlocal calls
             calls += 1
-            return [1, 2]  # same page forever
+            return [1, 2], None  # same page forever
 
         collected = []
         async for page in _paginate_by_time(
@@ -112,6 +125,45 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
             collected.append(page)
         self.assertEqual(len(collected), 1)  # stopped after the first non-advancing page
         self.assertEqual(calls, 1)
+
+    async def test_sleeps_by_the_delay_the_reported_used_weight_implies(self) -> None:
+        """Confirms _paginate_by_time actually wires fetch_page's reported
+        used_weight into the inter-page delay, not just that _adaptive_delay
+        itself is correct in isolation."""
+        pages = [[1], [2], []]
+
+        async def fetch_page(start: int, end: int, limit: int) -> tuple[list, int | None]:
+            return pages.pop(0), 2000  # comfortably close to the safety ceiling
+
+        sleeps: list[float] = []
+        with patch("asyncio.sleep", side_effect=lambda seconds: sleeps.append(seconds)):
+            async for _ in _paginate_by_time(
+                fetch_page, start_ms=0, end_ms=1000, page_limit=10, advance=lambda rows: rows[-1] * 100,
+            ):
+                pass
+        self.assertEqual(sleeps, [_adaptive_delay(2000)] * len(sleeps))
+        self.assertGreater(sleeps[0], 0)
+
+
+class AdaptiveDelayTests(unittest.TestCase):
+    def test_missing_weight_falls_back_to_the_original_flat_courtesy_delay(self) -> None:
+        self.assertEqual(_adaptive_delay(None), 0.15)
+
+    def test_low_weight_yields_a_small_delay(self) -> None:
+        self.assertLess(_adaptive_delay(10), 0.01)
+
+    def test_delay_increases_as_weight_approaches_the_safety_ceiling(self) -> None:
+        low = _adaptive_delay(int(_WEIGHT_SAFE_CEILING * 0.25))
+        high = _adaptive_delay(int(_WEIGHT_SAFE_CEILING * 0.9))
+        self.assertLess(low, high)
+
+    def test_at_or_over_the_safety_ceiling_backs_off_firmly(self) -> None:
+        self.assertEqual(_adaptive_delay(_WEIGHT_SAFE_CEILING), 1.0)
+        self.assertEqual(_adaptive_delay(_WEIGHT_SAFE_CEILING * 10), 1.0)
+
+    def test_never_exceeds_the_ceiling_delay_below_the_ceiling(self) -> None:
+        just_under = _adaptive_delay(_WEIGHT_SAFE_CEILING - 1)
+        self.assertLess(just_under, 1.0)
 
 
 class KlineFetchTests(unittest.IsolatedAsyncioTestCase):

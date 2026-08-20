@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Choisir une stratégie</title>
+<style>
+:root {
+  /* Deliberately pure black, not the app's usual near-black surface -- this
+     page sits right before /live, which is also pure black, so the two
+     read as one continuous space rather than a visible seam. */
+  --surface-0: #000000; --surface-1: #111111; --surface-2: #1c1c1c;
+  --text-1: #f2f2f0; --text-2: #b7b6b0; --muted: #7a7972;
+  --border: rgba(255,255,255,0.12); --accent: #3987e5;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; background: var(--surface-0); color: var(--text-1);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 32px; padding: 40px 20px;
+}
+header { text-align: center; }
+h1 { font-size: 20px; margin: 10px 0 6px; letter-spacing: 0.01em; }
+header p { color: var(--muted); margin: 0; font-size: 13px; }
+
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 760px; width: 100%; }
+@media (max-width: 640px) { .choices { grid-template-columns: 1fr; } }
+.choice {
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+  padding: 22px 20px; display: flex; flex-direction: column; gap: 12px;
+}
+.choice h2 { font-size: 14.5px; margin: 0; }
+.choice p { margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.5; }
+
+.combobox { position: relative; }
+.combobox input[type="text"] {
+  font: inherit; font-size: 13px; color: var(--text-1); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; width: 100%;
+}
+.combobox input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.combobox-listbox {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20; max-height: 220px;
+  overflow-y: auto; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5); padding: 4px;
+}
+.combobox-option { padding: 8px 10px; border-radius: 5px; cursor: pointer; font-size: 12.5px; }
+.combobox-option:hover, .combobox-option.active { background: var(--surface-2); }
+.combobox-empty { padding: 8px 10px; color: var(--muted); font-size: 11.5px; }
+
+.new-strategy-row { display: flex; gap: 8px; }
+input[type="text"].name-input {
+  font: inherit; font-size: 13px; color: var(--text-1); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; flex: 1; min-width: 0;
+}
+input[type="text"].name-input:focus { outline: none; border-color: var(--accent); }
+button {
+  font: inherit; font-size: 12.5px; color: #fff; background: var(--accent);
+  border: none; border-radius: 6px; padding: 9px 16px; cursor: pointer; white-space: nowrap;
+}
+button:hover { filter: brightness(1.1); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+.hint { font-size: 11px; color: var(--muted); margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Choisir une stratégie</h1>
+  <p>Sélectionne une stratégie existante ou pars d'une nouvelle.</p>
+</header>
+
+<div class="choices">
+  <div class="choice">
+    <h2>Stratégie existante</h2>
+    <p>Recherche parmi les stratégies déjà enregistrées.</p>
+    <div class="combobox" id="strategy-combobox">
+      <input type="text" id="strategy-search" placeholder="Rechercher une stratégie…" autocomplete="off">
+      <div class="combobox-listbox" id="strategy-listbox" role="listbox" style="display:none"></div>
+    </div>
+  </div>
+
+  <div class="choice">
+    <h2>Nouvelle stratégie</h2>
+    <p>Donne-lui un nom pour commencer sa construction (concepts, microsystèmes, exécution).</p>
+    <div class="new-strategy-row">
+      <input type="text" class="name-input" id="new-strategy-name" placeholder="Nom de la stratégie" autocomplete="off">
+      <button type="button" id="create-strategy-btn">Construire</button>
+    </div>
+    <p class="hint" id="create-hint" style="display:none">Donne un nom à la stratégie avant de la construire.</p>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+function el(id) { return document.getElementById(id); }
+
+// Populated from /api/strategies on load -- see loadStrategies() below.
+let existingStrategyNames = [];
+
+async function loadStrategies() {
+  try {
+    const res = await fetch("/api/strategies");
+    const data = await res.json();
+    existingStrategyNames = (data.strategies || []).map((s) => s.name);
+  } catch (error) {
+    existingStrategyNames = [];
+  }
+}
+
+function goToStrategy(name, { isNew = false } = {}) {
+  const params = new URLSearchParams({ strategy: name });
+  if (isNew) params.set("new", "1");
+  // /menu is the 3-destination page (Trading en direct / Backtest /
+  // Collecte de données) -- the strategy is chosen once, up front, then
+  // carried along into whichever destination the user picks next.
+  window.location.href = `/menu?${params.toString()}`;
+}
+
+// --- "Stratégie existante" combobox -- same search-as-you-type + listbox
+// pattern as the asset picker on the Collecte de données page. ---
+
+let listboxActiveIndex = -1;
+
+function renderListbox(query) {
+  const listbox = el("strategy-listbox");
+  const normalized = query.trim().toLowerCase();
+  const filtered = normalized
+    ? existingStrategyNames.filter((name) => name.toLowerCase().includes(normalized))
+    : existingStrategyNames;
+  listboxActiveIndex = -1;
+  listbox.innerHTML = filtered.length
+    ? filtered.map((name) => `<div class="combobox-option" data-name="${name}" role="option">${name}</div>`).join("")
+    : '<div class="combobox-empty">Aucune stratégie trouvée.</div>';
+  listbox.style.display = "block";
+}
+
+function closeListbox() {
+  el("strategy-listbox").style.display = "none";
+}
+
+function selectFromListbox(name) {
+  el("strategy-search").value = name;
+  closeListbox();
+  goToStrategy(name);
+}
+
+function initStrategyCombobox() {
+  const input = el("strategy-search");
+  const listbox = el("strategy-listbox");
+  input.addEventListener("focus", () => renderListbox(input.value));
+  input.addEventListener("input", () => renderListbox(input.value));
+  input.addEventListener("keydown", (event) => {
+    const options = Array.from(listbox.querySelectorAll(".combobox-option"));
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (listbox.style.display === "none") { renderListbox(input.value); return; }
+      listboxActiveIndex = Math.min(listboxActiveIndex + 1, options.length - 1);
+      options.forEach((o, i) => o.classList.toggle("active", i === listboxActiveIndex));
+      options[listboxActiveIndex]?.scrollIntoView({ block: "nearest" });
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      listboxActiveIndex = Math.max(listboxActiveIndex - 1, 0);
+      options.forEach((o, i) => o.classList.toggle("active", i === listboxActiveIndex));
+      options[listboxActiveIndex]?.scrollIntoView({ block: "nearest" });
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const target = options[listboxActiveIndex] || options[0];
+      if (target) selectFromListbox(target.dataset.name);
+    } else if (event.key === "Escape") {
+      closeListbox();
+    }
+  });
+  listbox.addEventListener("mousedown", (event) => {
+    const option = event.target.closest(".combobox-option");
+    if (option) selectFromListbox(option.dataset.name);
+  });
+  document.addEventListener("click", (event) => {
+    if (!el("strategy-combobox").contains(event.target)) closeListbox();
+  });
+}
+
+// --- "Nouvelle stratégie" ---
+
+function createStrategy() {
+  const name = el("new-strategy-name").value.trim();
+  if (!name) {
+    el("create-hint").style.display = "block";
+    el("new-strategy-name").focus();
+    return;
+  }
+  // The actual creation happens in the multi-step builder (concepts ->
+  // configuration -> microsystèmes -> exécution) -- this page only picks
+  // the name it'll be saved under.
+  window.location.href = `/strategy/build?name=${encodeURIComponent(name)}`;
+}
+
+el("create-strategy-btn").addEventListener("click", createStrategy);
+el("new-strategy-name").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") createStrategy();
+});
+el("new-strategy-name").addEventListener("input", () => { el("create-hint").style.display = "none"; });
+
+initStrategyCombobox();
+loadStrategies();
+</script>
+</body>
+</html>
