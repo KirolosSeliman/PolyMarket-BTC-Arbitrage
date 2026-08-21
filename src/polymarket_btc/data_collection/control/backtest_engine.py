@@ -211,6 +211,7 @@ def build_timeline(
     start_ts: float,
     end_ts: float,
     cadence_seconds: float,
+    on_progress: Callable[[float], None] | None = None,
 ) -> list[TimelineStep]:
     """Walks the evaluation cadence across [start_ts, end_ts]. At each step,
     every key's accumulated-so-far record list grows (append-only, each
@@ -239,6 +240,13 @@ def build_timeline(
       instead."""
     if cadence_seconds <= 0:
         raise ValueError("cadence_seconds must be positive")
+
+    total_steps = int((end_ts - start_ts) / cadence_seconds) + 1
+    # Reported at most ~200 times over the whole walk regardless of how many
+    # steps that actually is -- frequent enough for a UI polling once a
+    # second to see smooth movement, cheap enough (a plain float callback,
+    # not real work) to add no measurable overhead of its own.
+    report_every = max(1, total_steps // 200)
 
     cursors = {key: 0 for key in records_by_key}
     accumulated: dict[str, list[dict]] = {key: [] for key in records_by_key}
@@ -354,6 +362,8 @@ def build_timeline(
                 microsystem_cache[instance_id] = (signature, result)
 
         steps.append(TimelineStep(timestamp=t, concept_outputs=concept_outputs, microsystem_outputs=microsystem_outputs))
+        if on_progress is not None and (len(steps) % report_every == 0 or len(steps) == total_steps):
+            on_progress(min(1.0, len(steps) / total_steps))
         t += cadence_seconds
     return steps
 
@@ -573,7 +583,14 @@ def run_backtest(
     execution_config: Mapping[str, object] = {},
     management_config: Mapping[str, object] = {},
     max_workers: int | None = None,
+    on_progress: Callable[[float], None] | None = None,
 ) -> dict[str, object]:
+    """`on_progress`, when given, is called with a 0..1 fraction as the
+    backtest advances -- timeline building (build_timeline's own walk,
+    almost always the dominant cost, see its docstring) covers 0..0.9;
+    the sweep's combos completing (or, for a single combo, one immediate
+    jump) covers the remaining 0.9..1.0. A rough split, not a promise --
+    good enough for a UI progress bar/ETA, not a scheduling guarantee."""
     concept_infos = {info.id: info for info in discover_concepts(concepts_dir)}
     microsystem_infos = {info.id: info for info in discover_microsystems(microsystems_dir)}
     execution_infos = {info.id: info for info in discover_execution_profiles(execution_dir)}
@@ -635,9 +652,11 @@ def run_backtest(
             "aucune collecte ne couvre les trades, les bougies ou le mark price de cet instrument"
         )
 
+    timeline_progress = None if on_progress is None else (lambda f: on_progress(f * 0.9))
     timeline = build_timeline(
         strategy, concept_infos, microsystem_infos, records_by_key,
         concept_requirements, microsystem_requirements, start_ts, end_ts, cadence_seconds,
+        on_progress=timeline_progress,
     )
 
     # Fallback chain for a field that isn't being swept: an explicit
@@ -675,6 +694,8 @@ def run_backtest(
             timeline, price_path, execution_info, combo["execution_config"], management_info, combo["management_config"],
         )
         results.append({**combo, **result})
+        if on_progress is not None:
+            on_progress(0.9)
     else:
         with ProcessPoolExecutor(
             max_workers=max_workers, initializer=_init_worker,
@@ -687,8 +708,12 @@ def run_backtest(
                 ): combo
                 for combo in combos
             }
+            completed = 0
             for future in as_completed(futures):
                 results.append(future.result())
+                completed += 1
+                if on_progress is not None:
+                    on_progress(0.9 + 0.1 * (completed / len(combos)))
 
     def sort_key(result: dict[str, object]) -> tuple[bool, float]:
         rate = result["win_rate"]
@@ -718,6 +743,8 @@ def run_backtest(
             "trades": detailed["trade_log"],
         }
 
+    if on_progress is not None:
+        on_progress(1.0)
     return {"results": results, "best": best, "evaluation_steps": len(timeline), "replay": replay}
 
 

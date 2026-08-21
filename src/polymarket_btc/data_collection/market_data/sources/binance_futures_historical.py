@@ -84,6 +84,27 @@ def _adaptive_delay(used_weight: int | None) -> float:
     return 0.25 * (used_weight / _WEIGHT_SAFE_CEILING)
 
 
+class BinanceApiError(RuntimeError):
+    """Binance rejected a request -- its REST error shape is a JSON object
+    (`{"code": -1121, "msg": "Invalid symbol."}`, confirmed live), not a
+    list. Every fetch_page closure below used to do
+    `data if isinstance(data, list) else []`, which silently turned a
+    rejected request into an indistinguishable "empty page" -- a genuinely
+    invalid symbol and a date range with no data at all both surfaced as
+    the same unexplained "0 événements" the collection UI shows, with
+    nothing in the logs to tell them apart. Raising here instead lets the
+    crash-isolation each caller already has (`_run_historical_source` in
+    runs.py logs `f"erreur : {exc!r}"`) surface Binance's own message."""
+
+
+def _rows_or_raise(data: object) -> list:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and "msg" in data:
+        raise BinanceApiError(f"Binance a refusé la requête : {data['msg']}")
+    raise BinanceApiError(f"réponse Binance inattendue : {data!r}")
+
+
 def _positive_int(value: object, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise InvalidEventError(f"{field} must be a positive integer")
@@ -204,7 +225,7 @@ async def fetch_and_store_historical_klines(
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
         data, used_weight = await _get_json(url)
-        return (data if isinstance(data, list) else []), used_weight
+        return _rows_or_raise(data), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -242,7 +263,7 @@ async def fetch_and_store_historical_agg_trades(
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
         data, used_weight = await _get_json(url)
-        return (data if isinstance(data, list) else []), used_weight
+        return _rows_or_raise(data), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -325,7 +346,7 @@ async def fetch_and_store_historical_mark_price(
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
         data, used_weight = await _get_json(url)
-        return (data if isinstance(data, list) else []), used_weight
+        return _rows_or_raise(data), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -349,7 +370,7 @@ async def fetch_and_store_historical_mark_price(
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
         data, used_weight = await _get_json(url)
-        return (data if isinstance(data, list) else []), used_weight
+        return _rows_or_raise(data), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -471,7 +492,7 @@ async def fetch_and_store_historical_open_interest_and_long_short(
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
         data, used_weight = await _get_json(url)
-        return (data if isinstance(data, list) else []), used_weight
+        return _rows_or_raise(data), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -492,7 +513,7 @@ async def fetch_and_store_historical_open_interest_and_long_short(
             f"&startTime={page_start}&endTime={page_end}&limit={limit}"
         )
         data, used_weight = await _get_json(url)
-        return (data if isinstance(data, list) else []), used_weight
+        return _rows_or_raise(data), used_weight
 
     count = 0
     async for page in _paginate_by_time(
@@ -522,6 +543,7 @@ HISTORICAL_FETCHERS: dict[str, Callable[..., Awaitable[int]]] = {
 
 
 __all__ = [
+    "BinanceApiError",
     "HISTORICAL_FETCHERS",
     "OPEN_INTEREST_HISTORY_LIMIT_DAYS",
     "fetch_and_store_historical_agg_trades",

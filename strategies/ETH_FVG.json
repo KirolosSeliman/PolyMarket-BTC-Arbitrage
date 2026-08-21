@@ -5,7 +5,6 @@
       "instance_id": "concept_1",
       "concept_id": "liquidity_sweep",
       "config": {
-        "candle_seconds": 5,
         "lookback_candles": 500,
         "swing_lookback": 3,
         "equal_level_tolerance_pct": 0.05,
@@ -15,14 +14,13 @@
         "direction": "both"
       },
       "data_bindings": {
-        "Trades": "binance_futures_trade:ETH"
+        "Bougies": "binance_futures_kline:ETH"
       }
     },
     {
       "instance_id": "concept_2",
       "concept_id": "liquidity_sweep",
       "config": {
-        "candle_seconds": 5,
         "lookback_candles": 500,
         "swing_lookback": 3,
         "equal_level_tolerance_pct": 0.05,
@@ -32,7 +30,7 @@
         "direction": "both"
       },
       "data_bindings": {
-        "Trades": "binance_futures_trade:ETH"
+        "Bougies": "binance_futures_kline:ETH"
       }
     }
   ],
@@ -46,7 +44,6 @@
       ],
       "data_bindings": {},
       "config": {
-        "candle_seconds": 5,
         "max_candles_before_sweep": 50,
         "alignment_tolerance_candles": 0
       }

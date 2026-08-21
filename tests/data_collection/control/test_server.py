@@ -138,6 +138,17 @@ class ControlPanelServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("200", head)
         self.assertIn("error", body)
 
+    async def test_start_rejects_an_unknown_kline_interval(self) -> None:
+        head, body = await self._request(
+            "POST", "/api/collect/start",
+            json_body={
+                "sources": ["binance_futures_kline"], "plugins": [], "mode": "access",
+                "kline_interval": "10m",
+            },
+        )
+        self.assertIn("400", head)
+        self.assertIn("error", body)
+
     async def test_stop_without_a_running_collection_errors(self) -> None:
         head, body = await self._request("POST", "/api/collect/stop")
         self.assertIn("409", head)
@@ -207,6 +218,32 @@ class ControlPanelServerTests(unittest.IsolatedAsyncioTestCase):
         run_id = start_body["run_id"]
         head, body = await self._request("POST", "/api/runs/delete", json_body={"run_id": run_id})
         self.assertIn("409", head)
+        self.assertIn("error", body)
+
+    async def test_delete_run_filesystem_failure_is_a_clean_500_not_a_dropped_connection(self) -> None:
+        """Left uncaught, an OSError from shutil.rmtree (permission denied,
+        a locked file, ...) would hit _handle_connection's generic except
+        Exception and close the connection with no response at all --
+        indistinguishable from a network failure client-side, and nothing
+        like the clear error message the UI is built to show."""
+        _head, start_body = await self._request(
+            "POST", "/api/collect/start",
+            json_body={"sources": ["chainlink"], "plugins": [], "duration_seconds": None},
+        )
+        run_id = start_body["run_id"]
+        await self._request("POST", "/api/collect/stop")
+        for _ in range(200):
+            _head, status = await self._request("GET", "/api/collect/status")
+            if not status["run"]["running"]:
+                break
+            await asyncio.sleep(0.05)
+
+        with patch(
+            "polymarket_btc.data_collection.control.runs.CollectionRunManager.delete_run",
+            side_effect=OSError("permission denied"),
+        ):
+            head, body = await self._request("POST", "/api/runs/delete", json_body={"run_id": run_id})
+        self.assertIn("500", head)
         self.assertIn("error", body)
 
 
@@ -493,6 +530,40 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["name"], "my_strategy")
         _head, listed = await self._request("GET", "/api/strategies")
         self.assertIn("my_strategy", [s["name"] for s in listed["strategies"]])
+
+    async def test_delete_strategy_removes_it_from_the_list(self) -> None:
+        await self._request(
+            "POST", "/api/strategies",
+            json_body={"name": "to_delete", "concepts": [], "microsystems": [], "execution": None, "management": None},
+        )
+        head, body = await self._request("POST", "/api/strategies/delete", json_body={"name": "to_delete"})
+        self.assertIn("200 OK", head)
+        self.assertTrue(body["ok"])
+        _head, listed = await self._request("GET", "/api/strategies")
+        self.assertNotIn("to_delete", [s["name"] for s in listed["strategies"]])
+
+    async def test_delete_strategy_missing_name_is_400(self) -> None:
+        head, body = await self._request("POST", "/api/strategies/delete", json_body={})
+        self.assertIn("400", head)
+        self.assertIn("error", body)
+
+    async def test_delete_strategy_unknown_name_is_404(self) -> None:
+        head, body = await self._request("POST", "/api/strategies/delete", json_body={"name": "nope"})
+        self.assertIn("404", head)
+        self.assertIn("error", body)
+
+    async def test_delete_strategy_filesystem_failure_is_a_clean_500_not_a_dropped_connection(self) -> None:
+        await self._request(
+            "POST", "/api/strategies",
+            json_body={"name": "will_fail", "concepts": [], "microsystems": [], "execution": None, "management": None},
+        )
+        with patch(
+            "polymarket_btc.data_collection.control.strategies.StrategyManager.delete_strategy",
+            side_effect=OSError("permission denied"),
+        ):
+            head, body = await self._request("POST", "/api/strategies/delete", json_body={"name": "will_fail"})
+        self.assertIn("500", head)
+        self.assertIn("error", body)
 
     async def test_save_strategy_unknown_concept_id_is_400(self) -> None:
         head, body = await self._request(

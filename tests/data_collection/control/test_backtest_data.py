@@ -7,7 +7,15 @@ import unittest
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from polymarket_btc.data_collection.control.backtest_data import combined_coverage, key_coverage, narrowest_key, read_records
+from polymarket_btc.data_collection.control.backtest_data import (
+    PRICE_PATH_LABEL,
+    backtest_coverage,
+    combined_coverage,
+    key_coverage,
+    narrowest_key,
+    price_path_coverage,
+    read_records,
+)
 from polymarket_btc.data_collection.market_data.health import HealthRegistry
 from polymarket_btc.data_collection.market_data.models import (
     BinanceAggTradePayload,
@@ -134,6 +142,91 @@ class NarrowestKeyTests(unittest.TestCase):
 
     def test_empty_required_keys_yields_none(self) -> None:
         self.assertIsNone(narrowest_key(set(), [{"sources": ["x"], "plugins": []}]))
+
+
+class PricePathCoverageTests(unittest.TestCase):
+    def test_unions_across_trade_kline_and_mark_price_for_the_bare_btc_keys(self) -> None:
+        manifests = [{
+            "sources": ["binance_futures_trade", "binance_futures_kline"], "plugins": [],
+            "source_coverage": {
+                "binance_futures_trade": {"start_ts_utc": "2026-08-01T00:00:00", "end_ts_utc": "2026-08-02T00:00:00"},
+                "binance_futures_kline": {"start_ts_utc": "2026-08-02T00:00:00", "end_ts_utc": "2026-08-03T00:00:00"},
+            },
+        }]
+        self.assertEqual(
+            price_path_coverage("BTC", manifests),
+            [("2026-08-01T00:00:00", "2026-08-03T00:00:00")],
+        )
+
+    def test_uses_the_asset_suffixed_key_for_a_non_btc_instrument(self) -> None:
+        manifests = [{
+            "sources": ["binance_futures_trade", "binance_futures_trade:ETH"], "plugins": [],
+            "source_coverage": {
+                "binance_futures_trade": {"start_ts_utc": "2026-08-01T00:00:00", "end_ts_utc": "2026-08-02T00:00:00"},
+                "binance_futures_trade:ETH": {"start_ts_utc": "2026-08-05T00:00:00", "end_ts_utc": "2026-08-06T00:00:00"},
+            },
+        }]
+        # BTC's own trade coverage must not leak into an ETH backtest's price path.
+        self.assertEqual(
+            price_path_coverage("ETH", manifests),
+            [("2026-08-05T00:00:00", "2026-08-06T00:00:00")],
+        )
+
+    def test_no_price_capable_key_collected_yields_no_coverage(self) -> None:
+        manifests = [{
+            "sources": ["binance_futures_open_interest_long_short"], "plugins": [],
+            "start_ts_utc": "2026-08-01T00:00:00", "end_ts_utc": "2026-08-02T00:00:00",
+        }]
+        self.assertEqual(price_path_coverage("BTC", manifests), [])
+
+
+class BacktestCoverageTests(unittest.TestCase):
+    def test_reports_no_coverage_when_concepts_are_satisfied_but_no_price_data_exists(self) -> None:
+        """The exact reported bug: a strategy whose concepts only ever
+        declare binance_futures_open_interest_long_short (fully collected)
+        used to show a range as backtestable purely on that basis, even
+        though run_backtest's own price path (trades/klines/mark price)
+        had nothing to price fills against -- letting the user start a
+        backtest that immediately failed with "no price data available"."""
+        manifests = [{
+            "sources": ["binance_futures_open_interest_long_short"], "plugins": [],
+            "source_coverage": {
+                "binance_futures_open_interest_long_short": {
+                    "start_ts_utc": "2026-08-01T00:00:00", "end_ts_utc": "2026-08-19T00:00:00",
+                },
+            },
+        }]
+        coverage, limiting = backtest_coverage({"binance_futures_open_interest_long_short"}, "BTC", manifests)
+        self.assertEqual(coverage, [])
+        self.assertEqual(limiting, PRICE_PATH_LABEL)
+
+    def test_intersects_concept_coverage_with_price_path_coverage_when_both_exist(self) -> None:
+        manifests = [{
+            "sources": ["binance_futures_open_interest_long_short", "binance_futures_kline"], "plugins": [],
+            "source_coverage": {
+                "binance_futures_open_interest_long_short": {
+                    "start_ts_utc": "2026-08-01T00:00:00", "end_ts_utc": "2026-08-10T00:00:00",
+                },
+                "binance_futures_kline": {"start_ts_utc": "2026-08-05T00:00:00", "end_ts_utc": "2026-08-19T00:00:00"},
+            },
+        }]
+        coverage, limiting = backtest_coverage({"binance_futures_open_interest_long_short"}, "BTC", manifests)
+        self.assertEqual(coverage, [("2026-08-05T00:00:00", "2026-08-10T00:00:00")])
+        self.assertEqual(limiting, "binance_futures_open_interest_long_short")
+
+    def test_a_strategy_that_directly_requires_trades_is_unaffected_by_the_added_check(self) -> None:
+        """When a concept already declares binance_futures_trade itself,
+        the price-path requirement is trivially satisfied by the same
+        data -- no behavior change from before this function existed."""
+        manifests = [{
+            "sources": ["binance_futures_trade"], "plugins": [],
+            "source_coverage": {
+                "binance_futures_trade": {"start_ts_utc": "2026-08-01T00:00:00", "end_ts_utc": "2026-08-19T00:00:00"},
+            },
+        }]
+        coverage, limiting = backtest_coverage({"binance_futures_trade"}, "BTC", manifests)
+        self.assertEqual(coverage, [("2026-08-01T00:00:00", "2026-08-19T00:00:00")])
+        self.assertEqual(limiting, "binance_futures_trade")
 
 
 def _write_trade_events(run_dir: Path, trade_points: list[tuple[float, float]]) -> None:

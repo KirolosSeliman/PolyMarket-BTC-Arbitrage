@@ -1,13 +1,14 @@
 """Concept ICT : détection des prises de liquidité (liquidity sweep / stop hunt).
 
-Reconstruit des bougies OHLC à partir des trades tick-by-tick, repère les
-"swing highs" (points hauts fractals) et "swing lows" (points bas fractals),
-les regroupe en pools de liquidité (equal highs = buyside liquidity, equal
-lows = sellside liquidity), puis détecte quand une mèche perce ce niveau
-avant que le prix ne referme aussitôt de l'autre côté -- le "stop hunt" /
-"Turtle Soup" de la méthodologie ICT. Une prise de buyside liquidity (BSL)
-est un signal baissier ; une prise de sellside liquidity (SSL) est un signal
-haussier.
+Lit directement les bougies OHLCV natives Binance (voir binance_futures_kline
+dans le catalogue de données -- la granularité se choisit à la collecte, pas
+ici), repère les "swing highs" (points hauts fractals) et "swing lows"
+(points bas fractals), les regroupe en pools de liquidité (equal highs =
+buyside liquidity, equal lows = sellside liquidity), puis détecte quand une
+mèche perce ce niveau avant que le prix ne referme aussitôt de l'autre côté
+-- le "stop hunt" / "Turtle Soup" de la méthodologie ICT. Une prise de
+buyside liquidity (BSL) est un signal baissier ; une prise de sellside
+liquidity (SSL) est un signal haussier.
 """
 
 from __future__ import annotations
@@ -21,11 +22,10 @@ CONCEPT_INFO = {
         "du prix de l'autre côté du niveau."
     ),
     "detail": (
-        "Reconstruit des bougies OHLC depuis les trades (granularité "
-        "configurable en secondes), détecte les swing highs/lows fractals, "
-        "puis regroupe les swings proches en pools de liquidité : les "
-        "swing highs forment la 'buyside liquidity' (BSL, equal highs -- où "
-        "reposent les stops des vendeurs), les swing lows la 'sellside "
+        "Détecte les swing highs/lows fractals sur les bougies Binance "
+        "reçues, puis regroupe les swings proches en pools de liquidité : "
+        "les swing highs forment la 'buyside liquidity' (BSL, equal highs -- "
+        "où reposent les stops des vendeurs), les swing lows la 'sellside "
         "liquidity' (SSL, equal lows -- où reposent les stops des "
         "acheteurs). Un sweep est confirmé quand une bougie perce un pool "
         "avec sa mèche puis que le prix referme de l'autre côté du niveau "
@@ -33,26 +33,18 @@ CONCEPT_INFO = {
         "BSL balayée est un signal baissier, une SSL balayée est un signal "
         "haussier. Renvoie les sweeps confirmés ainsi que les pools de "
         "liquidité encore actifs (jamais balayés) au-dessus et en dessous "
-        "du dernier prix connu."
+        "du dernier prix connu, et la granularité des bougies reçues "
+        "(candle_seconds), détectée automatiquement."
     ),
-    "data_sources": ["binance_futures_trade"],
+    "data_sources": ["binance_futures_kline"],
     "config_schema": [
-        {
-            "name": "candle_seconds",
-            "type": "number",
-            "label": "Granularité des bougies (secondes)",
-            "default": 5,
-            "description": (
-                "Durée de chaque bougie reconstruite à partir des trades, en secondes."
-            ),
-        },
         {
             "name": "lookback_candles",
             "type": "number",
             "label": "Fenêtre d'analyse (nb de bougies)",
             "default": 500,
             "description": (
-                "Nombre de bougies reconstruites (les plus récentes) sur lesquelles "
+                "Nombre de bougies reçues (les plus récentes) sur lesquelles "
                 "chercher des swings et des sweeps."
             ),
         },
@@ -121,21 +113,6 @@ CONCEPT_INFO = {
     ],
 }
 
-_PRICE_KEYS = ("price", "p", "close")
-_QTY_KEYS = ("quantity", "qty", "q", "volume")
-_TIME_KEYS = ("timestamp", "time", "T", "t", "trade_time", "ts")
-_MS_THRESHOLD = 1e11
-
-
-def _get(trade, keys):
-    if not isinstance(trade, dict):
-        return None
-    for key in keys:
-        value = trade.get(key)
-        if value is not None:
-            return value
-    return None
-
 
 def _to_float(value):
     try:
@@ -144,41 +121,39 @@ def _to_float(value):
         return None
 
 
-def _build_candles(trades, candle_seconds):
-    parsed = []
-    for trade in trades or []:
-        price = _to_float(_get(trade, _PRICE_KEYS))
-        ts = _to_float(_get(trade, _TIME_KEYS))
-        if price is None or ts is None:
+def _normalize_candles(records):
+    """Binance klines arrive pre-built (open/high/low/close/open_time from
+    read_records' own extractor -- see backtest_data.py) -- no reconstruction
+    needed here, just validate/sort. "start" keeps the field name the
+    detection logic below already used (formerly a reconstructed-bucket
+    boundary, now a real candle's open_time) so that logic needs no changes."""
+    candles = []
+    for record in records or []:
+        if not isinstance(record, dict):
             continue
-        if ts > _MS_THRESHOLD:
-            ts /= 1000.0
-        qty = _to_float(_get(trade, _QTY_KEYS)) or 0.0
-        parsed.append((ts, price, qty))
-    parsed.sort(key=lambda row: row[0])
+        start = _to_float(record.get("open_time"))
+        o, h, l, c = (
+            _to_float(record.get("open")), _to_float(record.get("high")),
+            _to_float(record.get("low")), _to_float(record.get("close")),
+        )
+        if None in (start, o, h, l, c):
+            continue
+        candles.append({
+            "start": start, "open": o, "high": h, "low": l, "close": c,
+            "volume": _to_float(record.get("volume")) or 0.0,
+        })
+    candles.sort(key=lambda row: row["start"])
+    return candles
 
-    bucket_size = max(_to_float(candle_seconds) or 5.0, 0.001)
-    buckets = {}
-    for ts, price, qty in parsed:
-        start = int(ts // bucket_size) * bucket_size
-        candle = buckets.get(start)
-        if candle is None:
-            buckets[start] = {
-                "start": start,
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": qty,
-            }
-        else:
-            if price > candle["high"]:
-                candle["high"] = price
-            if price < candle["low"]:
-                candle["low"] = price
-            candle["close"] = price
-            candle["volume"] += qty
-    return sorted(buckets.values(), key=lambda c: c["start"])
+
+def _detect_candle_seconds(candles):
+    """The real candle width, read straight off two consecutive candles'
+    own timestamps -- no config field needed (and no risk of it silently
+    not matching what was actually collected, the failure mode a manual
+    "candle_seconds" setting used to have)."""
+    if len(candles) < 2:
+        return None
+    return candles[1]["start"] - candles[0]["start"]
 
 
 def _find_swings(candles, swing_lookback):
@@ -269,26 +244,11 @@ def _scan_sweep(candles, pool, min_wick_pct, confirmation_candles):
     return None
 
 
-# Generous margin over lookback_candles * candle_seconds against quiet
-# spans with fewer than one trade per candle-width -- a backtest only ever
-# needs to give this back if it's provably too small, and BTCUSDT trades
-# continuously enough that even 1x would be plenty in practice.
-_LOOKBACK_SAFETY_FACTOR = 4
-
-
-def required_lookback_seconds(config):
-    candle_seconds = _to_float(config.get("candle_seconds", 5)) or 5.0
-    lookback_candles = int(_to_float(config.get("lookback_candles", 500)) or 500)
-    if lookback_candles <= 0:
-        return None  # 0 = no trim, compute() itself never bounds its lookback either
-    return candle_seconds * lookback_candles * _LOOKBACK_SAFETY_FACTOR
-
-
 def compute(context) -> dict:
-    trades = context.data.get("binance_futures_trade") or []
+    candles = _normalize_candles(context.data.get("binance_futures_kline"))
+    candle_seconds = _detect_candle_seconds(candles)
     cfg = context.config
 
-    candle_seconds = _to_float(cfg.get("candle_seconds", 5)) or 5.0
     lookback_candles = int(_to_float(cfg.get("lookback_candles", 500)) or 500)
     swing_lookback = max(int(_to_float(cfg.get("swing_lookback", 3)) or 3), 1)
     tolerance_pct = _to_float(cfg.get("equal_level_tolerance_pct", 0.05))
@@ -301,14 +261,13 @@ def compute(context) -> dict:
     if direction not in ("buyside", "sellside", "both"):
         direction = "both"
 
-    candles = _build_candles(trades, candle_seconds)
     if lookback_candles > 0:
         candles = candles[-lookback_candles:]
 
     min_len = swing_lookback * 2 + 1
     if len(candles) < min_len:
         context.log(
-            f"pas assez de bougies reconstruites ({len(candles)}) pour détecter des "
+            f"pas assez de bougies reçues ({len(candles)}) pour détecter des "
             f"swings (minimum {min_len})"
         )
         return {
@@ -317,6 +276,7 @@ def compute(context) -> dict:
             "active_pools_below": [],
             "last_price": candles[-1]["close"] if candles else None,
             "candle_count": len(candles),
+            "candle_seconds": candle_seconds,
         }
 
     swing_highs, swing_lows = _find_swings(candles, swing_lookback)
@@ -360,8 +320,9 @@ def compute(context) -> dict:
         reverse=True,
     )
 
+    candle_info = f" ({candle_seconds:g}s)" if candle_seconds else ""
     context.log(
-        f"{len(candles)} bougies reconstruites ({candle_seconds:g}s) -- "
+        f"{len(candles)} bougies reçues{candle_info} -- "
         f"{len(pools)} pools de liquidité, {len(sweeps)} sweeps confirmés, "
         f"{len(active_pools)} pools encore actifs"
     )
@@ -372,4 +333,5 @@ def compute(context) -> dict:
         "active_pools_below": active_pools_below,
         "last_price": last_price,
         "candle_count": len(candles),
+        "candle_seconds": candle_seconds,
     }

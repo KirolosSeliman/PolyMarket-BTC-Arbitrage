@@ -179,42 +179,45 @@ class ExpandSweepTests(unittest.TestCase):
         )
 
 
+def _setup_backtest(
+    root: Path, execution_source: str, management_source: str | None = None,
+) -> tuple[dict, dict, CollectionRunManager]:
+    (root / "concepts").mkdir(parents=True, exist_ok=True)
+    (root / "concepts" / "last_price_concept.py").write_text(_CONCEPT, encoding="utf-8")
+    (root / "microsystems").mkdir(parents=True, exist_ok=True)
+    (root / "microsystems" / "passthrough.py").write_text(_MICROSYSTEM, encoding="utf-8")
+    (root / "execution_profiles").mkdir(parents=True, exist_ok=True)
+    (root / "execution_profiles" / "exec.py").write_text(execution_source, encoding="utf-8")
+    (root / "management_profiles").mkdir(parents=True, exist_ok=True)
+    management_entry = None
+    if management_source is not None:
+        (root / "management_profiles" / "mgmt.py").write_text(management_source, encoding="utf-8")
+        management_entry = {"management_id": "mgmt", "config": {}}
+
+    manager = CollectionRunManager(
+        config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
+        collections_dir=root / "collections", symbol_cache_path=_seeded_symbol_cache(root),
+        plugins_dir=root / "plugins", concepts_dir=root / "concepts",
+        microsystems_dir=root / "microsystems", execution_dir=root / "execution_profiles",
+        management_dir=root / "management_profiles",
+    )
+    strategy = {
+        "concepts": [{"instance_id": "concept_1", "concept_id": "last_price_concept", "config": {}, "data_bindings": {}}],
+        "microsystems": [{
+            "instance_id": "micro_1", "microsystem_id": "passthrough",
+            "concept_instance_ids": ["concept_1"], "config": {}, "data_bindings": {},
+        }],
+        "execution": {"execution_id": "exec", "config": {}},
+        "management": management_entry,
+    }
+    return strategy, manager.__dict__, manager
+
+
 class RunBacktestTests(unittest.TestCase):
-    def _setup(self, root: Path, execution_source: str, management_source: str | None = None) -> tuple[dict, dict, CollectionRunManager]:
-        (root / "concepts").mkdir(parents=True, exist_ok=True)
-        (root / "concepts" / "last_price_concept.py").write_text(_CONCEPT, encoding="utf-8")
-        (root / "microsystems").mkdir(parents=True, exist_ok=True)
-        (root / "microsystems" / "passthrough.py").write_text(_MICROSYSTEM, encoding="utf-8")
-        (root / "execution_profiles").mkdir(parents=True, exist_ok=True)
-        (root / "execution_profiles" / "exec.py").write_text(execution_source, encoding="utf-8")
-        (root / "management_profiles").mkdir(parents=True, exist_ok=True)
-        management_entry = None
-        if management_source is not None:
-            (root / "management_profiles" / "mgmt.py").write_text(management_source, encoding="utf-8")
-            management_entry = {"management_id": "mgmt", "config": {}}
-
-        manager = CollectionRunManager(
-            config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
-            collections_dir=root / "collections", symbol_cache_path=_seeded_symbol_cache(root),
-            plugins_dir=root / "plugins", concepts_dir=root / "concepts",
-            microsystems_dir=root / "microsystems", execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
-        )
-        strategy = {
-            "concepts": [{"instance_id": "concept_1", "concept_id": "last_price_concept", "config": {}, "data_bindings": {}}],
-            "microsystems": [{
-                "instance_id": "micro_1", "microsystem_id": "passthrough",
-                "concept_instance_ids": ["concept_1"], "config": {}, "data_bindings": {},
-            }],
-            "execution": {"execution_id": "exec", "config": {}},
-            "management": management_entry,
-        }
-        return strategy, manager.__dict__, manager
-
     def test_reversal_exit_and_end_of_range_forced_close(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            strategy, _, manager = self._setup(root, _THRESHOLD_EXECUTION)
+            strategy, _, manager = _setup_backtest(root, _THRESHOLD_EXECUTION)
             run_dir = root / "collections" / "run1"
             run_dir.mkdir(parents=True)
             _write_trade_events(run_dir, [(-1, 100), (9, 150), (19, 90), (29, 50), (39, 120), (49, 200)])
@@ -239,7 +242,7 @@ class RunBacktestTests(unittest.TestCase):
     def test_management_stop_loss_take_profit_exit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            strategy, _, manager = self._setup(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
             run_dir = root / "collections" / "run1"
             run_dir.mkdir(parents=True)
             # The t=-1 trade falls outside the [0, 20] range filter, so the
@@ -279,7 +282,7 @@ class RunBacktestTests(unittest.TestCase):
     def test_replay_is_only_computed_once_for_the_best_combo_not_every_sweep_combo(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            strategy, _, manager = self._setup(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
             run_dir = root / "collections" / "run1"
             run_dir.mkdir(parents=True)
             _write_trade_events(run_dir, [(-1, 100), (9, 101), (19, 106)])
@@ -305,7 +308,7 @@ class RunBacktestTests(unittest.TestCase):
     def test_sweep_mode_runs_every_combination_via_process_pool(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            strategy, _, manager = self._setup(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
             run_dir = root / "collections" / "run1"
             run_dir.mkdir(parents=True)
             _write_trade_events(run_dir, [(-1, 100), (9, 101), (19, 106)])
@@ -336,7 +339,7 @@ class RunBacktestTests(unittest.TestCase):
     def test_fixed_value_override_takes_precedence_over_script_default(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            strategy, _, manager = self._setup(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
             run_dir = root / "collections" / "run1"
             run_dir.mkdir(parents=True)
             # Entry @100; script default take_profit_pct=5 -> TP=105, which
@@ -369,7 +372,7 @@ class RunBacktestTests(unittest.TestCase):
     def test_fixed_override_is_ignored_for_a_field_that_is_being_swept(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            strategy, _, manager = self._setup(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
             run_dir = root / "collections" / "run1"
             run_dir.mkdir(parents=True)
             _write_trade_events(run_dir, [(-1, 100), (9, 101)])
@@ -394,7 +397,7 @@ class RunBacktestTests(unittest.TestCase):
     def test_no_execution_profile_raises(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            strategy, _, manager = self._setup(root, _ENTER_ONCE_EXECUTION)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION)
             strategy["execution"] = None
             with self.assertRaises(ValueError):
                 run_backtest(
@@ -409,7 +412,7 @@ class RunBacktestTests(unittest.TestCase):
     def test_no_trade_data_available_raises(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            strategy, _, manager = self._setup(root, _ENTER_ONCE_EXECUTION)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION)
             with self.assertRaises(ValueError):
                 run_backtest(
                     strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
@@ -650,6 +653,80 @@ class BuildTimelineMemoizationTests(unittest.TestCase):
             [step.microsystem_outputs["m1"]["n"] for step in timeline],
             [1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3],
         )
+
+
+class BuildTimelineProgressTests(unittest.TestCase):
+    def test_reports_increasing_progress_ending_at_one(self) -> None:
+        records = [{"timestamp": float(i), "price": float(i)} for i in range(20)]
+        reports: list[float] = []
+        build_timeline(
+            {"concepts": [], "microsystems": []}, {}, {}, {"key": records}, {}, {},
+            start_ts=0, end_ts=19, cadence_seconds=1, on_progress=reports.append,
+        )
+        self.assertTrue(reports)
+        self.assertEqual(reports, sorted(reports))
+        self.assertEqual(reports[-1], 1.0)
+
+    def test_no_callback_means_no_overhead_and_no_crash(self) -> None:
+        records = [{"timestamp": float(i), "price": float(i)} for i in range(5)]
+        timeline = build_timeline(
+            {"concepts": [], "microsystems": []}, {}, {}, {"key": records}, {}, {},
+            start_ts=0, end_ts=4, cadence_seconds=1,
+        )
+        self.assertEqual(len(timeline), 5)
+
+
+class RunBacktestProgressTests(unittest.TestCase):
+    def test_single_combo_progress_reaches_one_at_the_end(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION)
+            run_dir = root / "collections" / "run1"
+            run_dir.mkdir(parents=True)
+            _write_trade_events(run_dir, [(-1, 100), (9, 101)])
+            manifest = {
+                "mode": "access", "sources": ["binance_futures_trade"], "plugins": [],
+                "start_ts_utc": "2026-01-01T00:00:00", "end_ts_utc": "2026-01-01T01:00:00",
+                "data_dir": str(run_dir),
+            }
+            reports: list[float] = []
+            run_backtest(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                manifests=[manifest], instrument="BTC",
+                start_ts=0, end_ts=10, cadence_seconds=10,
+                execution_sweep={}, management_sweep={}, on_progress=reports.append,
+            )
+            self.assertTrue(reports)
+            self.assertEqual(reports, sorted(reports))
+            self.assertEqual(reports[-1], 1.0)
+
+    def test_sweep_progress_reaches_one_after_every_combo_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
+            run_dir = root / "collections" / "run1"
+            run_dir.mkdir(parents=True)
+            _write_trade_events(run_dir, [(-1, 100), (9, 101), (19, 106)])
+            manifest = {
+                "mode": "access", "sources": ["binance_futures_trade"], "plugins": [],
+                "start_ts_utc": "2026-01-01T00:00:00", "end_ts_utc": "2026-01-01T01:00:00",
+                "data_dir": str(run_dir),
+            }
+            reports: list[float] = []
+            run_backtest(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                manifests=[manifest], instrument="BTC",
+                start_ts=0, end_ts=20, cadence_seconds=10,
+                execution_sweep={}, management_sweep={"stop_loss_pct": [1.0, 2.0], "take_profit_pct": [5.0, 10.0]},
+                on_progress=reports.append,
+            )
+            self.assertTrue(reports)
+            self.assertEqual(reports[-1], 1.0)
+            self.assertTrue(any(0.9 <= r < 1.0 for r in reports) or reports.count(1.0) >= 1)
 
 
 if __name__ == "__main__":

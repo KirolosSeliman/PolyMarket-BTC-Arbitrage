@@ -75,6 +75,22 @@ label.check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; c
 
 .status-line { font-size: 12px; color: var(--text-2); margin-top: 10px; white-space: pre-wrap; }
 .status-line.error { color: var(--critical); }
+.progress-bar {
+  margin-top: 10px; height: 6px; border-radius: 3px; background: var(--surface-2);
+  overflow: hidden; position: relative;
+}
+.progress-bar-fill {
+  height: 100%; border-radius: 3px; background: var(--accent); width: 0%;
+  transition: width 0.4s ease;
+}
+.progress-bar.indeterminate .progress-bar-fill {
+  width: 40% !important; transition: none;
+  animation: progress-bar-slide 1.4s ease-in-out infinite;
+}
+@keyframes progress-bar-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
 
 #replay-chart { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; }
 #replay-chart .price-line { fill: none; stroke: var(--accent); stroke-width: 2; }
@@ -215,6 +231,9 @@ label.check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; c
   <div class="panel" id="run-panel" style="display:none">
     <button type="button" id="backtest-btn">Backtest</button>
     <div class="status-line" id="run-status"></div>
+    <div class="progress-bar" id="backtest-progress-bar" style="display:none">
+      <div class="progress-bar-fill" id="backtest-progress-fill"></div>
+    </div>
     <div id="results"></div>
     <button type="button" class="secondary" id="show-replay-btn" style="display:none;margin-top:12px">Voir les trades pris</button>
   </div>
@@ -487,7 +506,7 @@ function renderEligibility() {
     .map(([start, end]) => `<span>${formatCoverageDate(start)} → ${formatCoverageDate(end)}</span>`).join(" · ")
     || "Aucune période couverte.";
   el("narrowest-key-hint").textContent = eligibility.narrowest_key
-    ? `Limité par : ${eligibility.narrowest_key} (la donnée la moins couverte parmi celles requises).`
+    ? `Limité par : ${eligibility.narrowest_key} -- la donnée la moins couverte parmi celles requises.`
     : "";
 
   startPicker.setCoverage(eligibility.coverage);
@@ -673,6 +692,8 @@ async function runBacktest() {
   el("show-replay-btn").style.display = "none";
   el("replay-panel").style.display = "none";
   stopReplay();
+  el("backtest-progress-bar").style.display = "none";
+  el("backtest-progress-fill").style.width = "0%";
   const instrument = el("instrument-input").value.trim();
   const cadenceSeconds = parseFloat(el("cadence-input").value);
   const missing = [];
@@ -733,10 +754,16 @@ async function runBacktest() {
     const data = await res.json();
     const elapsed = formatElapsed(data.elapsed_seconds);
     if (!data.done) {
-      status.textContent = `Backtest en cours… (${elapsed})`;
+      const pct = Math.round(Math.max(0, Math.min(1, data.progress || 0)) * 100);
+      el("backtest-progress-bar").style.display = "block";
+      el("backtest-progress-fill").style.width = `${pct}%`;
+      const remaining = estimateBacktestRemainingSeconds(data);
+      const etaText = remaining === null ? "" : ` -- ~${formatElapsed(remaining)} restant`;
+      status.textContent = `Backtest en cours… (${elapsed} · ${pct}%${etaText})`;
       setTimeout(poll, 1000);
       return;
     }
+    el("backtest-progress-bar").style.display = "none";
     el("backtest-btn").disabled = false;
     if (data.error) {
       status.className = "status-line error";
@@ -755,6 +782,19 @@ function formatElapsed(seconds) {
   const minutes = Math.floor(seconds / 60);
   const rest = Math.round(seconds % 60);
   return `${minutes} min ${rest} s`;
+}
+
+// Extrapolates from how long it took to get this far -- a rough ETA, not a
+// promise: real per-step cost can vary (data density, cache warm-up), but
+// this beats no estimate at all for a long backtest. Same approach as
+// collect.html's estimateRemainingSeconds, just driven by the engine's own
+// real fraction (data.progress) instead of a duration-based guess.
+function estimateBacktestRemainingSeconds(data) {
+  const fraction = data.progress;
+  if (!Number.isFinite(fraction) || fraction <= 0) return null;
+  if (fraction >= 1) return 0;
+  const estimatedTotalSeconds = data.elapsed_seconds / fraction;
+  return Math.max(0, estimatedTotalSeconds - data.elapsed_seconds);
 }
 
 el("backtest-btn").addEventListener("click", runBacktest);

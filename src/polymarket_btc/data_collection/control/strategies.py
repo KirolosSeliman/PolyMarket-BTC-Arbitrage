@@ -22,7 +22,7 @@ import logging
 from pathlib import Path
 import re
 
-from .backtest_data import combined_coverage, key_coverage, narrowest_key
+from .backtest_data import backtest_coverage, key_coverage
 from .backtest_engine import required_concrete_keys
 from .concepts import discover_concepts
 from .config_schema import resolve_config
@@ -84,17 +84,37 @@ class StrategyManager:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def delete_strategy(self, name: str) -> None:
+        """Permanently removes a saved strategy's .json file. Irreversible;
+        the control panel's own "supprimer" button is expected to confirm
+        with the user before calling this. STRATEGY_NAME_RE (a plain
+        identifier, no path separators or traversal) already makes the
+        target path safe, same guarantee load_strategy already relies on --
+        no extra path resolution needed here unlike delete_run, which
+        accepts a less constrained run_id."""
+        if not STRATEGY_NAME_RE.match(name):
+            raise ValueError(f"invalid strategy name: {name!r}")
+        path = self.strategies_dir / f"{name}.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"no strategy named {name!r}")
+        path.unlink()
+
     def backtest_eligibility(self, name: str) -> dict[str, object] | None:
         """Whether `name` is ready to backtest, per the rule the backtest
         page enforces: an execution profile AND a management profile must
         both be set, and `coverage` only ever names a date range where
         *every* concrete data key the strategy's resolved concept/
-        microsystem instances actually touch has genuinely been collected
-        (combined_coverage intersects each key's own real coverage -- a key
-        present but only for a narrower window still correctly shrinks the
-        overall range, it doesn't get silently ignored). Returns None if the
-        strategy itself doesn't exist (a different failure mode than "not
-        eligible yet")."""
+        microsystem instances actually touch has genuinely been collected,
+        AND at least one price-capable key (trades/klines/mark price) is
+        available for the resolved instrument -- run_backtest's own price
+        path needs that regardless of what the strategy's concepts declare
+        (see backtest_coverage; without this, a strategy whose concepts
+        never directly touch trades/klines/mark price -- e.g. one built
+        only on open interest -- could show a range as fully backtestable
+        purely because its own declared keys were covered, letting the
+        user start a backtest that immediately failed with "no price data
+        available"). Returns None if the strategy itself doesn't exist (a
+        different failure mode than "not eligible yet")."""
         strategy = self.load_strategy(name)
         if strategy is None:
             return None
@@ -113,13 +133,14 @@ class StrategyManager:
                 asset_counts[info.asset] = asset_counts.get(info.asset, 0) + 1
         default_instrument = max(asset_counts, key=asset_counts.get) if asset_counts else "BTC"
 
+        coverage, narrowest = backtest_coverage(keys, default_instrument, manifests)
         return {
             "missing_execution": strategy.get("execution") is None,
             "missing_management": strategy.get("management") is None,
             "required_data_keys": sorted(keys),
             "missing_data_keys": missing_data_keys,
-            "coverage": combined_coverage(keys, manifests),
-            "narrowest_key": narrowest_key(keys, manifests),
+            "coverage": coverage,
+            "narrowest_key": narrowest,
             "default_instrument": default_instrument,
         }
 

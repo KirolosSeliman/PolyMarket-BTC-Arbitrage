@@ -11,7 +11,7 @@
      read as one continuous space rather than a visible seam. */
   --surface-0: #000000; --surface-1: #111111; --surface-2: #1c1c1c;
   --text-1: #f2f2f0; --text-2: #b7b6b0; --muted: #7a7972;
-  --border: rgba(255,255,255,0.12); --accent: #3987e5;
+  --border: rgba(255,255,255,0.12); --accent: #3987e5; --critical: #d0554d;
 }
 * { box-sizing: border-box; }
 body {
@@ -44,9 +44,18 @@ header p { color: var(--muted); margin: 0; font-size: 13px; }
   overflow-y: auto; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.5); padding: 4px;
 }
-.combobox-option { padding: 8px 10px; border-radius: 5px; cursor: pointer; font-size: 12.5px; }
+.combobox-option {
+  padding: 8px 10px; border-radius: 5px; cursor: pointer; font-size: 12.5px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
 .combobox-option:hover, .combobox-option.active { background: var(--surface-2); }
 .combobox-empty { padding: 8px 10px; color: var(--muted); font-size: 11.5px; }
+.option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.option-delete {
+  flex-shrink: 0; color: var(--muted); font-size: 15px; line-height: 1;
+  padding: 2px 7px; border-radius: 4px;
+}
+.option-delete:hover { color: #fff; background: var(--critical); }
 
 .new-strategy-row { display: flex; gap: 8px; }
 input[type="text"].name-input {
@@ -130,9 +139,38 @@ function renderListbox(query) {
     : existingStrategyNames;
   listboxActiveIndex = -1;
   listbox.innerHTML = filtered.length
-    ? filtered.map((name) => `<div class="combobox-option" data-name="${name}" role="option">${name}</div>`).join("")
+    ? filtered.map((name) => `
+        <div class="combobox-option" data-name="${name}" role="option">
+          <span class="option-label">${name}</span>
+          <span class="option-delete" data-delete="${name}" role="button" tabindex="0" aria-label="Supprimer">×</span>
+        </div>
+      `).join("")
     : '<div class="combobox-empty">Aucune stratégie trouvée.</div>';
   listbox.style.display = "block";
+}
+
+async function deleteStrategy(name) {
+  const confirmed = confirm(
+    `Supprimer définitivement la stratégie "${name}" ?\n\nCette action est irréversible.`
+  );
+  if (!confirmed) return;
+  let res;
+  try {
+    res = await fetch("/api/strategies/delete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+  } catch (networkError) {
+    alert(`Échec de la suppression : impossible de contacter le serveur (${networkError.message}).`);
+    return;
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert(`Échec de la suppression : ${data.error || res.status}`);
+    return;
+  }
+  existingStrategyNames = existingStrategyNames.filter((n) => n !== name);
+  renderListbox(el("strategy-search").value);
 }
 
 function closeListbox() {
@@ -172,6 +210,12 @@ function initStrategyCombobox() {
     }
   });
   listbox.addEventListener("mousedown", (event) => {
+    const deleteBtn = event.target.closest(".option-delete");
+    if (deleteBtn) {
+      event.preventDefault(); // keep the listbox open through the confirm() dialog
+      deleteStrategy(deleteBtn.dataset.delete);
+      return;
+    }
     const option = event.target.closest(".combobox-option");
     if (option) selectFromListbox(option.dataset.name);
   });

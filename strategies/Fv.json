@@ -1,5 +1,5 @@
 {
-  "name": "caca",
+  "name": "Fv",
   "concepts": [
     {
       "instance_id": "concept_1",
@@ -54,6 +54,6 @@
       "min_reward_risk_ratio": 0
     }
   },
-  "created_at_utc": "2026-08-20T21:32:54.241049+00:00",
-  "updated_at_utc": "2026-08-20T21:32:54.241049+00:00"
+  "created_at_utc": "2026-08-21T11:15:37.735671+00:00",
+  "updated_at_utc": "2026-08-21T11:15:37.735671+00:00"
 }

@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 from polymarket_btc.data_collection.control.runs import (
     CollectionRunManager,
     RunState,
+    _access_mode_source_coverage,
     export_run,
 )
 
@@ -202,6 +203,84 @@ class ExportRunTests(unittest.TestCase):
             self.assertEqual(manifest["source_coverage"]["binance_futures_kline"]["end_ts_utc"], _iso_for_test(day19_ns))
             self.assertEqual(manifest["source_coverage"]["binance_futures_kline:ETH"]["start_ts_utc"], _iso_for_test(day18_ns))
             self.assertEqual(manifest["source_coverage"]["binance_futures_kline:ETH"]["end_ts_utc"], _iso_for_test(day19_ns))
+
+    def test_source_coverage_uses_the_datas_own_timestamps_not_when_it_was_fetched(self) -> None:
+        """The exact bug found live: an access-mode bulk historical fetch
+        for an old date range writes its raw segments *now* (received_
+        wall_timestamp_ns is essentially "today"), but the klines
+        themselves are dated a year ago (source_timestamp_ns). Before this
+        fix, source_coverage read only first/last_received_timestamp_ns --
+        a real fetch for 2025-08-24 data showed as covering a few hundred
+        milliseconds around the moment it was fetched in 2026, not the
+        actual historical day requested."""
+        from decimal import Decimal
+
+        from polymarket_btc.data_collection.market_data.models import (
+            BinanceKlinePayload, EventSource, EventStream, MarketDataEvent,
+        )
+        from polymarket_btc.data_collection.market_data.storage import RawEventStorage
+
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            storage = RawEventStorage(data_dir, zstd_level=3)
+
+            a_year_ago_ns = 1755993600 * 1_000_000_000  # 2025-08-24, the actual candle date
+            fetched_now_ns = 1787309600 * 1_000_000_000  # 2026-08-21, when the fetch actually ran
+
+            def write_kline(ts_ns: int, sequence: int) -> None:
+                payload = BinanceKlinePayload(
+                    market="futures", interval="1m", open_time_ns=ts_ns - 60_000_000_000, close_time_ns=ts_ns,
+                    open=Decimal("100"), high=Decimal("100"), low=Decimal("100"), close=Decimal("100"),
+                    base_volume=Decimal("1"), quote_volume=Decimal("1"), trade_count=1, is_closed=True,
+                )
+                event = MarketDataEvent(
+                    schema_version=2, ingest_sequence=sequence, event_id=f"kline-{sequence}",
+                    source=EventSource.BINANCE_FUTURES_KLINE, stream=EventStream.BINANCE_KLINE,
+                    instrument="BTCUSDT", source_timestamp_ns=ts_ns, server_timestamp_ns=ts_ns,
+                    received_wall_timestamp_ns=fetched_now_ns, received_monotonic_ns=time.monotonic_ns(),
+                    source_sequence=None, timeframe=None, market_id=None, condition_id=None,
+                    asset_id=None, outcome=None, payload=payload,
+                )
+                storage.write(event)
+
+            write_kline(a_year_ago_ns, 0)
+            write_kline(a_year_ago_ns + 86_400 * 1_000_000_000, 1)  # a day later, same historical range
+            storage.close()
+
+            state = RunState(
+                run_id="old-range-run", sources=["binance_futures_kline"], plugins=[],
+                duration_seconds=None, data_dir=data_dir, started_at_ns=time.time_ns(), mode="access",
+                start_ts_ns=a_year_ago_ns, end_ts_ns=a_year_ago_ns + 86_400 * 1_000_000_000,
+            )
+            state.ended_at_ns = time.time_ns()
+            manifest = export_run(state)
+
+            coverage = manifest["source_coverage"]["binance_futures_kline"]
+            self.assertEqual(coverage["start_ts_utc"], _iso_for_test(a_year_ago_ns))
+            self.assertEqual(coverage["end_ts_utc"], _iso_for_test(a_year_ago_ns + 86_400 * 1_000_000_000))
+
+    def test_source_coverage_falls_back_to_received_time_for_a_sidecar_without_source_timestamps(self) -> None:
+        """A sidecar written before this fix has no first/last_source_
+        timestamp_ns fields at all -- must still round-trip via the old
+        received-time fields rather than being skipped."""
+        raw_dir = Path(tempfile.mkdtemp())
+        try:
+            segment_dir = raw_dir / "raw" / "source=binance_futures_kline" / "instrument=BTCUSDT"
+            segment_dir.mkdir(parents=True)
+            data_path = segment_dir / "part-1.jsonl.zst"
+            data_path.write_bytes(b"")
+            sidecar = {
+                "first_received_timestamp_ns": 1_700_000_000_000_000_000,
+                "last_received_timestamp_ns": 1_700_000_100_000_000_000,
+            }
+            (segment_dir / "part-1.manifest.json").write_text(json.dumps(sidecar), encoding="utf-8")
+
+            coverage = _access_mode_source_coverage([data_path])
+            self.assertEqual(coverage["binance_futures_kline"]["start_ts_utc"], _iso_for_test(1_700_000_000_000_000_000))
+            self.assertEqual(coverage["binance_futures_kline"]["end_ts_utc"], _iso_for_test(1_700_000_100_000_000_000))
+        finally:
+            import shutil
+            shutil.rmtree(raw_dir)
 
 
 class CollectionRunManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -490,6 +569,58 @@ class AccessModeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 manager.start(sources=[], plugins=[], duration_seconds=None, mode="bogus")
 
+    async def test_unknown_kline_interval_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(ValueError):
+                manager.start(
+                    sources=["binance_futures_kline"], plugins=[], duration_seconds=None,
+                    mode="access", kline_interval="10m",
+                )
+            self.assertIsNone(manager.current)
+
+    async def test_kline_interval_is_threaded_through_to_the_fetcher_request(self) -> None:
+        requested_urls: list[str] = []
+
+        def fake_urlopen(request, timeout=None):
+            requested_urls.append(request.full_url)
+            return _KlineResponse([])
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                state = manager.start(
+                    sources=["binance_futures_kline"], plugins=[], duration_seconds=None,
+                    mode="access", start_ts_ns=0, end_ts_ns=200_000 * 1_000_000, kline_interval="1h",
+                )
+                for _ in range(200):
+                    if not manager.status()["running"]:
+                        break
+                    await asyncio.sleep(0.05)
+            self.assertEqual(state.kline_interval, "1h")
+            self.assertTrue(requested_urls)
+            self.assertIn("interval=1h", requested_urls[0])
+            status = manager.status()
+            self.assertEqual(status["export"]["kline_interval"], "1h")
+
+    async def test_kline_interval_is_ignored_by_a_source_with_no_such_notion(self) -> None:
+        # aggTrades has no interval concept at all -- passing kline_interval
+        # to a run that only selects it must not crash (fetch_and_store_
+        # historical_agg_trades doesn't accept an interval kwarg).
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with patch("urllib.request.urlopen", return_value=_KlineResponse([])):
+                manager.start(
+                    sources=["binance_futures_trade"], plugins=[], duration_seconds=None,
+                    mode="access", start_ts_ns=0, end_ts_ns=200_000 * 1_000_000, kline_interval="15m",
+                )
+                for _ in range(200):
+                    if not manager.status()["running"]:
+                        break
+                    await asyncio.sleep(0.05)
+            status = manager.status()
+            self.assertIsNone(status["error"])
+
     async def test_access_run_fetches_a_real_builtin_historical_source(self) -> None:
         rows = [[
             1_000, "64800.00", "64820.00", "64790.00", "64810.00",
@@ -536,6 +667,32 @@ class AccessModeTests(unittest.IsolatedAsyncioTestCase):
             # the concurrently-selected plugin still ran to completion.
             self.assertIn("bounds=0:200000000000", status["plugin_logs"]["access_plugin"][0])
             self.assertEqual(status["export"]["plugin_files"], ["converted.jsonl"])
+
+    async def test_access_run_surfaces_a_binance_rejection_instead_of_a_silent_zero(self) -> None:
+        """Binance's own rejection shape ({"code":..., "msg":...}, confirmed
+        live against an invalid symbol) used to be silently treated as an
+        empty page -- indistinguishable from "genuinely no data in this
+        range" in both the log and the resulting event count. Both now
+        still export 0 events, but only a real rejection also logs why."""
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with patch(
+                "urllib.request.urlopen",
+                return_value=_KlineResponse({"code": -1121, "msg": "Invalid symbol."}),
+            ):
+                manager.start(
+                    sources=["binance_futures_kline"], plugins=[], duration_seconds=None,
+                    mode="access", start_ts_ns=0, end_ts_ns=200_000 * 1_000_000,
+                )
+                for _ in range(200):
+                    if not manager.status()["running"]:
+                        break
+                    await asyncio.sleep(0.05)
+            status = manager.status()
+            self.assertFalse(status["running"])
+            log_lines = status["plugin_logs"]["binance_futures_kline"]
+            self.assertTrue(any("erreur" in line and "Invalid symbol." in line for line in log_lines))
+            self.assertEqual(status["export"]["raw_event_count"], 0)
 
     async def test_stop_cancels_a_slow_running_historical_fetch(self) -> None:
         # A wide range means many pagination round trips (one 1-minute

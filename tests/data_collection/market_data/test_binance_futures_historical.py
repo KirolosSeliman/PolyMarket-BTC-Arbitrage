@@ -11,8 +11,10 @@ from polymarket_btc.data_collection.market_data.models import EventSource, Event
 from polymarket_btc.data_collection.market_data.sources.binance_futures_historical import (
     OPEN_INTEREST_HISTORY_LIMIT_DAYS,
     _WEIGHT_SAFE_CEILING,
+    BinanceApiError,
     _adaptive_delay,
     _paginate_by_time,
+    _rows_or_raise,
     fetch_and_store_historical_agg_trades,
     fetch_and_store_historical_klines,
     fetch_and_store_historical_mark_price,
@@ -189,6 +191,54 @@ class KlineFetchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(events[0]["stream"], EventStream.BINANCE_KLINE.value)
             self.assertEqual(events[0]["instrument"], "BTCUSDT")
             self.assertEqual(events[0]["payload"]["close"], "64810.00")
+
+
+class RowsOrRaiseTests(unittest.TestCase):
+    def test_list_passes_through_unchanged(self) -> None:
+        rows = [{"a": 1}]
+        self.assertIs(_rows_or_raise(rows), rows)
+
+    def test_binance_error_shape_raises_with_its_message(self) -> None:
+        # {"code": ..., "msg": ...} is Binance's real, confirmed-live error
+        # shape (e.g. an invalid symbol) -- previously silently treated as
+        # an empty page by `data if isinstance(data, list) else []`.
+        with self.assertRaises(BinanceApiError) as ctx:
+            _rows_or_raise({"code": -1121, "msg": "Invalid symbol."})
+        self.assertIn("Invalid symbol.", str(ctx.exception))
+
+    def test_other_unexpected_shape_still_raises_not_silently_empties(self) -> None:
+        with self.assertRaises(BinanceApiError):
+            _rows_or_raise(None)
+
+
+class FetcherSurfacesBinanceErrorsTests(unittest.IsolatedAsyncioTestCase):
+    """A rejected request (invalid symbol, bad parameter, ...) must not look
+    identical to "genuinely no data in this range" -- both used to silently
+    produce 0 events with nothing in the logs to tell them apart."""
+
+    async def test_kline_fetch_raises_instead_of_silently_returning_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = RawEventStorage(Path(directory), zstd_level=3)
+            sequence = iter(range(1, 1000))
+            with patch("urllib.request.urlopen", return_value=_Response({"code": -1121, "msg": "Invalid symbol."})):
+                with self.assertRaises(BinanceApiError):
+                    await fetch_and_store_historical_klines(
+                        symbol="NOTAREALCOINUSDT", start_ts_ns=0, end_ts_ns=200_000 * 1_000_000,
+                        raw_storage=storage, next_sequence=lambda: next(sequence), log=_noop_log,
+                    )
+            storage.close()
+
+    async def test_agg_trade_fetch_raises_instead_of_silently_returning_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = RawEventStorage(Path(directory), zstd_level=3)
+            sequence = iter(range(1, 1000))
+            with patch("urllib.request.urlopen", return_value=_Response({"code": -1121, "msg": "Invalid symbol."})):
+                with self.assertRaises(BinanceApiError):
+                    await fetch_and_store_historical_agg_trades(
+                        symbol="NOTAREALCOINUSDT", start_ts_ns=0, end_ts_ns=200_000 * 1_000_000,
+                        raw_storage=storage, next_sequence=lambda: next(sequence), log=_noop_log,
+                    )
+            storage.close()
 
 
 class ProgressReportingTests(unittest.IsolatedAsyncioTestCase):

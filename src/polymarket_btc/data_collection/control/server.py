@@ -265,6 +265,8 @@ class ControlPanelServer:
             return self._microsystem_prompt(body)
         if path == "/api/strategies":
             return self._save_strategy(body)
+        if path == "/api/strategies/delete":
+            return self._delete_strategy(body)
         if path == "/api/symbols/refresh":
             return self._refresh_symbols()
         return build_response("404 Not Found", b"not found", "text/plain; charset=utf-8")
@@ -424,6 +426,27 @@ class ControlPanelServer:
             return self._json({"error": str(exc), "exists": True}, status="409 Conflict")
         return self._json(result)
 
+    def _delete_strategy(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        name = payload.get("name") if isinstance(payload, dict) else None
+        if not isinstance(name, str) or not name:
+            return self._error("400 Bad Request", "body must be a JSON object with a non-empty string 'name'")
+        try:
+            self.strategies.delete_strategy(name)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        except FileNotFoundError as exc:
+            return self._error("404 Not Found", str(exc))
+        except OSError as exc:
+            # See _delete_run's own OSError handling for why this needs to
+            # be caught explicitly rather than left to propagate.
+            _LOGGER.exception("failed to delete strategy %s", name)
+            return self._error("500 Internal Server Error", f"échec de la suppression : {exc}")
+        return self._json({"ok": True})
+
     def _start(self, body: bytes) -> bytes:
         try:
             payload = json.loads(body or b"{}")
@@ -437,6 +460,7 @@ class ControlPanelServer:
         mode = payload.get("mode", "collect")
         start_ts = payload.get("start_ts")
         end_ts = payload.get("end_ts")
+        kline_interval = payload.get("kline_interval", "1m")
         if not isinstance(sources, list) or not all(isinstance(s, str) for s in sources):
             return self._error("400 Bad Request", "sources must be a list of strings")
         if not isinstance(plugins, list) or not all(isinstance(p, str) for p in plugins):
@@ -445,6 +469,8 @@ class ControlPanelServer:
             return self._error("400 Bad Request", "duration_seconds must be a positive number or null")
         if mode not in ("collect", "access"):
             return self._error("400 Bad Request", "mode must be 'collect' or 'access'")
+        if not isinstance(kline_interval, str):
+            return self._error("400 Bad Request", "kline_interval must be a string")
         for label, value in (("start_ts", start_ts), ("end_ts", end_ts)):
             if value is not None and not isinstance(value, (int, float)):
                 return self._error("400 Bad Request", f"{label} must be an epoch-millisecond number or null")
@@ -455,6 +481,7 @@ class ControlPanelServer:
                 mode=mode,
                 start_ts_ns=None if start_ts is None else int(start_ts * 1_000_000),
                 end_ts_ns=None if end_ts is None else int(end_ts * 1_000_000),
+                kline_interval=kline_interval,
             )
         except RuntimeError as exc:
             return self._error("409 Conflict", str(exc))
@@ -485,6 +512,17 @@ class ControlPanelServer:
             return self._error("404 Not Found", str(exc))
         except RuntimeError as exc:
             return self._error("409 Conflict", str(exc))
+        except OSError as exc:
+            # A filesystem-level failure (permission denied, a file locked
+            # by another process, ...) from shutil.rmtree -- left uncaught,
+            # this would hit _handle_connection's generic except Exception
+            # and just close the connection with no response at all, which
+            # looks to the browser like a plain network failure (fetch()
+            # rejects instead of resolving with an error status) rather
+            # than the clear "échec de la suppression : ..." message the
+            # frontend is built to show.
+            _LOGGER.exception("failed to delete run %s", run_id)
+            return self._error("500 Internal Server Error", f"échec de la suppression : {exc}")
         return self._json({"ok": True})
 
     def _page(self, name: str) -> bytes:

@@ -8,7 +8,6 @@
       "concept_instance_ids": [],
       "data_bindings": {},
       "config": {
-        "candle_seconds": 5,
         "max_candles_before_sweep": 50,
         "alignment_tolerance_candles": 0
       }

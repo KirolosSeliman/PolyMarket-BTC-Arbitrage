@@ -319,6 +319,29 @@ td { padding: 3px 8px 3px 0; font-size: 12px; color: var(--text-2); }
       <label for="range-end">Jusqu'à</label>
       <input type="datetime-local" id="range-end">
     </div>
+    <div class="row" id="launch-row-interval" style="display:none">
+      <label for="kline-interval">Granularité des bougies</label>
+      <select id="kline-interval">
+        <option value="1m">1 minute</option>
+        <option value="3m">3 minutes</option>
+        <option value="5m">5 minutes</option>
+        <option value="15m">15 minutes</option>
+        <option value="30m">30 minutes</option>
+        <option value="1h">1 heure</option>
+        <option value="2h">2 heures</option>
+        <option value="4h">4 heures</option>
+        <option value="6h">6 heures</option>
+        <option value="8h">8 heures</option>
+        <option value="12h">12 heures</option>
+        <option value="1d">1 jour</option>
+        <option value="3d">3 jours</option>
+        <option value="1w">1 semaine</option>
+        <option value="1M">1 mois</option>
+      </select>
+    </div>
+    <p id="kline-interval-hint" style="display:none;margin:6px 0 0;color:var(--text-2);font-size:11.5px">
+      Une granularité plus large = beaucoup moins de bougies à télécharger pour la même période = récupération plus rapide.
+    </p>
     <p id="access-date-hint" style="display:none;margin:6px 0 0;color:var(--text-2);font-size:11.5px"></p>
     <div class="row" style="margin-top:10px">
       <button id="start">Démarrer</button>
@@ -512,6 +535,7 @@ function syncSourceCheckbox(key, checked) {
   document.querySelectorAll(`.source-box[value="${key}"]`).forEach((box) => { box.checked = checked; });
   updateSelectionSummary();
   applyAccessDateLimit();
+  updateKlineIntervalVisibility();
 }
 
 function syncPluginCheckbox(id, checked) {
@@ -675,8 +699,13 @@ function populateAssetSelect(kind) {
   const assets = [...new Set(visibleSources().filter((s) => s.asset_kind === kind).map((s) => s.asset))].sort();
   assetSearchOptions = assets;
   if (assets.length) {
-    el("asset-search").value = assets[0];
-    showAsset(assets[0]);
+    // BTC first when it's an option (the actual default asset of this
+    // project) -- alphabetical order otherwise puts whatever token starts
+    // earliest in the alphabet first, which has nothing to do with what
+    // anyone actually wants to see by default.
+    const defaultAsset = assets.includes("BTC") ? "BTC" : assets[0];
+    el("asset-search").value = defaultAsset;
+    showAsset(defaultAsset);
   } else {
     el("asset-search").value = "";
   }
@@ -955,6 +984,20 @@ function applyAccessDateLimit() {
   hint.style.display = "block";
 }
 
+// The two access-mode sources whose fetcher accepts a candle width --
+// mirrors runs.py's _KLINE_SHAPED_BASE_KEYS. The interval picker only
+// matters (and is only shown) once one of these, for any asset, is
+// actually selected in access mode.
+const KLINE_SHAPED_BASE_KEYS = ["binance_futures_kline", "binance_futures_mark_price"];
+
+function updateKlineIntervalVisibility() {
+  const relevant = collectionMode === "access" && [...selectedSourceKeys].some(
+    (key) => KLINE_SHAPED_BASE_KEYS.some((base) => key === base || key.startsWith(base + ":")),
+  );
+  el("launch-row-interval").style.display = relevant ? "flex" : "none";
+  el("kline-interval-hint").style.display = relevant ? "block" : "none";
+}
+
 function setCollectionMode(mode) {
   collectionMode = mode;
   document.querySelectorAll("#collection-mode-toggle button").forEach((b) => {
@@ -972,6 +1015,7 @@ function setCollectionMode(mode) {
   renderSourcesUI();
   renderPluginsUI();
   applyAccessDateLimit();
+  updateKlineIntervalVisibility();
 }
 
 document.querySelectorAll("#collection-mode-toggle button").forEach((button) => {
@@ -992,6 +1036,7 @@ async function start() {
     body.start_ts = startVal ? new Date(startVal).getTime() : null;
     body.end_ts = endVal ? new Date(endVal).getTime() : null;
     body.duration_seconds = null;
+    body.kline_interval = el("kline-interval").value;
   } else {
     if (!sources.length) { alert("Sélectionne au moins une source."); return; }
     const durationMin = parseFloat(el("duration").value);
@@ -1218,7 +1263,7 @@ async function loadPastRuns() {
       <div class="row-main">
         <span class="id">${run.run_id}</span>
         <span class="mode-badge ${run.mode === "access" ? "access" : "collect"}">${run.mode === "access" ? "Accès" : "Collecte"}</span> —
-        <span class="meta">${(run.sources || []).join(", ")} · ${run.raw_event_count ?? 0} événement(s)${run.snapshot_row_count ? ` · ${run.snapshot_row_count} lignes de snapshot` : ""} · ${run.dataset_file || "aucun fichier"}</span>
+        <span class="meta">${(run.sources || []).join(", ")}${run.kline_interval && run.kline_interval !== "1m" ? ` · bougies ${run.kline_interval}` : ""} · ${run.raw_event_count ?? 0} événement(s)${run.snapshot_row_count ? ` · ${run.snapshot_row_count} lignes de snapshot` : ""} · ${run.dataset_file || "aucun fichier"}</span>
       </div>
       <button class="delete-run-btn" data-run-id="${run.run_id}" title="Supprimer définitivement cette collecte">Supprimer</button>
     </div>
@@ -1230,10 +1275,19 @@ async function deleteRun(runId) {
     `Supprimer définitivement la collecte ${runId} ?\n\nCela efface toutes les données récupérées pour cette collecte. Cette action est irréversible.`
   );
   if (!confirmed) return;
-  const res = await fetch("/api/runs/delete", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ run_id: runId }),
-  });
+  let res;
+  try {
+    res = await fetch("/api/runs/delete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: runId }),
+    });
+  } catch (networkError) {
+    // fetch() itself throws (connection reset, server unreachable, ...)
+    // rather than resolving with an error status -- without this, that
+    // case would silently do nothing instead of telling the user anything.
+    alert(`Échec de la suppression : impossible de contacter le serveur (${networkError.message}).`);
+    return;
+  }
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     alert(`Échec de la suppression : ${data.error || res.status}`);

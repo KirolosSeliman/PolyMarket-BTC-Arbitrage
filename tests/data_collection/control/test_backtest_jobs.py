@@ -123,6 +123,7 @@ class BacktestJobManagerTests(unittest.IsolatedAsyncioTestCase):
                 execution_sweep={}, management_sweep={},
             )
             self.assertFalse(jobs.status(job.job_id)["done"])
+            self.assertEqual(jobs.status(job.job_id)["progress"], 0.0)
 
             for _ in range(100):
                 status = jobs.status(job.job_id)
@@ -130,6 +131,7 @@ class BacktestJobManagerTests(unittest.IsolatedAsyncioTestCase):
                     break
                 await asyncio.sleep(0.02)
             self.assertTrue(status["done"])
+            self.assertEqual(status["progress"], 1.0)
             self.assertIsNone(status["error"])
             self.assertEqual(status["result"]["best"]["trades"], 1)
             self.assertEqual(status["result"]["best"]["wins"], 1)
@@ -167,6 +169,7 @@ class BacktestJobManagerTests(unittest.IsolatedAsyncioTestCase):
                     break
                 await asyncio.sleep(0.02)
             self.assertTrue(status["done"])
+            self.assertEqual(status["progress"], 1.0)
             self.assertIsNotNone(status["error"])
             self.assertIsNone(status["result"])
 

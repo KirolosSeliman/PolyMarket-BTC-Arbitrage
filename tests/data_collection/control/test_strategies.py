@@ -248,6 +248,29 @@ class StrategyManagerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 strategies.save_strategy(name="not valid!", concepts=[], microsystems=[], execution=None, management=None)
 
+    def test_delete_strategy_removes_the_file_and_it_disappears_from_list(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            strategies.save_strategy(name="throwaway", concepts=[], microsystems=[], execution=None, management=None)
+            self.assertIn("throwaway", [s["name"] for s in strategies.list_strategies()])
+
+            strategies.delete_strategy("throwaway")
+
+            self.assertNotIn("throwaway", [s["name"] for s in strategies.list_strategies()])
+            self.assertIsNone(strategies.load_strategy("throwaway"))
+
+    def test_delete_unknown_strategy_raises_file_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            with self.assertRaises(FileNotFoundError):
+                strategies.delete_strategy("nope")
+
+    def test_delete_invalid_name_raises_value_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            with self.assertRaises(ValueError):
+                strategies.delete_strategy("../outside")
+
     def test_a_corrupt_strategy_file_is_skipped_not_fatal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

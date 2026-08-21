@@ -121,6 +121,15 @@ def combined_coverage(required_keys: set[str], manifests: list[dict]) -> list[tu
     return combined
 
 
+def _interval_span_seconds(intervals: list[tuple[str, str]]) -> float:
+    if not intervals:
+        return -1.0
+    return sum(
+        datetime.fromisoformat(end).timestamp() - datetime.fromisoformat(start).timestamp()
+        for start, end in intervals
+    )
+
+
 def narrowest_key(required_keys: set[str], manifests: list[dict]) -> str | None:
     """The required key whose own total coverage spans the least time (or
     has none at all) -- the diagnostic reason a combined range is short or
@@ -128,17 +137,59 @@ def narrowest_key(required_keys: set[str], manifests: list[dict]) -> str | None:
     the user having to guess which of several requirements is the bottleneck."""
     if not required_keys:
         return None
+    return min(required_keys, key=lambda key: _interval_span_seconds(key_coverage(key, manifests)))
 
-    def total_span_seconds(key: str) -> float:
-        intervals = key_coverage(key, manifests)
-        if not intervals:
-            return -1.0
-        return sum(
-            datetime.fromisoformat(end).timestamp() - datetime.fromisoformat(start).timestamp()
-            for start, end in intervals
-        )
 
-    return min(required_keys, key=total_span_seconds)
+PRICE_PATH_BASE_KEYS = ("binance_futures_trade", "binance_futures_kline", "binance_futures_mark_price")
+PRICE_PATH_LABEL = "prix (trades / bougies / mark price)"
+
+
+def price_path_coverage(instrument_asset: str, manifests: list[dict]) -> list[tuple[str, str]]:
+    """The union of whichever price-capable key (trades, klines, or mark
+    price -- run_backtest's own fallback chain, tried in exactly that
+    priority order) has been collected for `instrument_asset`. A strategy
+    needs *at least one* of these to price fills/stop-loss/take-profit
+    against, regardless of what its own concepts/microsystems directly
+    declare -- a strategy built purely on funding-rate or open-interest
+    data still needs something to simulate the trade against. Matches the
+    compound-key convention runs.py's `_catalog_key_for_raw_path` uses: the
+    bare key for BTC, `"key:ASSET"` otherwise."""
+    suffix = "" if instrument_asset == "BTC" else f":{instrument_asset}"
+    intervals: list[tuple[str, str]] = []
+    for base_key in PRICE_PATH_BASE_KEYS:
+        intervals.extend(key_coverage(f"{base_key}{suffix}", manifests))
+    return _merge_intervals(intervals)
+
+
+def backtest_coverage(
+    required_keys: set[str], instrument_asset: str, manifests: list[dict],
+) -> tuple[list[tuple[str, str]], str | None]:
+    """The real, final answer to "when can this strategy be backtested":
+    every concept/microsystem-required key's own coverage, intersected with
+    price_path_coverage for the resolved instrument -- eligibility must
+    never promise a range `run_backtest`'s own price-path fallback would
+    then reject for lacking exactly that (the concrete bug this closes: a
+    strategy whose concepts never directly declare trades/klines/mark price
+    -- e.g. one built only on open interest -- used to show a range as
+    fully backtestable purely because its own declared keys were covered,
+    letting the user start a backtest that immediately failed with "no
+    price data available").
+
+    Also returns the single limiting factor's label -- the narrowest
+    required concept key, or PRICE_PATH_LABEL if price data is actually the
+    bottleneck instead -- so the UI's existing "limité par : X" hint stays
+    accurate without needing a separate code path for this case."""
+    price_coverage = price_path_coverage(instrument_asset, manifests)
+    coverage = _intersect_pair(combined_coverage(required_keys, manifests), price_coverage)
+
+    concept_narrowest = narrowest_key(required_keys, manifests)
+    concept_span = (
+        _interval_span_seconds(key_coverage(concept_narrowest, manifests))
+        if concept_narrowest is not None else float("inf")
+    )
+    price_span = _interval_span_seconds(price_coverage)
+    limiting = PRICE_PATH_LABEL if price_span < concept_span else concept_narrowest
+    return coverage, limiting
 
 
 _ACCESS_EXTRACTORS = {
@@ -239,4 +290,7 @@ def read_records(
     return records
 
 
-__all__ = ["combined_coverage", "key_coverage", "narrowest_key", "read_records"]
+__all__ = [
+    "PRICE_PATH_BASE_KEYS", "PRICE_PATH_LABEL", "backtest_coverage", "combined_coverage",
+    "key_coverage", "narrowest_key", "price_path_coverage", "read_records",
+]

@@ -130,6 +130,15 @@ class _RawSegment:
     last_sequence: int | None = None
     first_received_ns: int | None = None
     last_received_ns: int | None = None
+    # The event's own real-world timestamp (a kline's close_time, a trade's
+    # trade_time, ...) -- distinct from first/last_received_ns above, which
+    # is wall-clock "when did this process write it." For a live source
+    # those two are close together, but for an access-mode bulk historical
+    # fetch they can differ by months (fetched today, dated a year ago) --
+    # runs.py's per-key source_coverage needs *this* range, not receipt
+    # time, to tell the truth about what period a collection actually covers.
+    first_source_ns: int | None = None
+    last_source_ns: int | None = None
     uncompressed_bytes: int = 0
 
 
@@ -191,6 +200,16 @@ class RawEventStorage:
         if segment.first_received_ns is None:
             segment.first_received_ns = event.received_wall_timestamp_ns
         segment.last_received_ns = event.received_wall_timestamp_ns
+        # min/max, not first/last-seen: received_wall_timestamp_ns above is
+        # safely monotonic (assigned by the local clock as writes happen
+        # sequentially), but a source timestamp has no such guarantee --
+        # nothing here requires an access-mode fetcher's pages to arrive in
+        # perfect time order.
+        source_ns = event.source_timestamp_ns if event.source_timestamp_ns is not None else event.received_wall_timestamp_ns
+        if segment.first_source_ns is None or source_ns < segment.first_source_ns:
+            segment.first_source_ns = source_ns
+        if segment.last_source_ns is None or source_ns > segment.last_source_ns:
+            segment.last_source_ns = source_ns
         segment.uncompressed_bytes += len(encoded)
 
     def flush(self, *, fsync: bool = False) -> None:
@@ -242,6 +261,8 @@ class RawEventStorage:
             "last_ingest_sequence": segment.last_sequence,
             "first_received_timestamp_ns": segment.first_received_ns,
             "last_received_timestamp_ns": segment.last_received_ns,
+            "first_source_timestamp_ns": segment.first_source_ns,
+            "last_source_timestamp_ns": segment.last_source_ns,
             "uncompressed_bytes": segment.uncompressed_bytes,
             "compressed_bytes": compressed_path.stat().st_size,
             "created_at_utc": _utc(segment.first_received_ns or time.time_ns()).isoformat(),
@@ -283,12 +304,14 @@ def _quarantine(path: Path, data_dir: Path, reason: str, exc: BaseException | No
         raise StorageFatalError(f"cannot quarantine {path}: {move_error}") from move_error
 
 
-def _raw_event_metadata(path: Path, *, compressed: bool) -> tuple[int, int | None, int | None, int | None, int | None]:
-    count = first = last = first_received = last_received = None
+def _raw_event_metadata(
+    path: Path, *, compressed: bool,
+) -> tuple[int, int | None, int | None, int | None, int | None, int | None, int | None]:
+    count = first = last = first_received = last_received = first_source = last_source = None
     import io
 
     def consume(lines: object) -> None:
-        nonlocal count, first, last, first_received, last_received
+        nonlocal count, first, last, first_received, last_received, first_source, last_source
         for raw_line in lines:  # type: ignore[union-attr]
             if not raw_line.endswith(b"\n"):
                 raise StorageFatalError(f"JSONL line is not terminated: {path}")
@@ -301,6 +324,9 @@ def _raw_event_metadata(path: Path, *, compressed: bool) -> tuple[int, int | Non
             last = event.ingest_sequence
             first_received = event.received_wall_timestamp_ns if first_received is None else first_received
             last_received = event.received_wall_timestamp_ns
+            source_ns = event.source_timestamp_ns if event.source_timestamp_ns is not None else event.received_wall_timestamp_ns
+            first_source = source_ns if first_source is None or source_ns < first_source else first_source
+            last_source = source_ns if last_source is None or source_ns > last_source else last_source
 
     if compressed:
         with path.open("rb") as handle:
@@ -309,12 +335,12 @@ def _raw_event_metadata(path: Path, *, compressed: bool) -> tuple[int, int | Non
     else:
         with path.open("rb") as handle:
             consume(handle)
-    return int(count or 0), first, last, first_received, last_received
+    return int(count or 0), first, last, first_received, last_received, first_source, last_source
 
 
 def _raw_manifest(data_path: Path) -> Path:
     compressed = data_path.name.endswith(".jsonl.zst")
-    count, first, last, first_received, last_received = _raw_event_metadata(
+    count, first, last, first_received, last_received, first_source, last_source = _raw_event_metadata(
         data_path, compressed=compressed
     )
     if not count:
@@ -331,6 +357,8 @@ def _raw_manifest(data_path: Path) -> Path:
         "last_ingest_sequence": last,
         "first_received_timestamp_ns": first_received,
         "last_received_timestamp_ns": last_received,
+        "first_source_timestamp_ns": first_source,
+        "last_source_timestamp_ns": last_source,
         "uncompressed_bytes": None if compressed else data_path.stat().st_size,
         "compressed_bytes": data_path.stat().st_size,
         "created_at_utc": _utc(first_received or time.time_ns()).isoformat(),
@@ -394,10 +422,12 @@ def _recover_jsonl_partial(path: Path, data_dir: Path, zstd_level: int) -> Path 
         if complete_bytes == 0:
             path.unlink()
             return None
-        count, first, last, first_received, last_received = _raw_event_metadata(path, compressed=False)
+        count, first, last, first_received, last_received, first_source, last_source = _raw_event_metadata(
+            path, compressed=False
+        )
         segment = _RawSegment(
             path, path.open("ab"), time.monotonic(), count, first, last,
-            first_received, last_received, complete_bytes,
+            first_received, last_received, first_source, last_source, complete_bytes,
         )
         return RawEventStorage(data_dir, zstd_level=zstd_level)._finalize(segment)
     except Exception as exc:

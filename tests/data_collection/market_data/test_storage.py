@@ -34,6 +34,21 @@ def event(sequence: int) -> MarketDataEvent:
     )
 
 
+def event_with_distinct_timestamps(sequence: int, *, source_ns: int, received_ns: int) -> MarketDataEvent:
+    """Unlike event() above (which sets every timestamp field to the same
+    value), a real access-mode historical fetch has these genuinely differ
+    -- source_ns is the event's own real-world moment (e.g. a kline's
+    close_time), received_ns is when the local fetcher actually wrote it,
+    which for a bulk historical fetch can be months later than source_ns."""
+    return MarketDataEvent(
+        1, sequence, f"event-{sequence}",
+        EventSource.CHAINLINK_RTDS, EventStream.CHAINLINK_PRICE, "BTC/USD",
+        source_ns, source_ns, received_ns, received_ns, str(sequence),
+        None, None, None, None, None,
+        ChainlinkPricePayload("btc/usd", Decimal("67234.5000")),
+    )
+
+
 class RawStorageTests(unittest.TestCase):
     def test_jsonl_zstd_manifest_and_decimal_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -55,6 +70,38 @@ class RawStorageTests(unittest.TestCase):
                 hashlib.sha256(compressed.read_bytes()).hexdigest(),
                 manifest["sha256"],
             )
+
+    def test_manifest_tracks_source_timestamps_separately_from_receipt_time(self) -> None:
+        """The exact bug this fixes: an access-mode bulk historical fetch
+        writes events *today* whose own source_timestamp_ns is from months
+        ago -- the manifest must record both ranges distinctly, not only
+        received_timestamp_ns (which used to be the only field, making
+        runs.py's per-key source_coverage report roughly "now" instead of
+        the actual historical period a collection covers)."""
+        a_year_ago_ns = 1_700_000_000_000_000_000
+        now_ns = 1_730_000_000_000_000_000
+        with tempfile.TemporaryDirectory() as directory:
+            storage = RawEventStorage(Path(directory), zstd_level=3)
+            storage.write(event_with_distinct_timestamps(1, source_ns=a_year_ago_ns, received_ns=now_ns))
+            storage.write(event_with_distinct_timestamps(2, source_ns=a_year_ago_ns + 60, received_ns=now_ns + 1))
+            manifests = storage.close()
+            manifest = json.loads(manifests[0].read_text())
+            self.assertEqual(manifest["first_source_timestamp_ns"], a_year_ago_ns)
+            self.assertEqual(manifest["last_source_timestamp_ns"], a_year_ago_ns + 60)
+            self.assertEqual(manifest["first_received_timestamp_ns"], now_ns)
+            self.assertEqual(manifest["last_received_timestamp_ns"], now_ns + 1)
+
+    def test_source_timestamp_tracking_uses_min_max_not_arrival_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = RawEventStorage(Path(directory), zstd_level=3)
+            # written out of source-time order -- min/max must still be correct
+            storage.write(event_with_distinct_timestamps(1, source_ns=500, received_ns=1))
+            storage.write(event_with_distinct_timestamps(2, source_ns=100, received_ns=2))
+            storage.write(event_with_distinct_timestamps(3, source_ns=300, received_ns=3))
+            manifests = storage.close()
+            manifest = json.loads(manifests[0].read_text())
+            self.assertEqual(manifest["first_source_timestamp_ns"], 100)
+            self.assertEqual(manifest["last_source_timestamp_ns"], 500)
 
     def test_a_segments_first_event_may_have_ingest_sequence_zero(self) -> None:
         # `segment.first_sequence or event.ingest_sequence` used to be the

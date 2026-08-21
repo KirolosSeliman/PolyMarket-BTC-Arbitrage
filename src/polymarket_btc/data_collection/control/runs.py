@@ -53,6 +53,16 @@ _LOGGER = logging.getLogger(__name__)
 
 PLUGIN_LOG_LINES = 200
 
+# Binance's own documented kline interval enum (identical set for spot and
+# futures) -- the only values its REST endpoints accept, so validating
+# against this up front turns a typo into an immediate 400 instead of a
+# wasted round trip to Binance that would 400 anyway.
+VALID_KLINE_INTERVALS = (
+    "1m", "3m", "5m", "15m", "30m",
+    "1h", "2h", "4h", "6h", "8h", "12h",
+    "1d", "3d", "1w", "1M",
+)
+
 # Mirrors discover_plugins' own rules (and discover_concepts'/
 # discover_microsystems'/discover_execution_profiles', which all copy the
 # same scanner): a simple flat filename, no path separators or traversal,
@@ -88,6 +98,13 @@ class RunState:
     mode: str = "collect"
     start_ts_ns: int | None = None
     end_ts_ns: int | None = None
+    # Candle width for the two access-mode sources built from klines
+    # (binance_futures_kline, binance_futures_mark_price) -- ignored by
+    # every other source. A coarser interval means far fewer rows/requests
+    # for the same date range (a 1h candle is 60x fewer rows than 1m over
+    # the same span), the direct lever for "make this download faster"
+    # when 1-minute precision isn't actually needed.
+    kline_interval: str = "1m"
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     gateway: MarketDataGateway | None = None
     plugin_tasks: dict[str, asyncio.Task] = field(default_factory=dict)
@@ -116,6 +133,12 @@ _EVENT_SOURCE_TO_BASE_KEY = {
     "binance_futures_rest": "binance_futures_open_interest_long_short",
 }
 
+# The two access-mode sources whose fetcher accepts a candle-width
+# ("interval") parameter -- fetch_and_store_historical_klines and
+# fetch_and_store_historical_mark_price (which bundles markPriceKlines with
+# fundingRate). aggTrades and open-interest/long-short have no such notion.
+_KLINE_SHAPED_BASE_KEYS = frozenset({"binance_futures_kline", "binance_futures_mark_price"})
+
 
 def _catalog_key_for_raw_path(path: Path) -> str | None:
     """A raw segment's directory already encodes `source=<EventSource
@@ -136,12 +159,26 @@ def _catalog_key_for_raw_path(path: Path) -> str | None:
 
 
 def _access_mode_source_coverage(raw_paths: list[Path]) -> dict[str, dict[str, str | None]]:
-    """Per catalog key: the time range *actually* written, read from each
-    raw segment's own sidecar manifest -- never the run's requested range,
-    which a fetch that came up short for one key (no history that far back,
-    a transient failure, anything) would otherwise misrepresent for every
-    other key collected in the same run. A segment with a missing/corrupt
-    sidecar is skipped, not fatal, same tolerance as raw_event_count above."""
+    """Per catalog key: the time range the data itself actually covers,
+    read from each raw segment's own sidecar manifest -- never the run's
+    requested range, which a fetch that came up short for one key (no
+    history that far back, a transient failure, anything) would otherwise
+    misrepresent for every other key collected in the same run.
+
+    Prefers each segment's first/last_source_timestamp_ns (the events' own
+    real-world timestamps -- a kline's close_time, a trade's trade_time)
+    over first/last_received_timestamp_ns (wall-clock receipt time): for an
+    access-mode bulk historical fetch those can differ by months (fetched
+    today, dated a year ago) -- confirmed live, a day fetched from a year
+    back showed as "covering" a few hundred milliseconds around the fetch's
+    own wall-clock moment instead of the actual historical day. Only
+    source_timestamp_ns answers "what period does this collection actually
+    cover." Falls back to the received-time fields for a sidecar written
+    before source timestamps were tracked here (storage.py) -- still
+    correct for a live/near-real-time collection, where the two nearly
+    coincide; wrong only for an old access-mode sidecar, which re-collecting
+    fixes. A segment with a missing/corrupt sidecar is skipped, not fatal,
+    same tolerance as raw_event_count above."""
     bounds: dict[str, tuple[int, int]] = {}
     for path in raw_paths:
         key = _catalog_key_for_raw_path(path)
@@ -150,8 +187,12 @@ def _access_mode_source_coverage(raw_paths: list[Path]) -> dict[str, dict[str, s
         try:
             sidecar_path = path.with_name(path.name.removesuffix(".jsonl.zst") + ".manifest.json")
             sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-            first_ns = int(sidecar["first_received_timestamp_ns"])
-            last_ns = int(sidecar["last_received_timestamp_ns"])
+            first_ns = sidecar.get("first_source_timestamp_ns")
+            last_ns = sidecar.get("last_source_timestamp_ns")
+            if first_ns is None or last_ns is None:
+                first_ns = sidecar["first_received_timestamp_ns"]
+                last_ns = sidecar["last_received_timestamp_ns"]
+            first_ns, last_ns = int(first_ns), int(last_ns)
         except (OSError, ValueError, TypeError, KeyError):
             continue
         if key in bounds:
@@ -237,6 +278,7 @@ def export_run(state: RunState) -> dict:
         "end_ts_utc": _iso(state.end_ts_ns) if state.end_ts_ns is not None else None,
         "sources": state.sources,
         "plugins": state.plugins,
+        "kline_interval": state.kline_interval,
         "snapshot_row_count": row_count,
         "raw_event_count": raw_event_count,
         "source_coverage": source_coverage,
@@ -613,11 +655,16 @@ class CollectionRunManager:
         mode: str = "collect",
         start_ts_ns: int | None = None,
         end_ts_ns: int | None = None,
+        kline_interval: str = "1m",
     ) -> RunState:
         if self.current is not None and self.current.ended_at_ns is None:
             raise RuntimeError("a collection run is already in progress")
         if mode not in ("collect", "access"):
             raise ValueError("mode must be 'collect' or 'access'")
+        if kline_interval not in VALID_KLINE_INTERVALS:
+            raise ValueError(
+                f"kline_interval must be one of {', '.join(VALID_KLINE_INTERVALS)} (got {kline_interval!r})"
+            )
         catalog = self._merged_catalog()
         valid_sources = [key for key in sources if key in catalog]
         if mode == "access":
@@ -657,6 +704,7 @@ class CollectionRunManager:
             mode=mode,
             start_ts_ns=start_ts_ns,
             end_ts_ns=end_ts_ns,
+            kline_interval=kline_interval,
         )
         base_config = load_config(self.config_path)
         state.task = asyncio.create_task(
@@ -804,6 +852,7 @@ class CollectionRunManager:
                     self._run_historical_source(
                         key, raw_storage, sequence.__next__, log.append,
                         start_ts_ns=state.start_ts_ns, end_ts_ns=state.end_ts_ns,
+                        kline_interval=state.kline_interval,
                         on_progress=lambda fraction, key=key: state.source_progress.__setitem__(key, fraction),
                     ),
                     name=f"historical-source-{key}",
@@ -833,7 +882,8 @@ class CollectionRunManager:
     @staticmethod
     async def _run_historical_source(
         key: str, raw_storage: RawEventStorage, next_sequence: Callable[[], int], log: Callable[[str], None],
-        *, start_ts_ns: int | None, end_ts_ns: int | None, on_progress: Callable[[float], None],
+        *, start_ts_ns: int | None, end_ts_ns: int | None, kline_interval: str,
+        on_progress: Callable[[float], None],
     ) -> None:
         """One selected built-in access-mode source key -- resolves the
         symbol from a possibly-compound key ("binance_futures_kline:ETH"),
@@ -847,6 +897,10 @@ class CollectionRunManager:
         if fetcher is None:
             log("aucune récupération historique disponible pour cette source, ignorée")
             return
+        # Only the two kline-shaped fetchers (candles, mark price -- which
+        # bundles markPriceKlines with fundingRate) take a candle width;
+        # aggTrades and open-interest/long-short have no such notion.
+        extra_kwargs = {"interval": kline_interval} if base_key in _KLINE_SHAPED_BASE_KEYS else {}
         try:
             await fetcher(
                 symbol=symbol,
@@ -856,6 +910,7 @@ class CollectionRunManager:
                 raw_storage=raw_storage,
                 next_sequence=next_sequence,
                 log=log,
+                **extra_kwargs,
             )
         except asyncio.CancelledError:
             log("annulé -- ce qui a déjà été récupéré est conservé")
@@ -899,4 +954,4 @@ class CollectionRunManager:
                     return
 
 
-__all__ = ["CollectionRunManager", "RunState", "export_run", "new_run_id"]
+__all__ = ["VALID_KLINE_INTERVALS", "CollectionRunManager", "RunState", "export_run", "new_run_id"]

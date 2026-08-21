@@ -11,9 +11,13 @@ bougie qui suit celle qui a réalisé le sweep.
 Ni `fvg` ni `liquidity_sweep` ne renvoient les bougies elles-mêmes, seulement
 des horodatages : `formed_at` d'un FVG est l'horodatage de sa 3e bougie,
 `swept_at` d'un sweep est l'horodatage de la bougie qui a percé le niveau.
-Avec `candle_seconds` (la granularité commune aux deux concepts), la bougie 1
-du FVG de retournement doit tomber à `swept_at + candle_seconds`, donc son
-`formed_at` (sa 3e bougie) doit tomber à `swept_at + 3 * candle_seconds`.
+`candle_seconds` (la granularité des bougies, la même pour les deux concepts
+puisqu'ils lisent la même source binance_futures_kline) est lu directement
+depuis leur sortie -- chacun le détecte automatiquement depuis les
+horodatages réels des bougies reçues, plus besoin de le régler à la main. La
+bougie 1 du FVG de retournement doit tomber à `swept_at + candle_seconds`,
+donc son `formed_at` (sa 3e bougie) doit tomber à
+`swept_at + 3 * candle_seconds`.
 """
 
 from __future__ import annotations
@@ -39,18 +43,6 @@ MICROSYSTEM_INFO = {
     ),
     "concept_inputs": ["fvg", "liquidity_sweep"],
     "config_schema": [
-        {
-            "name": "candle_seconds",
-            "type": "number",
-            "label": "Granularité des bougies (secondes)",
-            "default": 5,
-            "description": (
-                "Doit correspondre exactement à la granularité de reconstruction "
-                "des bougies utilisée pour configurer les concepts fvg et "
-                "liquidity_sweep -- sert à calculer l'horodatage attendu de la "
-                "bougie 1 du FVG de retournement."
-            ),
-        },
         {
             "name": "max_candles_before_sweep",
             "type": "number",
@@ -94,7 +86,13 @@ def compute(context) -> dict:
     fvgs = [f for f in (fvg_result.get("fvgs") or []) if isinstance(f, dict)]
     sweeps = [s for s in (sweep_result.get("sweeps") or []) if isinstance(s, dict)]
 
-    candle_seconds = _to_float(context.config.get("candle_seconds", 5)) or 5.0
+    # Read straight from whichever concept detected it (both read the same
+    # binance_futures_kline series, so they agree) -- no config to keep in
+    # sync by hand anymore, and no risk of it silently not matching what
+    # was actually collected.
+    candle_seconds = _to_float(fvg_result.get("candle_seconds"))
+    if candle_seconds is None:
+        candle_seconds = _to_float(sweep_result.get("candle_seconds"))
     max_candles_before_sweep = max(
         int(_to_float(context.config.get("max_candles_before_sweep", 50)) or 50), 0
     )
@@ -102,7 +100,7 @@ def compute(context) -> dict:
         int(_to_float(context.config.get("alignment_tolerance_candles", 0)) or 0), 0
     )
 
-    if not fvgs or not sweeps:
+    if not fvgs or not sweeps or not candle_seconds:
         context.log(
             f"{len(fvgs)} FVG actifs, {len(sweeps)} sweeps confirmés reçus -- "
             f"pas assez pour chercher un setup"

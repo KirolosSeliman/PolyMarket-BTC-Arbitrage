@@ -1,12 +1,13 @@
-"""Concept ICT : détection des Fair Value Gaps (FVG) à partir de trades bruts.
+"""Concept ICT : détection des Fair Value Gaps (FVG) à partir de bougies Binance.
 
-Reconstruit des bougies OHLC à partir des trades tick-by-tick (granularité
-configurable, en dessous de la minute si besoin), puis cherche le pattern ICT
-classique en 3 bougies glissantes : bougie 1 (avant le déplacement), bougie 2
-(displacement, la bougie à fort corps qui crée l'imbalance) et bougie 3 (après
-le déplacement). Un FVG haussier ("BISI") existe quand le plus bas de la
-bougie 3 est au-dessus du plus haut de la bougie 1 ; un FVG baissier ("SIBI")
-quand le plus haut de la bougie 3 est en dessous du plus bas de la bougie 1.
+Lit directement les bougies OHLCV natives Binance (voir binance_futures_kline
+dans le catalogue de données -- la granularité se choisit à la collecte, pas
+ici), puis cherche le pattern ICT classique en 3 bougies glissantes : bougie 1
+(avant le déplacement), bougie 2 (displacement, la bougie à fort corps qui
+crée l'imbalance) et bougie 3 (après le déplacement). Un FVG haussier ("BISI")
+existe quand le plus bas de la bougie 3 est au-dessus du plus haut de la
+bougie 1 ; un FVG baissier ("SIBI") quand le plus haut de la bougie 3 est en
+dessous du plus bas de la bougie 1.
 """
 
 from __future__ import annotations
@@ -19,38 +20,28 @@ CONCEPT_INFO = {
         "3 bougies) selon la méthodologie ICT."
     ),
     "detail": (
-        "Reconstruit des bougies OHLC à partir des trades reçus (granularité "
-        "configurable en secondes) puis balaie chaque triplet de bougies "
-        "consécutives pour détecter les Fair Value Gaps : un FVG haussier "
-        "(BISI) apparaît quand le plus bas de la 3e bougie est strictement "
-        "au-dessus du plus haut de la 1re ; un FVG baissier (SIBI) quand le "
-        "plus haut de la 3e bougie est strictement en dessous du plus bas de "
-        "la 1re. Pour chaque FVG, le concept calcule le 'consequent "
-        "encroachment' (point médian à 50% du gap, le niveau ICT de "
-        "rééquilibrage) et suit son statut au fil du temps : non comblé "
-        "(untouched), partiellement comblé (mitigated) ou entièrement comblé "
-        "(filled, auquel cas il sort de la liste des FVG actifs). Renvoie la "
-        "liste des FVG actifs ainsi que le plus proche au-dessus et en "
-        "dessous du dernier prix connu."
+        "Balaie chaque triplet de bougies Binance consécutives pour détecter "
+        "les Fair Value Gaps : un FVG haussier (BISI) apparaît quand le plus "
+        "bas de la 3e bougie est strictement au-dessus du plus haut de la "
+        "1re ; un FVG baissier (SIBI) quand le plus haut de la 3e bougie est "
+        "strictement en dessous du plus bas de la 1re. Pour chaque FVG, le "
+        "concept calcule le 'consequent encroachment' (point médian à 50% du "
+        "gap, le niveau ICT de rééquilibrage) et suit son statut au fil du "
+        "temps : non comblé (untouched), partiellement comblé (mitigated) ou "
+        "entièrement comblé (filled, auquel cas il sort de la liste des FVG "
+        "actifs). Renvoie la liste des FVG actifs ainsi que le plus proche "
+        "au-dessus et en dessous du dernier prix connu, et la granularité "
+        "des bougies reçues (candle_seconds), détectée automatiquement."
     ),
-    "data_sources": ["binance_futures_trade"],
+    "data_sources": ["binance_futures_kline"],
     "config_schema": [
-        {
-            "name": "candle_seconds",
-            "type": "number",
-            "label": "Granularité des bougies (secondes)",
-            "default": 5,
-            "description": (
-                "Durée de chaque bougie reconstruite à partir des trades, en secondes."
-            ),
-        },
         {
             "name": "lookback_candles",
             "type": "number",
             "label": "Fenêtre d'analyse (nb de bougies)",
             "default": 500,
             "description": (
-                "Nombre de bougies reconstruites (les plus récentes) sur lesquelles "
+                "Nombre de bougies reçues (les plus récentes) sur lesquelles "
                 "chercher des FVG."
             ),
         },
@@ -99,21 +90,6 @@ CONCEPT_INFO = {
     ],
 }
 
-_PRICE_KEYS = ("price", "p", "close")
-_QTY_KEYS = ("quantity", "qty", "q", "volume")
-_TIME_KEYS = ("timestamp", "time", "T", "t", "trade_time", "ts")
-_MS_THRESHOLD = 1e11
-
-
-def _get(trade, keys):
-    if not isinstance(trade, dict):
-        return None
-    for key in keys:
-        value = trade.get(key)
-        if value is not None:
-            return value
-    return None
-
 
 def _to_float(value):
     try:
@@ -122,41 +98,39 @@ def _to_float(value):
         return None
 
 
-def _build_candles(trades, candle_seconds):
-    parsed = []
-    for trade in trades or []:
-        price = _to_float(_get(trade, _PRICE_KEYS))
-        ts = _to_float(_get(trade, _TIME_KEYS))
-        if price is None or ts is None:
+def _normalize_candles(records):
+    """Binance klines arrive pre-built (open/high/low/close/open_time from
+    read_records' own extractor -- see backtest_data.py) -- no reconstruction
+    needed here, just validate/sort. "start" keeps the field name the
+    detection logic below already used (formerly a reconstructed-bucket
+    boundary, now a real candle's open_time) so that logic needs no changes."""
+    candles = []
+    for record in records or []:
+        if not isinstance(record, dict):
             continue
-        if ts > _MS_THRESHOLD:
-            ts /= 1000.0
-        qty = _to_float(_get(trade, _QTY_KEYS)) or 0.0
-        parsed.append((ts, price, qty))
-    parsed.sort(key=lambda row: row[0])
+        start = _to_float(record.get("open_time"))
+        o, h, l, c = (
+            _to_float(record.get("open")), _to_float(record.get("high")),
+            _to_float(record.get("low")), _to_float(record.get("close")),
+        )
+        if None in (start, o, h, l, c):
+            continue
+        candles.append({
+            "start": start, "open": o, "high": h, "low": l, "close": c,
+            "volume": _to_float(record.get("volume")) or 0.0,
+        })
+    candles.sort(key=lambda row: row["start"])
+    return candles
 
-    bucket_size = max(_to_float(candle_seconds) or 5.0, 0.001)
-    buckets = {}
-    for ts, price, qty in parsed:
-        start = int(ts // bucket_size) * bucket_size
-        candle = buckets.get(start)
-        if candle is None:
-            buckets[start] = {
-                "start": start,
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": qty,
-            }
-        else:
-            if price > candle["high"]:
-                candle["high"] = price
-            if price < candle["low"]:
-                candle["low"] = price
-            candle["close"] = price
-            candle["volume"] += qty
-    return sorted(buckets.values(), key=lambda c: c["start"])
+
+def _detect_candle_seconds(candles):
+    """The real candle width, read straight off two consecutive candles'
+    own timestamps -- no config field needed (and no risk of it silently
+    not matching what was actually collected, the failure mode a manual
+    "candle_seconds" setting used to have)."""
+    if len(candles) < 2:
+        return None
+    return candles[1]["start"] - candles[0]["start"]
 
 
 def _detect_fvgs(candles, direction_filter, min_gap_pct, require_displacement):
@@ -217,25 +191,10 @@ def _detect_fvgs(candles, direction_filter, min_gap_pct, require_displacement):
     return results
 
 
-# Generous margin over lookback_candles * candle_seconds against quiet
-# spans with fewer than one trade per candle-width -- a backtest only ever
-# needs to give this back if it's provably too small, and BTCUSDT trades
-# continuously enough that even 1x would be plenty in practice.
-_LOOKBACK_SAFETY_FACTOR = 4
-
-
-def required_lookback_seconds(config):
-    candle_seconds = _to_float(config.get("candle_seconds", 5)) or 5.0
-    lookback_candles = int(_to_float(config.get("lookback_candles", 500)) or 500)
-    if lookback_candles <= 0:
-        return None  # 0 = no trim, compute() itself never bounds its lookback either
-    return candle_seconds * lookback_candles * _LOOKBACK_SAFETY_FACTOR
-
-
 def compute(context) -> dict:
-    trades = context.data.get("binance_futures_trade") or []
+    candles = _normalize_candles(context.data.get("binance_futures_kline"))
+    candle_seconds = _detect_candle_seconds(candles)
 
-    candle_seconds = _to_float(context.config.get("candle_seconds", 5)) or 5.0
     lookback_candles = int(_to_float(context.config.get("lookback_candles", 500)) or 500)
     min_gap_pct = _to_float(context.config.get("min_gap_pct", 0)) or 0.0
     fill_threshold_pct = _to_float(context.config.get("fill_threshold_pct", 100))
@@ -248,18 +207,18 @@ def compute(context) -> dict:
         context.config.get("require_displacement", "true")
     ).strip().lower() == "true"
 
-    candles = _build_candles(trades, candle_seconds)
     if lookback_candles > 0:
         candles = candles[-lookback_candles:]
 
     if len(candles) < 3:
-        context.log(f"pas assez de bougies reconstruites ({len(candles)}) pour chercher un FVG")
+        context.log(f"pas assez de bougies reçues ({len(candles)}) pour chercher un FVG")
         return {
             "fvgs": [],
             "nearest_above": None,
             "nearest_below": None,
             "last_price": candles[-1]["close"] if candles else None,
             "candle_count": len(candles),
+            "candle_seconds": candle_seconds,
         }
 
     raw_fvgs = _detect_fvgs(candles, direction, min_gap_pct, require_displacement)
@@ -274,8 +233,9 @@ def compute(context) -> dict:
     nearest_above = min(above_candidates, key=lambda f: f["low"]) if above_candidates else None
     nearest_below = max(below_candidates, key=lambda f: f["high"]) if below_candidates else None
 
+    candle_info = f" ({candle_seconds:g}s)" if candle_seconds else ""
     context.log(
-        f"{len(candles)} bougies reconstruites ({candle_seconds:g}s) -- "
+        f"{len(candles)} bougies reçues{candle_info} -- "
         f"{len(active)} FVG actifs sur {len(raw_fvgs)} détectés"
     )
 
@@ -285,4 +245,5 @@ def compute(context) -> dict:
         "nearest_below": nearest_below,
         "last_price": last_price,
         "candle_count": len(candles),
+        "candle_seconds": candle_seconds,
     }
