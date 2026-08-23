@@ -23,8 +23,11 @@ from ..common.http import (
     read_request,
 )
 from .backtest_jobs import BacktestJobManager
+from .concept_refinement import ConceptRefinementManager
+from .microsystem_refinement import MicrosystemRefinementManager
 from .runs import CollectionRunManager
 from .strategies import StrategyManager
+from .strategy_filter_refinement import StrategyFilterRefinementManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +41,9 @@ _PAGES = {
     "/live": "live.html",
     "/backtest": "backtest.html",
     "/collect": "collect.html",
+    "/concept/refine": "concept_refine.html",
+    "/microsystem/refine": "microsystem_refine.html",
+    "/strategy-filter/refine": "strategy_filter_refine.html",
 }
 
 
@@ -47,6 +53,9 @@ class ControlPanelServer:
         *,
         runs: CollectionRunManager,
         strategies: StrategyManager,
+        concept_feedback: ConceptRefinementManager,
+        microsystem_feedback: MicrosystemRefinementManager,
+        filter_feedback: StrategyFilterRefinementManager,
         host: str = "127.0.0.1",
         port: int = 8780,
         prompt_doc_path: Path | None = None,
@@ -54,9 +63,13 @@ class ControlPanelServer:
         microsystem_prompt_doc_path: Path | None = None,
         execution_prompt_doc_path: Path | None = None,
         management_prompt_doc_path: Path | None = None,
+        filter_prompt_doc_path: Path | None = None,
     ) -> None:
         self.runs = runs
         self.strategies = strategies
+        self.concept_feedback = concept_feedback
+        self.microsystem_feedback = microsystem_feedback
+        self.filter_feedback = filter_feedback
         self.host = host
         self.port = port
         self.prompt_doc_path = prompt_doc_path
@@ -64,6 +77,7 @@ class ControlPanelServer:
         self.microsystem_prompt_doc_path = microsystem_prompt_doc_path
         self.execution_prompt_doc_path = execution_prompt_doc_path
         self.management_prompt_doc_path = management_prompt_doc_path
+        self.filter_prompt_doc_path = filter_prompt_doc_path
         self.backtest_jobs = BacktestJobManager()
         self._server: asyncio.Server | None = None
         self._connections: set[asyncio.Task[None]] = set()
@@ -145,6 +159,8 @@ class ControlPanelServer:
             return self._json({"execution_profiles": self.runs.available_execution_profiles()})
         if path == "/api/management-profiles":
             return self._json({"management_profiles": self.runs.available_management_profiles()})
+        if path == "/api/filter-profiles":
+            return self._json({"filter_profiles": self.runs.available_filter_profiles()})
         if path == "/api/strategies":
             return self._json({"strategies": self.strategies.list_strategies()})
         if path == "/api/strategy":
@@ -159,10 +175,18 @@ class ControlPanelServer:
             return self._prompt_doc(self.execution_prompt_doc_path)
         if path == "/api/management-prompt":
             return self._prompt_doc(self.management_prompt_doc_path)
+        if path == "/api/filter-prompt":
+            return self._prompt_doc(self.filter_prompt_doc_path)
         if path == "/api/backtest/eligibility":
             return self._backtest_eligibility(query)
         if path == "/api/backtest/status":
             return self._backtest_status(query)
+        if path == "/api/concept-refine/scan-status":
+            return self._concept_refine_scan_status(query)
+        if path == "/api/microsystem-refine/scan-status":
+            return self._microsystem_refine_scan_status(query)
+        if path == "/api/strategy-filter-refine/scan-status":
+            return self._filter_refine_scan_status(query)
         return build_response("404 Not Found", b"not found", "text/plain; charset=utf-8")
 
     def _get_strategy(self, query: dict[str, list[str]]) -> bytes:
@@ -191,6 +215,291 @@ class ControlPanelServer:
         if status is None:
             return self._error("404 Not Found", f"unknown job id: {ids[0]!r}")
         return self._json(status)
+
+    def _concept_refine_scan_status(self, query: dict[str, list[str]]) -> bytes:
+        ids = query.get("job_id")
+        if not ids:
+            return self._error("400 Bad Request", "job_id query parameter is required")
+        status = self.concept_feedback.scan_job_status(ids[0])
+        if status is None:
+            return self._error("404 Not Found", f"unknown job id: {ids[0]!r}")
+        return self._json(status)
+
+    def _concept_refine_scan(self, body: bytes) -> bytes:
+        """A scan (see ConceptRefinementManager.scan) walks every real
+        record currently collected for the concept's own data_sources --
+        measured at tens of seconds to minutes, far past this server's own
+        request timeout, so it always runs as a background job, exactly
+        like /api/backtest/run. The concept itself executes user-authored
+        code (info.compute per real history step), same trust level as
+        _preview_example, but that risk is already handled inside
+        ConceptRefinementManager.scan (a per-step try/except, matching
+        build_timeline) -- nothing here needs its own broad except."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        concept_id = payload.get("concept_id")
+        if not isinstance(concept_id, str) or not concept_id:
+            return self._error("400 Bad Request", "concept_id must be a non-empty string")
+        job = self.concept_feedback.start_scan_job(concept_id=concept_id)
+        return self._json({"job_id": job.job_id})
+
+    def _concept_refine_next(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        concept_id = payload.get("concept_id")
+        if not isinstance(concept_id, str) or not concept_id:
+            return self._error("400 Bad Request", "concept_id must be a non-empty string")
+        try:
+            result = self.concept_feedback.next_instance(concept_id=concept_id)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json(result)
+
+    def _concept_refine_label(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        concept_id = payload.get("concept_id")
+        shape = payload.get("shape")
+        node = payload.get("node")
+        label = payload.get("label")
+        note = payload.get("note", "")
+        trigger_ts = payload.get("trigger_ts")
+        if not isinstance(concept_id, str) or not concept_id:
+            return self._error("400 Bad Request", "concept_id must be a non-empty string")
+        if not isinstance(node, dict):
+            return self._error("400 Bad Request", "node must be an object")
+        if not isinstance(note, str):
+            return self._error("400 Bad Request", "note must be a string")
+        if trigger_ts is not None and not isinstance(trigger_ts, (int, float)):
+            return self._error("400 Bad Request", "trigger_ts must be a number")
+        try:
+            result = self.concept_feedback.label(
+                concept_id=concept_id, shape=shape, node=node, label=label, note=note,
+                trigger_ts=trigger_ts,
+            )
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json(result)
+
+    def _concept_refine_prompt(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        concept_id = payload.get("concept_id")
+        if not isinstance(concept_id, str) or not concept_id:
+            return self._error("400 Bad Request", "concept_id must be a non-empty string")
+        if self.concept_prompt_doc_path is None:
+            return self._error("404 Not Found", "no concept prompt document configured")
+        try:
+            template = self.concept_prompt_doc_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._error("404 Not Found", f"concept prompt document unavailable: {exc}")
+        try:
+            content = self.concept_feedback.build_prompt(concept_id=concept_id, template=template)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json({"content": content})
+
+    def _microsystem_refine_scan_status(self, query: dict[str, list[str]]) -> bytes:
+        ids = query.get("job_id")
+        if not ids:
+            return self._error("400 Bad Request", "job_id query parameter is required")
+        status = self.microsystem_feedback.scan_job_status(ids[0])
+        if status is None:
+            return self._error("404 Not Found", f"unknown job id: {ids[0]!r}")
+        return self._json(status)
+
+    def _microsystem_refine_scan(self, body: bytes) -> bytes:
+        """Mirrors _concept_refine_scan -- see MicrosystemRefinementManager.scan
+        for why this always runs as a background job."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        microsystem_id = payload.get("microsystem_id")
+        if not isinstance(microsystem_id, str) or not microsystem_id:
+            return self._error("400 Bad Request", "microsystem_id must be a non-empty string")
+        job = self.microsystem_feedback.start_scan_job(microsystem_id=microsystem_id)
+        return self._json({"job_id": job.job_id})
+
+    def _microsystem_refine_next(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        microsystem_id = payload.get("microsystem_id")
+        if not isinstance(microsystem_id, str) or not microsystem_id:
+            return self._error("400 Bad Request", "microsystem_id must be a non-empty string")
+        try:
+            result = self.microsystem_feedback.next_instance(microsystem_id=microsystem_id)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json(result)
+
+    def _microsystem_refine_label(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        microsystem_id = payload.get("microsystem_id")
+        shape = payload.get("shape")
+        node = payload.get("node")
+        label = payload.get("label")
+        note = payload.get("note", "")
+        trigger_ts = payload.get("trigger_ts")
+        if not isinstance(microsystem_id, str) or not microsystem_id:
+            return self._error("400 Bad Request", "microsystem_id must be a non-empty string")
+        if not isinstance(node, dict):
+            return self._error("400 Bad Request", "node must be an object")
+        if not isinstance(note, str):
+            return self._error("400 Bad Request", "note must be a string")
+        if trigger_ts is not None and not isinstance(trigger_ts, (int, float)):
+            return self._error("400 Bad Request", "trigger_ts must be a number")
+        try:
+            result = self.microsystem_feedback.label(
+                microsystem_id=microsystem_id, shape=shape, node=node, label=label, note=note,
+                trigger_ts=trigger_ts,
+            )
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json(result)
+
+    def _microsystem_refine_prompt(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        microsystem_id = payload.get("microsystem_id")
+        if not isinstance(microsystem_id, str) or not microsystem_id:
+            return self._error("400 Bad Request", "microsystem_id must be a non-empty string")
+        if self.microsystem_prompt_doc_path is None:
+            return self._error("404 Not Found", "no microsystem prompt document configured")
+        try:
+            template = self.microsystem_prompt_doc_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._error("404 Not Found", f"microsystem prompt document unavailable: {exc}")
+        try:
+            content = self.microsystem_feedback.build_prompt(microsystem_id=microsystem_id, template=template)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json({"content": content})
+
+    def _filter_refine_scan_status(self, query: dict[str, list[str]]) -> bytes:
+        ids = query.get("job_id")
+        if not ids:
+            return self._error("400 Bad Request", "job_id query parameter is required")
+        status = self.filter_feedback.scan_job_status(ids[0])
+        if status is None:
+            return self._error("404 Not Found", f"unknown job id: {ids[0]!r}")
+        return self._json(status)
+
+    def _filter_refine_scan(self, body: bytes) -> bytes:
+        """Mirrors _microsystem_refine_scan -- see
+        StrategyFilterRefinementManager.scan for why this always runs as a
+        background job (a full-strategy real-data backtest, not just one
+        concept/microsystem)."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        strategy_name = payload.get("strategy_name")
+        if not isinstance(strategy_name, str) or not strategy_name:
+            return self._error("400 Bad Request", "strategy_name must be a non-empty string")
+        job = self.filter_feedback.start_scan_job(strategy_name=strategy_name)
+        return self._json({"job_id": job.job_id})
+
+    def _filter_refine_next(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        strategy_name = payload.get("strategy_name")
+        if not isinstance(strategy_name, str) or not strategy_name:
+            return self._error("400 Bad Request", "strategy_name must be a non-empty string")
+        try:
+            result = self.filter_feedback.next_instance(strategy_name=strategy_name)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json(result)
+
+    def _filter_refine_label(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        strategy_name = payload.get("strategy_name")
+        shape = payload.get("shape")
+        node = payload.get("node")
+        label = payload.get("label")
+        note = payload.get("note", "")
+        trigger_ts = payload.get("trigger_ts")
+        if not isinstance(strategy_name, str) or not strategy_name:
+            return self._error("400 Bad Request", "strategy_name must be a non-empty string")
+        if not isinstance(node, dict):
+            return self._error("400 Bad Request", "node must be an object")
+        if not isinstance(note, str):
+            return self._error("400 Bad Request", "note must be a string")
+        if trigger_ts is not None and not isinstance(trigger_ts, (int, float)):
+            return self._error("400 Bad Request", "trigger_ts must be a number")
+        try:
+            result = self.filter_feedback.label(
+                strategy_name=strategy_name, shape=shape, node=node, label=label, note=note,
+                trigger_ts=trigger_ts,
+            )
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json(result)
+
+    def _filter_refine_prompt(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        strategy_name = payload.get("strategy_name")
+        if not isinstance(strategy_name, str) or not strategy_name:
+            return self._error("400 Bad Request", "strategy_name must be a non-empty string")
+        if self.filter_prompt_doc_path is None:
+            return self._error("404 Not Found", "no filter prompt document configured")
+        try:
+            template = self.filter_prompt_doc_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._error("404 Not Found", f"filter prompt document unavailable: {exc}")
+        try:
+            content = self.filter_feedback.build_prompt(strategy_name=strategy_name, template=template)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json({"content": content})
 
     def _start_backtest(self, body: bytes) -> bytes:
         try:
@@ -228,6 +537,7 @@ class ControlPanelServer:
             strategy=strategy,
             concepts_dir=self.runs.concepts_dir, microsystems_dir=self.runs.microsystems_dir,
             execution_dir=self.runs.execution_dir, management_dir=self.runs.management_dir,
+            filter_dir=self.runs.filter_dir,
             data_requirements_for=self.runs._data_requirements_for,
             manifests=self.runs.list_runs(), instrument=instrument,
             start_ts=float(start_ts), end_ts=float(end_ts), cadence_seconds=float(cadence_seconds),
@@ -255,6 +565,8 @@ class ControlPanelServer:
             return self._import_generic(body, self.runs.import_execution_profile_file)
         if path == "/api/management-profiles/import":
             return self._import_generic(body, self.runs.import_management_profile_file)
+        if path == "/api/filter-profiles/import":
+            return self._import_generic(body, self.runs.import_filter_profile_file)
         if path == "/api/plugins/view":
             return self._view_source(body, self.runs.read_plugin_source)
         if path == "/api/concepts/view":
@@ -267,8 +579,34 @@ class ControlPanelServer:
             return self._save_strategy(body)
         if path == "/api/strategies/delete":
             return self._delete_strategy(body)
+        if path == "/api/strategies/example":
+            return self._preview_example(body)
         if path == "/api/symbols/refresh":
             return self._refresh_symbols()
+        if path == "/api/concept-refine/scan":
+            return self._concept_refine_scan(body)
+        if path == "/api/concept-refine/next":
+            return self._concept_refine_next(body)
+        if path == "/api/concept-refine/label":
+            return self._concept_refine_label(body)
+        if path == "/api/concept-refine/prompt":
+            return self._concept_refine_prompt(body)
+        if path == "/api/microsystem-refine/scan":
+            return self._microsystem_refine_scan(body)
+        if path == "/api/microsystem-refine/next":
+            return self._microsystem_refine_next(body)
+        if path == "/api/microsystem-refine/label":
+            return self._microsystem_refine_label(body)
+        if path == "/api/microsystem-refine/prompt":
+            return self._microsystem_refine_prompt(body)
+        if path == "/api/strategy-filter-refine/scan":
+            return self._filter_refine_scan(body)
+        if path == "/api/strategy-filter-refine/next":
+            return self._filter_refine_next(body)
+        if path == "/api/strategy-filter-refine/label":
+            return self._filter_refine_label(body)
+        if path == "/api/strategy-filter-refine/prompt":
+            return self._filter_refine_prompt(body)
         return build_response("404 Not Found", b"not found", "text/plain; charset=utf-8")
 
     def _refresh_symbols(self) -> bytes:
@@ -406,6 +744,7 @@ class ControlPanelServer:
         microsystems = payload.get("microsystems", [])
         execution = payload.get("execution")
         management = payload.get("management")
+        filter_entry = payload.get("filter")
         overwrite = bool(payload.get("overwrite", False))
         if not isinstance(name, str) or not name:
             return self._error("400 Bad Request", "name must be a non-empty string")
@@ -415,15 +754,66 @@ class ControlPanelServer:
             return self._error("400 Bad Request", "execution must be an object or null")
         if management is not None and not isinstance(management, dict):
             return self._error("400 Bad Request", "management must be an object or null")
+        if filter_entry is not None and not isinstance(filter_entry, dict):
+            return self._error("400 Bad Request", "filter must be an object or null")
         try:
             result = self.strategies.save_strategy(
                 name=name, concepts=concepts, microsystems=microsystems,
-                execution=execution, management=management, overwrite=overwrite,
+                execution=execution, management=management, filter=filter_entry, overwrite=overwrite,
             )
         except ValueError as exc:
             return self._error("400 Bad Request", str(exc))
         except FileExistsError as exc:
             return self._json({"error": str(exc), "exists": True}, status="409 Conflict")
+        return self._json(result)
+
+    def _preview_example(self, body: bytes) -> bytes:
+        """Runs a strategy under construction -- whole, or any subset of it
+        (the builder's own per-concept/per-microsystem "i" preview) --
+        against an invented scenario, so it never needs a real collection
+        to exist yet. Cheap and synchronous unlike /api/backtest/run (a
+        fixed small synthetic dataset, a single combo, no sweep -- nothing
+        like the real, possibly wide/long-running backtest that route hands
+        off to a background job for), so no job/poll machinery here: one
+        request, one response. A broad except is deliberate, not sloppy --
+        this executes a user-authored concept/microsystem script directly
+        (see StrategyManager.preview_example), and an uncaught exception
+        from that script would otherwise propagate to _handle_connection's
+        generic handler and drop the connection with no HTTP response at
+        all, the exact silent-failure shape already found and fixed for
+        OSError on the delete routes."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        concepts = payload.get("concepts", [])
+        microsystems = payload.get("microsystems", [])
+        execution = payload.get("execution")
+        management = payload.get("management")
+        filter_entry = payload.get("filter")
+        if not isinstance(concepts, list) or not isinstance(microsystems, list):
+            return self._error("400 Bad Request", "concepts and microsystems must be lists")
+        if execution is not None and not isinstance(execution, dict):
+            return self._error("400 Bad Request", "execution must be an object or null")
+        if management is not None and not isinstance(management, dict):
+            return self._error("400 Bad Request", "management must be an object or null")
+        if filter_entry is not None and not isinstance(filter_entry, dict):
+            return self._error("400 Bad Request", "filter must be an object or null")
+        seed = payload.get("seed", 42)
+        if not isinstance(seed, int):
+            return self._error("400 Bad Request", "seed must be an integer")
+        try:
+            result = self.strategies.preview_example(
+                concepts=concepts, microsystems=microsystems, execution=execution, management=management,
+                filter=filter_entry, seed=seed,
+            )
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        except Exception as exc:
+            _LOGGER.exception("example scenario preview failed")
+            return self._error("500 Internal Server Error", f"échec de la génération de l'exemple : {exc}")
         return self._json(result)
 
     def _delete_strategy(self, body: bytes) -> bytes:

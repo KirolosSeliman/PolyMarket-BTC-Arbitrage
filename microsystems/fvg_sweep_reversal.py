@@ -86,6 +86,18 @@ def compute(context) -> dict:
     fvgs = [f for f in (fvg_result.get("fvgs") or []) if isinstance(f, dict)]
     sweeps = [s for s in (sweep_result.get("sweeps") or []) if isinstance(s, dict)]
 
+    # Both upstream concepts already expose last_price (see fvg.py/
+    # liquidity_sweep.py, same reasoning as candle_seconds just above --
+    # both read the same binance_futures_kline series, so they agree).
+    # Propagated here because an execution profile only ever receives
+    # context.microsystems, never context.concepts directly (see e.g.
+    # fvg_rebound_entry.py's own docstring) -- without this, no execution
+    # profile downstream of this microsystem could ever confirm a rebound
+    # against the current price, and would sit permanently at "neutre".
+    last_price = _to_float(fvg_result.get("last_price"))
+    if last_price is None:
+        last_price = _to_float(sweep_result.get("last_price"))
+
     # Read straight from whichever concept detected it (both read the same
     # binance_futures_kline series, so they agree) -- no config to keep in
     # sync by hand anymore, and no risk of it silently not matching what
@@ -105,7 +117,7 @@ def compute(context) -> dict:
             f"{len(fvgs)} FVG actifs, {len(sweeps)} sweeps confirmés reçus -- "
             f"pas assez pour chercher un setup"
         )
-        return {"setups": [], "dernier_signal": "neutre"}
+        return {"setups": [], "dernier_signal": "neutre", "last_price": last_price}
 
     max_lookback_seconds = max_candles_before_sweep * candle_seconds
     tolerance_seconds = alignment_tolerance_candles * candle_seconds
@@ -159,4 +171,4 @@ def compute(context) -> dict:
         f"{len(setups)} setups détectés, dernier signal: {dernier_signal}"
     )
 
-    return {"setups": setups, "dernier_signal": dernier_signal}
+    return {"setups": setups, "dernier_signal": dernier_signal, "last_price": last_price}

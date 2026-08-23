@@ -83,7 +83,12 @@ def execute(context) -> ...:
 - `context.microsystems` — un dict : l'id de chaque instance de microsystème de la
   stratégie -> son résultat déjà calculé (ce que sa propre fonction `compute()` a
   retourné). *Tous* les microsystèmes de la stratégie sont présents, pas une
-  sélection.
+  sélection. Tu ne reçois **jamais** `context.concepts` -- si tu as besoin d'un
+  champ qu'un concept expose (ex. un prix courant, souvent nommé `last_price`),
+  vérifie qu'un des microsystèmes de la stratégie le recopie bien dans son propre
+  retour (voir `docs/nouveau_microsystem_prompt.md`, section "si tu veux qu'un
+  profil d'exécution puisse agir sur le prix") -- sinon tu ne le trouveras jamais
+  et ton profil restera silencieusement neutre pour toujours, sans erreur.
 - `context.config` — un dict : `config_schema[i]["name"]` -> la valeur résolue.
 - `context.log(message: str)` — statut lisible par un humain.
 

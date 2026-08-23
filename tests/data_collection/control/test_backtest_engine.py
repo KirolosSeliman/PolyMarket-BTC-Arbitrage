@@ -12,6 +12,7 @@ from polymarket_btc.data_collection.control.backtest_engine import (
     expand_sweep,
     normalize_direction,
     run_backtest,
+    run_example_scenario,
 )
 from polymarket_btc.data_collection.control.concepts import ConceptInfo
 from polymarket_btc.data_collection.control.config_schema import parse_config_schema
@@ -86,6 +87,65 @@ MANAGEMENT_INFO = {
 
 def manage(context):
     return {"stop_loss_pct": context.config["stop_loss_pct"], "take_profit_pct": context.config["take_profit_pct"]}
+'''
+
+_LOGGING_ENTER_ONCE_EXECUTION = '''
+EXECUTION_INFO = {
+    "label": "Enter once, logs why", "description": "d",
+}
+
+def execute(context):
+    context.log("entering long because reasons")
+    return {"direction": "long"}
+'''
+
+_LOGGING_FIXED_SLTP_MANAGEMENT = '''
+MANAGEMENT_INFO = {
+    "label": "Fixed SL/TP, logs why", "description": "d",
+    "config_schema": [
+        {"name": "stop_loss_pct", "type": "number", "label": "SL", "default": 5.0},
+        {"name": "take_profit_pct", "type": "number", "label": "TP", "default": 5.0},
+    ],
+}
+
+def manage(context):
+    context.log("SL/TP set to fixed percentages")
+    return {"stop_loss_pct": context.config["stop_loss_pct"], "take_profit_pct": context.config["take_profit_pct"]}
+'''
+
+_ALWAYS_VETO_FILTER = '''
+FILTER_INFO = {"label": "Always veto", "description": "d"}
+
+def filter(context):
+    return {"veto": True, "reason": "always vetoes for testing"}
+'''
+
+_NEVER_VETO_FILTER = '''
+FILTER_INFO = {"label": "Never veto", "description": "d"}
+
+def filter(context):
+    return None
+'''
+
+_RAISING_FILTER = '''
+FILTER_INFO = {"label": "Raises", "description": "d"}
+
+def filter(context):
+    raise RuntimeError("boom")
+'''
+
+
+_KLINE_CONCEPT = '''
+CONCEPT_INFO = {
+    "label": "Last close", "description": "d",
+    "data_sources": ["binance_futures_kline"],
+}
+
+def compute(context):
+    candles = context.data.get("binance_futures_kline") or []
+    if not candles:
+        return {"last_close": None}
+    return {"last_close": candles[-1]["close"]}
 '''
 
 
@@ -180,7 +240,7 @@ class ExpandSweepTests(unittest.TestCase):
 
 
 def _setup_backtest(
-    root: Path, execution_source: str, management_source: str | None = None,
+    root: Path, execution_source: str, management_source: str | None = None, filter_source: str | None = None,
 ) -> tuple[dict, dict, CollectionRunManager]:
     (root / "concepts").mkdir(parents=True, exist_ok=True)
     (root / "concepts" / "last_price_concept.py").write_text(_CONCEPT, encoding="utf-8")
@@ -193,13 +253,18 @@ def _setup_backtest(
     if management_source is not None:
         (root / "management_profiles" / "mgmt.py").write_text(management_source, encoding="utf-8")
         management_entry = {"management_id": "mgmt", "config": {}}
+    (root / "filter_profiles").mkdir(parents=True, exist_ok=True)
+    filter_entry = None
+    if filter_source is not None:
+        (root / "filter_profiles" / "filt.py").write_text(filter_source, encoding="utf-8")
+        filter_entry = {"filter_id": "filt", "config": {}}
 
     manager = CollectionRunManager(
         config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
         collections_dir=root / "collections", symbol_cache_path=_seeded_symbol_cache(root),
         plugins_dir=root / "plugins", concepts_dir=root / "concepts",
         microsystems_dir=root / "microsystems", execution_dir=root / "execution_profiles",
-        management_dir=root / "management_profiles",
+        management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
     )
     strategy = {
         "concepts": [{"instance_id": "concept_1", "concept_id": "last_price_concept", "config": {}, "data_bindings": {}}],
@@ -209,6 +274,7 @@ def _setup_backtest(
         }],
         "execution": {"execution_id": "exec", "config": {}},
         "management": management_entry,
+        "filter": filter_entry,
     }
     return strategy, manager.__dict__, manager
 
@@ -228,7 +294,7 @@ class RunBacktestTests(unittest.TestCase):
             }
             result = run_backtest(
                 strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[manifest], instrument="BTC",
                 start_ts=0, end_ts=50, cadence_seconds=10,
@@ -258,7 +324,7 @@ class RunBacktestTests(unittest.TestCase):
             }
             result = run_backtest(
                 strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[manifest], instrument="BTC",
                 start_ts=0, end_ts=20, cadence_seconds=10,
@@ -273,11 +339,90 @@ class RunBacktestTests(unittest.TestCase):
                 "exit_time": 20.0, "exit_price": 106.0,
                 "direction": "long", "outcome": "win",
                 "stop_loss": 95.94999999999999, "take_profit": 106.05000000000001,
+                "execution_log": None, "management_log": None, "filter_log": None,
             }])
             self.assertEqual([p["price"] for p in result["replay"]["price_path"]], [101.0, 106.0])
             self.assertEqual([step["timestamp"] for step in result["replay"]["timeline"]], [0.0, 10.0, 20.0])
             self.assertIn("concept_1", result["replay"]["timeline"][0]["concepts"])
             self.assertIn("micro_1", result["replay"]["timeline"][0]["microsystems"])
+
+    def _run_with_filter(self, filter_source: str | None) -> dict:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategy, _, manager = _setup_backtest(
+                root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT, filter_source,
+            )
+            run_dir = root / "collections" / "run1"
+            run_dir.mkdir(parents=True)
+            _write_trade_events(run_dir, [(-1, 100), (9, 101), (19, 106)])
+            manifest = {
+                "mode": "access", "sources": ["binance_futures_trade"], "plugins": [],
+                "start_ts_utc": "2026-01-01T00:00:00", "end_ts_utc": "2026-01-01T01:00:00",
+                "data_dir": str(run_dir),
+            }
+            return run_backtest(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                filter_dir=root / "filter_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                manifests=[manifest], instrument="BTC",
+                start_ts=0, end_ts=20, cadence_seconds=10,
+                execution_sweep={}, management_sweep={},
+            )
+
+    def test_always_veto_filter_blocks_every_trade(self) -> None:
+        result = self._run_with_filter(_ALWAYS_VETO_FILTER)
+        self.assertEqual(result["best"]["trades"], 0)
+        self.assertGreater(result["best"]["filter_vetoes"], 0)
+        self.assertEqual(result["replay"]["trades"], [])
+
+    def test_never_veto_filter_behaves_like_no_filter(self) -> None:
+        result = self._run_with_filter(_NEVER_VETO_FILTER)
+        self.assertEqual(result["best"]["trades"], 1)
+        self.assertEqual(result["best"]["wins"], 1)
+        self.assertEqual(result["best"]["filter_vetoes"], 0)
+
+    def test_no_filter_at_all_matches_never_veto_behavior(self) -> None:
+        result = self._run_with_filter(None)
+        self.assertEqual(result["best"]["trades"], 1)
+        self.assertEqual(result["best"]["wins"], 1)
+        self.assertEqual(result["best"]["filter_vetoes"], 0)
+
+    def test_raising_filter_fails_open_trade_still_opens(self) -> None:
+        # A buggy filter that always raises must not silently veto every
+        # trade -- see backtest_engine.py's own simulate_combo docstring
+        # for why fail-open (not fail-closed) is the deliberate choice.
+        result = self._run_with_filter(_RAISING_FILTER)
+        self.assertEqual(result["best"]["trades"], 1)
+        self.assertEqual(result["best"]["filter_vetoes"], 0)
+
+    def test_replay_trades_capture_the_execution_and_management_reasoning(self) -> None:
+        """context.log(...) is normally thrown away (every context in this
+        module gets _noop_log) -- detail=True is the one exception, for the
+        single combo a user can actually inspect, so the script's own
+        human-readable reasoning reaches the replay instead of vanishing."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategy, _, manager = _setup_backtest(root, _LOGGING_ENTER_ONCE_EXECUTION, _LOGGING_FIXED_SLTP_MANAGEMENT)
+            run_dir = root / "collections" / "run1"
+            run_dir.mkdir(parents=True)
+            _write_trade_events(run_dir, [(-1, 100), (9, 101), (19, 106)])
+            manifest = {
+                "mode": "access", "sources": ["binance_futures_trade"], "plugins": [],
+                "start_ts_utc": "2026-01-01T00:00:00", "end_ts_utc": "2026-01-01T01:00:00",
+                "data_dir": str(run_dir),
+            }
+            result = run_backtest(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                manifests=[manifest], instrument="BTC",
+                start_ts=0, end_ts=20, cadence_seconds=10,
+                execution_sweep={}, management_sweep={},
+            )
+            trade = result["replay"]["trades"][0]
+            self.assertEqual(trade["execution_log"], "entering long because reasons")
+            self.assertEqual(trade["management_log"], "SL/TP set to fixed percentages")
 
     def test_replay_is_only_computed_once_for_the_best_combo_not_every_sweep_combo(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -293,7 +438,7 @@ class RunBacktestTests(unittest.TestCase):
             }
             result = run_backtest(
                 strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[manifest], instrument="BTC",
                 start_ts=0, end_ts=20, cadence_seconds=10,
@@ -319,7 +464,7 @@ class RunBacktestTests(unittest.TestCase):
             }
             result = run_backtest(
                 strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[manifest], instrument="BTC",
                 start_ts=0, end_ts=20, cadence_seconds=10,
@@ -359,7 +504,7 @@ class RunBacktestTests(unittest.TestCase):
             # instead of the outcome, which is the actual bug being guarded.
             result = run_backtest(
                 strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[manifest], instrument="BTC",
                 start_ts=0, end_ts=10, cadence_seconds=10,
@@ -383,7 +528,7 @@ class RunBacktestTests(unittest.TestCase):
             }
             result = run_backtest(
                 strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[manifest], instrument="BTC",
                 start_ts=0, end_ts=10, cadence_seconds=10,
@@ -402,7 +547,7 @@ class RunBacktestTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 run_backtest(
                     strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                    execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                    execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                     data_requirements_for=manager._data_requirements_for,
                     manifests=[], instrument="BTC",
                     start_ts=0, end_ts=20, cadence_seconds=10,
@@ -416,7 +561,7 @@ class RunBacktestTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 run_backtest(
                     strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                    execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                    execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                     data_requirements_for=manager._data_requirements_for,
                     manifests=[], instrument="BTC",
                     start_ts=0, end_ts=20, cadence_seconds=10,
@@ -464,7 +609,7 @@ def compute(context):
                 collections_dir=root / "collections", symbol_cache_path=_seeded_symbol_cache(root),
                 plugins_dir=root / "plugins", concepts_dir=root / "concepts",
                 microsystems_dir=root / "microsystems", execution_dir=root / "execution_profiles",
-                management_dir=root / "management_profiles",
+                management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
             )
             strategy = {
                 "concepts": [{"instance_id": "concept_1", "concept_id": "kline_concept", "config": {}, "data_bindings": {}}],
@@ -489,7 +634,7 @@ def compute(context):
 
             result = run_backtest(
                 strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[manifest], instrument="BTC",
                 start_ts=0, end_ts=10, cadence_seconds=10,
@@ -692,7 +837,7 @@ class RunBacktestProgressTests(unittest.TestCase):
             reports: list[float] = []
             run_backtest(
                 strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[manifest], instrument="BTC",
                 start_ts=0, end_ts=10, cadence_seconds=10,
@@ -717,7 +862,7 @@ class RunBacktestProgressTests(unittest.TestCase):
             reports: list[float] = []
             run_backtest(
                 strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[manifest], instrument="BTC",
                 start_ts=0, end_ts=20, cadence_seconds=10,
@@ -727,6 +872,192 @@ class RunBacktestProgressTests(unittest.TestCase):
             self.assertTrue(reports)
             self.assertEqual(reports[-1], 1.0)
             self.assertTrue(any(0.9 <= r < 1.0 for r in reports) or reports.count(1.0) >= 1)
+
+
+class ReplayCandlesTests(unittest.TestCase):
+    """The replay chart needs real open/high/low/close (not just the single
+    price price_path carries) to draw actual candlesticks when zoomed in --
+    only meaningful when the winning price source is klines, the only
+    access-mode source that has OHLC at all."""
+
+    def test_replay_carries_real_ohlc_candles_when_priced_from_klines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION)
+            run_dir = root / "collections" / "run1"
+            run_dir.mkdir(parents=True)
+
+            storage = RawEventStorage(run_dir, zstd_level=3)
+            for i, (open_s, o, h, l, c) in enumerate([(0, 100, 105, 98, 102), (10, 102, 103, 100, 101)]):
+                close_ns = int((open_s + 9) * 1e9)
+                payload = BinanceKlinePayload(
+                    market="futures", interval="1m", open_time_ns=int(open_s * 1e9), close_time_ns=close_ns,
+                    open=Decimal(str(o)), high=Decimal(str(h)), low=Decimal(str(l)), close=Decimal(str(c)),
+                    base_volume=Decimal("1"), quote_volume=Decimal("1"), trade_count=1, is_closed=True,
+                )
+                event = MarketDataEvent(
+                    schema_version=2, ingest_sequence=i, event_id=f"kline-{i}",
+                    source=EventSource.BINANCE_FUTURES_KLINE, stream=EventStream.BINANCE_KLINE,
+                    instrument="BTCUSDT", source_timestamp_ns=close_ns, server_timestamp_ns=close_ns,
+                    received_wall_timestamp_ns=close_ns, received_monotonic_ns=time.monotonic_ns(),
+                    source_sequence=None, timeframe=None, market_id=None, condition_id=None,
+                    asset_id=None, outcome=None, payload=payload,
+                )
+                storage.write(event)
+            storage.close()
+
+            # This strategy's concept reads binance_futures_trade, but no
+            # trades were written -- forces the price path (and candles) to
+            # fall through to klines, matching the fallback chain's own order.
+            manifest = {
+                "mode": "access", "sources": ["binance_futures_kline"], "plugins": [],
+                "start_ts_utc": "2026-01-01T00:00:00", "end_ts_utc": "2026-01-01T01:00:00",
+                "data_dir": str(run_dir),
+            }
+            result = run_backtest(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                manifests=[manifest], instrument="BTC",
+                start_ts=0, end_ts=20, cadence_seconds=10,
+                execution_sweep={}, management_sweep={},
+            )
+            self.assertEqual(result["replay"]["candles"], [
+                {"timestamp": 9.0, "open": 100.0, "high": 105.0, "low": 98.0, "close": 102.0},
+                {"timestamp": 19.0, "open": 102.0, "high": 103.0, "low": 100.0, "close": 101.0},
+            ])
+
+    def test_replay_candles_is_none_when_priced_from_trades(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION)
+            run_dir = root / "collections" / "run1"
+            run_dir.mkdir(parents=True)
+            _write_trade_events(run_dir, [(-1, 100), (9, 101)])
+            manifest = {
+                "mode": "access", "sources": ["binance_futures_trade"], "plugins": [],
+                "start_ts_utc": "2026-01-01T00:00:00", "end_ts_utc": "2026-01-01T01:00:00",
+                "data_dir": str(run_dir),
+            }
+            result = run_backtest(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                manifests=[manifest], instrument="BTC",
+                start_ts=0, end_ts=10, cadence_seconds=10,
+                execution_sweep={}, management_sweep={},
+            )
+            self.assertIsNone(result["replay"]["candles"])
+
+
+class RunExampleScenarioTests(unittest.TestCase):
+    """run_example_scenario is the "did the program understand my strategy"
+    preview: same replay shape run_backtest's own "replay" field has, but
+    built from an invented scenario instead of a real collection, so it
+    works before any data has even been collected -- for a whole strategy
+    (end of the builder wizard) or any subset of one (a single concept or
+    microsystem, for the builder's per-item "i" preview)."""
+
+    def test_whole_strategy_runs_end_to_end_and_reuses_the_replay_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION, _FIXED_SLTP_MANAGEMENT)
+            result = run_example_scenario(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                cadence_seconds=10, candle_count=5, seed=1,
+            )
+            self.assertEqual(set(result), {"price_path", "candles", "timeline", "trades", "evaluation_steps"})
+            self.assertGreater(len(result["price_path"]), 0)
+            self.assertEqual(result["evaluation_steps"], len(result["timeline"]))
+            self.assertGreater(result["evaluation_steps"], 0)
+            self.assertIn("concept_1", result["timeline"][0]["concepts"])
+            self.assertIn("micro_1", result["timeline"][0]["microsystems"])
+            # This concept reads binance_futures_trade, never klines -- no
+            # candles fabricated for a source the strategy never asked for.
+            self.assertIsNone(result["candles"])
+
+    def test_is_deterministic_for_a_given_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION)
+            kwargs = dict(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                cadence_seconds=10, candle_count=5, seed=7,
+            )
+            first = run_example_scenario(**kwargs)
+            second = run_example_scenario(**kwargs)
+            self.assertEqual(first["price_path"], second["price_path"])
+            self.assertEqual(first["timeline"], second["timeline"])
+
+    def test_different_seeds_produce_different_price_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION)
+            kwargs = dict(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                cadence_seconds=10, candle_count=20,
+            )
+            first = run_example_scenario(seed=1, **kwargs)
+            second = run_example_scenario(seed=2, **kwargs)
+            self.assertNotEqual(first["price_path"], second["price_path"])
+
+    def test_a_kline_only_concept_gets_real_candles_with_no_trades_fabricated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "concepts").mkdir(parents=True)
+            (root / "concepts" / "last_close.py").write_text(_KLINE_CONCEPT, encoding="utf-8")
+            (root / "microsystems").mkdir(parents=True)
+            (root / "execution_profiles").mkdir(parents=True)
+            (root / "management_profiles").mkdir(parents=True)
+            manager = CollectionRunManager(
+                config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
+                collections_dir=root / "collections", symbol_cache_path=_seeded_symbol_cache(root),
+                plugins_dir=root / "plugins", concepts_dir=root / "concepts",
+                microsystems_dir=root / "microsystems", execution_dir=root / "execution_profiles",
+                management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+            )
+            # Exactly the shape the builder's per-concept "i" icon sends:
+            # one concept instance alone, no microsystems/execution/management.
+            strategy = {
+                "concepts": [{"instance_id": "concept_1", "concept_id": "last_close", "config": {}, "data_bindings": {}}],
+                "microsystems": [], "execution": None, "management": None,
+            }
+            result = run_example_scenario(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                cadence_seconds=60, candle_count=10, seed=3,
+            )
+            self.assertIsNotNone(result["candles"])
+            self.assertEqual(len(result["candles"]), 10)
+            self.assertEqual(
+                [p["price"] for p in result["price_path"]], [c["close"] for c in result["candles"]],
+            )
+            self.assertEqual(result["trades"], [])
+            self.assertEqual(result["timeline"][-1]["microsystems"], {})
+
+    def test_microsystem_preview_needs_its_dependent_concept_instance_alongside_it(self) -> None:
+        # Exactly the shape the builder's per-microsystem "i" icon sends:
+        # the microsystem instance plus whichever concept instance(s) it
+        # references -- required so build_timeline has something to feed it.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategy, _, manager = _setup_backtest(root, _ENTER_ONCE_EXECUTION)
+            strategy = {**strategy, "execution": None, "management": None}
+            result = run_example_scenario(
+                strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+                data_requirements_for=manager._data_requirements_for,
+                cadence_seconds=10, candle_count=5, seed=1,
+            )
+            self.assertIn("micro_1", result["timeline"][-1]["microsystems"])
+            self.assertEqual(result["trades"], [])
 
 
 if __name__ == "__main__":

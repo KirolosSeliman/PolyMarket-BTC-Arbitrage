@@ -11,6 +11,11 @@
   --surface-0: #000000; --surface-1: #111111; --surface-2: #1c1c1c;
   --text-1: #f2f2f0; --text-2: #b7b6b0; --muted: #7a7972;
   --border: rgba(255,255,255,0.12); --accent: #3987e5; --warning: #d99a2b; --critical: #d0554d;
+  --good: #3f9142;
+  /* Same annotation pair as backtest.html's replay chart -- kept identical
+     across pages so a bullish FVG reads as the same color everywhere, not
+     re-picked per page. See that file for the palette-validation note. */
+  --zone-bullish: #c98500; --zone-bearish: #d55181;
 }
 * { box-sizing: border-box; }
 body {
@@ -116,6 +121,112 @@ label.check input { margin-top: 2px; }
 .import-status.warn { color: var(--warning); }
 .import-status.error { color: var(--critical); }
 
+/* Visually the same small circled "i" as .info-icon (a separate class, not
+   a shared one -- the document-level click handler for .info-icon toggles
+   the single shared text-only #info-bubble via icon.dataset.detail, which
+   this isn't: an example preview renders a whole chart inline, not a short
+   text tooltip, so it needs its own handler and markup, not that bubble). */
+.example-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 6px; border-radius: 50%;
+  border: 1px solid var(--muted); color: var(--muted); font-size: 10px; font-weight: 700;
+  font-style: italic; font-family: Georgia, "Times New Roman", serif; line-height: 1;
+  cursor: pointer; vertical-align: middle; user-select: none; flex: none;
+}
+.example-icon:hover, .example-icon:focus-visible { border-color: var(--text-1); color: var(--text-1); outline: none; }
+
+/* The example-preview panel itself -- same "inline sub-section" language as
+   .instance-block .requirements-panel (a distinct surface-2 block within
+   the instance/panel it belongs to), not a floating tooltip, since a chart
+   needs real room. Reused for the per-concept and per-microsystem "i"
+   previews and for the end-of-wizard whole-strategy test alike. */
+.example-preview-inline { padding: 10px 12px; background: var(--surface-2); border-radius: 8px; margin-top: 10px; }
+.preview-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.zoom-group { display: inline-flex; align-items: center; gap: 6px; }
+.zoom-btn { padding: 5px 10px !important; font-size: 13px !important; line-height: 1; min-width: 28px; }
+.preview-zoom-label { font-size: 11px; color: var(--text-2); white-space: nowrap; min-width: 56px; text-align: center; }
+.example-preview-inline .preview-chart {
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; display: block;
+  cursor: grab; touch-action: none; user-select: none;
+}
+.example-preview-inline .preview-chart:active { cursor: grabbing; }
+.example-preview-inline .preview-chart .price-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.example-preview-inline .preview-chart .axis-label { fill: var(--muted); font-size: 10px; }
+.example-preview-inline .preview-chart .grid-line { stroke: var(--border); stroke-width: 1; opacity: 0.6; }
+/* Marks *when* the trade sits on the timeline, full chart height, so it
+   reads at a glance even zoomed out far enough that the entry/exit dots
+   themselves would be easy to miss (an FVG rebound can resolve in 1-2
+   candles, tiny against a much wider "how did we get here" view). */
+.example-preview-inline .preview-chart .trade-span { fill: var(--accent); fill-opacity: 0.07; }
+.example-preview-inline .preview-chart .entry-marker { fill: var(--text-1); stroke: var(--surface-1); stroke-width: 1.5; }
+.example-preview-inline .preview-chart .exit-marker.win { fill: var(--good); stroke: var(--surface-1); stroke-width: 1.5; }
+.example-preview-inline .preview-chart .exit-marker.loss { fill: var(--critical); stroke: var(--surface-1); stroke-width: 1.5; }
+.example-preview-inline .preview-chart .entry-marker-halo { fill: var(--text-1); fill-opacity: 0.18; }
+.example-preview-inline .preview-chart .exit-marker-halo.win { fill: var(--good); fill-opacity: 0.18; }
+.example-preview-inline .preview-chart .exit-marker-halo.loss { fill: var(--critical); fill-opacity: 0.18; }
+.example-preview-inline .preview-chart .zone-rect.bullish { fill: var(--zone-bullish); fill-opacity: 0.16; stroke: var(--zone-bullish); stroke-opacity: 0.55; stroke-width: 1; }
+.example-preview-inline .preview-chart .zone-rect.bearish { fill: var(--zone-bearish); fill-opacity: 0.16; stroke: var(--zone-bearish); stroke-opacity: 0.55; stroke-width: 1; }
+.example-preview-inline .preview-chart .level-line-annotation { stroke-width: 1.5; stroke-dasharray: 3 3; opacity: 0.75; }
+.example-preview-inline .preview-chart .level-line-annotation.bullish { stroke: var(--zone-bullish); }
+.example-preview-inline .preview-chart .level-line-annotation.bearish { stroke: var(--zone-bearish); }
+.example-preview-inline .preview-chart .level-line-annotation.neutral { stroke: var(--text-2); }
+.example-preview-inline .preview-chart .sweep-marker { stroke-width: 1.5; }
+.example-preview-inline .preview-chart .sweep-marker.bullish { stroke: var(--zone-bullish); fill: var(--zone-bullish); }
+.example-preview-inline .preview-chart .sweep-marker.bearish { stroke: var(--zone-bearish); fill: var(--zone-bearish); }
+.example-preview-inline .preview-chart .candle-wick { stroke-width: 1; }
+.example-preview-inline .preview-chart .candle-wick.up { stroke: var(--good); }
+.example-preview-inline .preview-chart .candle-wick.down { stroke: var(--critical); }
+.example-preview-inline .preview-chart .candle-body.up { fill: var(--good); }
+.example-preview-inline .preview-chart .candle-body.down { fill: var(--critical); }
+/* TradingView's own "Long/Short Position" tool: a green box entry->TP (the
+   planned reward), a red box entry->SL (the planned risk) -- see
+   renderPreviewTrade. Distinct from candle up/down (--good/--critical are
+   reused there too, a deliberate exception already justified for candles);
+   here the low fill-opacity + the entry/SL/TP lines on top keep a green
+   profit box from being confused with a green up-candle underneath it. */
+.example-preview-inline .preview-chart .position-box.profit { fill: var(--good); fill-opacity: 0.14; }
+.example-preview-inline .preview-chart .position-box.risk { fill: var(--critical); fill-opacity: 0.14; }
+.example-preview-inline .preview-chart .entry-line { stroke: var(--text-1); stroke-width: 1.5; stroke-dasharray: 2 2; opacity: 0.85; }
+.example-preview-inline .preview-chart .sl-line { stroke: var(--critical); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.9; }
+.example-preview-inline .preview-chart .tp-line { stroke: var(--good); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.9; }
+.example-preview-inline .preview-chart .level-label { font-size: 9.5px; }
+.example-preview-inline .preview-chart .direction-label { font-size: 10px; font-weight: 700; fill: var(--text-1); }
+.example-preview-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--text-2); align-items: center; }
+.example-preview-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.example-preview-legend .dot.entry { background: var(--text-1); }
+.example-preview-legend .dot.good { background: var(--good); }
+.example-preview-legend .dot.critical { background: var(--critical); }
+.example-preview-legend .swatch { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.example-preview-legend .swatch.bullish { background: var(--zone-bullish); opacity: 0.7; }
+.example-preview-legend .swatch.bearish { background: var(--zone-bearish); opacity: 0.7; }
+.example-preview-legend .swatch.profit { background: var(--good); opacity: 0.5; }
+.example-preview-legend .swatch.risk { background: var(--critical); opacity: 0.5; }
+.example-preview-readout { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.example-preview-readout .item { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; background: var(--surface-1); }
+.example-preview-readout .kind { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.02em; }
+.example-preview-readout .headline { margin-top: 2px; }
+.example-preview-readout .headline.bullish { color: var(--zone-bullish); }
+.example-preview-readout .headline.bearish { color: var(--zone-bearish); }
+.example-preview-readout .headline.win { color: var(--good); }
+.example-preview-readout .headline.loss { color: var(--critical); }
+.example-preview-readout .detail { color: var(--text-2); font-size: 11px; margin-top: 3px; white-space: pre-line; }
+.example-preview-strategy-summary:not(:empty) { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.example-preview-strategy-summary > strong:first-child { display: block; margin-bottom: 8px; font-size: 12.5px; color: var(--text-1); }
+.example-preview-strategy-summary .summary-block {
+  padding: 10px 12px; margin-bottom: 8px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+}
+.example-preview-strategy-summary .summary-block:last-child { margin-bottom: 0; }
+.example-preview-strategy-summary .summary-kind {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--accent); margin-bottom: 4px;
+}
+.example-preview-strategy-summary .summary-block p { margin: 4px 0; font-size: 11.5px; color: var(--text-2); line-height: 1.55; }
+.example-preview-strategy-summary .summary-config {
+  margin: 8px 0 0; padding: 8px 0 0; list-style: none; font-size: 11px; color: var(--text-2);
+  border-top: 1px dashed var(--border);
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 4px 12px;
+}
+.example-preview-strategy-summary .summary-config li strong { color: var(--text-1); font-weight: 500; }
+
 .config-field { display: grid; gap: 4px; margin-bottom: 10px; }
 .config-field label { font-size: 12px; color: var(--text-2); }
 .config-field input, .config-field select { width: 100%; }
@@ -141,6 +252,7 @@ label.check input { margin-top: 2px; }
   <button type="button" class="step-btn" data-step="3">3. Microsystèmes</button>
   <button type="button" class="step-btn" data-step="4">4. Exécution</button>
   <button type="button" class="step-btn" data-step="5">5. Gestion</button>
+  <button type="button" class="step-btn" data-step="6">6. Filtre</button>
 </div>
 
 <div id="info-bubble" class="info-bubble" role="tooltip"></div>
@@ -160,6 +272,18 @@ label.check input { margin-top: 2px; }
       <div class="combobox" id="concept-combobox">
         <input type="text" id="concept-search" placeholder="Rechercher un concept…" autocomplete="off">
         <div class="combobox-listbox" id="concept-listbox" role="listbox" style="display:none"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Perfectionner un concept existant</h2>
+      <p>
+        Montre des exemples réels détectés par un concept et dis si oui ou non c'en est un --
+        les nuances que tu expliques servent à générer un prompt pour l'améliorer avec une IA.
+      </p>
+      <div class="combobox" id="concept-refine-combobox">
+        <input type="text" id="concept-refine-search" placeholder="Rechercher un concept à perfectionner…" autocomplete="off">
+        <div class="combobox-listbox" id="concept-refine-listbox" role="listbox" style="display:none"></div>
       </div>
     </div>
 
@@ -217,6 +341,19 @@ label.check input { margin-top: 2px; }
     </div>
 
     <div class="panel">
+      <h2>Perfectionner un microsystème existant</h2>
+      <p>
+        Montre des exemples réels de setups détectés par un microsystème et dis si oui ou non
+        c'en est un bon -- les nuances que tu expliques servent à générer un prompt pour
+        l'améliorer avec une IA.
+      </p>
+      <div class="combobox" id="microsystem-refine-combobox">
+        <input type="text" id="microsystem-refine-search" placeholder="Rechercher un microsystème à perfectionner…" autocomplete="off">
+        <div class="combobox-listbox" id="microsystem-refine-listbox" role="listbox" style="display:none"></div>
+      </div>
+    </div>
+
+    <div class="panel">
       <h2>Ajouter un microsystème existant</h2>
       <div class="combobox" id="microsystem-combobox">
         <input type="text" id="microsystem-search" placeholder="Rechercher un microsystème…" autocomplete="off">
@@ -224,8 +361,8 @@ label.check input { margin-top: 2px; }
       </div>
       <div id="microsystem-pending-panel" style="display:none;margin-top:12px">
         <p style="margin:0 0 10px;font-size:12.5px"><strong id="microsystem-pending-label"></strong></p>
-        <strong style="font-size:12px">Concepts</strong>
-        <div class="check-list" id="microsystem-wiring-concepts"></div>
+        <strong style="font-size:12px">Concepts requis</strong>
+        <div id="microsystem-wiring-concepts"></div>
         <strong style="font-size:12px;margin-top:8px;display:block">Données requises</strong>
         <div id="microsystem-wiring-requirements" style="margin-top:8px"></div>
         <div class="row" style="justify-content:flex-end;margin-top:12px">
@@ -327,9 +464,72 @@ label.check input { margin-top: 2px; }
 
     <div class="row" style="justify-content:space-between">
       <button type="button" class="secondary" id="step5-back-btn">← Retour</button>
+      <button type="button" id="step5-next-btn">Suivant : Filtre →</button>
+    </div>
+  </section>
+
+  <!-- Step 6: Filtre -->
+  <section class="step" id="step-6" style="display:none">
+    <div class="panel">
+      <h2>Filtre de la stratégie</h2>
+      <p>
+        Optionnel -- une stratégie peut être enregistrée sans filtre. Un filtre s'exécute en
+        dernier, une fois qu'un trade complet (direction, entrée, SL, TP) est déjà décidé --
+        il peut seulement le refuser, jamais le modifier ni toucher aux autres scripts de la
+        stratégie.
+      </p>
+      <select id="filter-select"><option value="">(aucun)</option></select>
+      <div id="filter-config-form" style="margin-top:12px"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Créer un nouveau filtre</h2>
+      <details class="prompt-details" id="filter-prompt-details">
+        <summary>Prompt pour créer un filtre avec une IA</summary>
+        <div class="prompt-box">
+          <div class="row" style="justify-content:flex-end;margin-bottom:8px">
+            <button type="button" class="secondary" id="filter-copy-prompt-btn">Copier</button>
+          </div>
+          <pre id="filter-prompt-text">Chargement…</pre>
+        </div>
+      </details>
+      <div class="row" style="margin-top:12px">
+        <button type="button" class="secondary" id="filter-import-btn">+ Importer le script du filtre</button>
+        <input type="file" id="filter-import-input" accept=".py" style="display:none">
+        <span id="filter-import-status" class="import-status"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Perfectionner un filtre existant</h2>
+      <p>
+        Montre des trades réels que cette stratégie aurait pris (filtre désactivé pendant
+        l'analyse) et dis si oui ou non ils auraient dû l'être -- les nuances que tu
+        expliques servent à générer un prompt pour créer ou améliorer le filtre avec une IA.
+      </p>
+      <button type="button" class="secondary" id="filter-refine-btn">Perfectionner le filtre de cette stratégie</button>
+      <p class="empty" id="filter-refine-hint" style="display:none">
+        Enregistre d'abord la stratégie pour pouvoir perfectionner son filtre.
+      </p>
+    </div>
+
+    <div class="row" style="justify-content:space-between">
+      <button type="button" class="secondary" id="step6-back-btn">← Retour</button>
       <button type="button" id="save-strategy-btn">Enregistrer la stratégie</button>
     </div>
     <p id="save-status" class="import-status"></p>
+
+    <div class="panel">
+      <h2>Tester avec un exemple</h2>
+      <p>
+        Génère un scénario de marché fictif et montre ce que ta stratégie y ferait --
+        une vérification rapide que le programme a bien compris ta stratégie, pas un vrai
+        backtest (aucune donnée réelle n'est utilisée).
+      </p>
+      <button type="button" class="secondary" id="example-preview-btn">Générer un exemple</button>
+      <div id="example-preview-result" class="example-preview-inline" style="display:none"></div>
+    </div>
+
   </section>
 
 </main>
@@ -401,11 +601,13 @@ let allConcepts = [];
 let allMicrosystems = [];
 let allExecutionProfiles = [];
 let allManagementProfiles = [];
+let allFilterProfiles = [];
 
 async function loadCatalogs() {
-  const [sourcesRes, pluginsRes, conceptsRes, microsystemsRes, executionRes, managementRes] = await Promise.all([
+  const [sourcesRes, pluginsRes, conceptsRes, microsystemsRes, executionRes, managementRes, filterRes] = await Promise.all([
     fetch("/api/sources"), fetch("/api/plugins"), fetch("/api/concepts"),
     fetch("/api/microsystems"), fetch("/api/execution-profiles"), fetch("/api/management-profiles"),
+    fetch("/api/filter-profiles"),
   ]);
   allDataSources = (await sourcesRes.json()).sources || [];
   allPlugins = (await pluginsRes.json()).plugins || [];
@@ -413,6 +615,7 @@ async function loadCatalogs() {
   allMicrosystems = (await microsystemsRes.json()).microsystems || [];
   allExecutionProfiles = (await executionRes.json()).execution_profiles || [];
   allManagementProfiles = (await managementRes.json()).management_profiles || [];
+  allFilterProfiles = (await filterRes.json()).filter_profiles || [];
 }
 
 // --- Strategy-in-progress state. ---
@@ -421,6 +624,7 @@ let strategyConcepts = [];       // [{instance_id, concept_id, config, data_bind
 let strategyMicrosystems = [];   // [{instance_id, microsystem_id, concept_instance_ids, data_bindings, config}]
 let strategyExecution = null;    // {execution_id, config} | null
 let strategyManagement = null;   // {management_id, config} | null
+let strategyFilter = null;       // {filter_id, config} | null
 
 // data_bindings: {requirement_type: concrete_data_key} -- one entry per
 // *swappable* data_requirements entry (see runs.py's
@@ -435,6 +639,7 @@ function conceptById(id) { return allConcepts.find((c) => c.id === id); }
 function microsystemById(id) { return allMicrosystems.find((m) => m.id === id); }
 function executionById(id) { return allExecutionProfiles.find((e) => e.id === id); }
 function managementById(id) { return allManagementProfiles.find((m) => m.id === id); }
+function filterById(id) { return allFilterProfiles.find((f) => f.id === id); }
 
 // --- Reusable: a filterable multi-select checkbox list. ---
 
@@ -804,6 +1009,918 @@ function createPromptBox({ detailsEl, preEl, copyBtnEl, fetchContent }) {
 }
 
 // ============================================================
+// Example preview: "did the program understand my strategy" --
+// runs a concept/microsystem/strategy under construction against an
+// invented scenario and draws it, so a builder-in-progress can be sanity-
+// checked before any real data has even been collected. Reused for the
+// end-of-wizard whole-strategy test and for each concept/microsystem
+// instance's own "i" preview -- same request shape either way, just a
+// different (possibly partial) slice of the strategy as the body.
+//
+// Adapted from backtest.html's own replay chart (see that file for the
+// original and its own comments): the scales, the zone/level duck-typing
+// annotation walk, and the candle downsampling are copied near-verbatim
+// (this app has no shared-JS-file mechanism, same reason the (i) info-
+// bubble mechanism above is duplicated rather than imported), but this
+// version is intentionally smaller -- one static snapshot of the *last*
+// evaluated step, no play/pause/zoom/scrub, since this is a quick
+// illustrative check, not a full replay tool.
+// ============================================================
+
+const PREVIEW_CHART_W = 760, PREVIEW_CHART_H = 190;
+const PREVIEW_CHART_PAD = { top: 10, right: 46, bottom: 22, left: 10 };
+const PREVIEW_MAX_RENDERED_CANDLES = 200;
+// How long a full-window replay takes at each speed -- "lent" (the
+// default, per feedback that the first version was too fast) rather than
+// "normal" being the resting choice.
+const PREVIEW_SPEED_DURATIONS_MS = { slow: 12000, normal: 6000, fast: 3000 };
+const PREVIEW_DEFAULT_SPEED = "slow";
+const PREVIEW_ZOOM_MIN_CANDLES = 6;
+// See computeAnchorAndWindow: caps how far before the trade the default
+// window/zoom reaches when hunting for "the setup that led to this trade" --
+// keeps the common case (a predicting FVG a handful of candles back) fully
+// visible without an occasional ancient liquidity-pool origin ballooning
+// the default view to hundreds of candles.
+const PREVIEW_MAX_FORMATION_PULLBACK_CANDLES = 60;
+
+function previewTimeScale(ts, minTs, maxTs) {
+  const span = maxTs - minTs || 1;
+  return PREVIEW_CHART_PAD.left + ((ts - minTs) / span) * (PREVIEW_CHART_W - PREVIEW_CHART_PAD.left - PREVIEW_CHART_PAD.right);
+}
+function previewPriceScale(price, minPrice, maxPrice) {
+  const span = maxPrice - minPrice || 1;
+  return PREVIEW_CHART_H - PREVIEW_CHART_PAD.bottom - ((price - minPrice) / span) * (PREVIEW_CHART_H - PREVIEW_CHART_PAD.top - PREVIEW_CHART_PAD.bottom);
+}
+
+function previewWalkForAnnotations(value, depth = 0, found = []) {
+  if (depth > 6 || value === null || typeof value !== "object") return found;
+  if (Array.isArray(value)) {
+    value.forEach((item) => previewWalkForAnnotations(item, depth + 1, found));
+  } else {
+    if (previewLooksLikeZone(value)) found.push({ shape: "zone", node: value });
+    else if (previewLooksLikeLevel(value)) found.push({ shape: "level", node: value });
+    Object.values(value).forEach((item) => previewWalkForAnnotations(item, depth + 1, found));
+  }
+  return found;
+}
+function previewLooksLikeZone(node) {
+  return (node.direction === "bullish" || node.direction === "bearish")
+    && typeof node.high === "number" && typeof node.low === "number" && node.high > node.low
+    && typeof node.formed_at === "number";
+}
+function previewLooksLikeLevel(node) {
+  return typeof node.level === "number"
+    && (typeof node.formed_at === "number" || typeof node.swept_at === "number");
+}
+
+// nodes is a caller-resolved {shape, node} list -- either
+// anchor.relevantNodes (the setup that actually explains this trade) or a
+// fallback whole-tree walk, see renderPreviewChart -- this function only
+// ever draws what it's handed, it doesn't decide relevance itself anymore.
+// minFormedAt (the chart's own zoomed-window start) drops anything that
+// formed before the view even begins -- a pool/FVG from hundreds of
+// candles earlier that just happens to still be technically "active" is
+// not part of *this* setup, it's noise the zoom was supposed to remove.
+// Without this, such zones/levels still get drawn (their line just starts
+// off-canvas to the left and runs across the whole visible window),
+// exactly the clutter a tightly zoomed, single-setup view should avoid.
+function previewRenderAnnotations(x, y, currentTs, nodes, minFormedAt) {
+  let svgContent = "";
+  nodes.forEach(({ shape, node }) => {
+    if (shape === "zone") {
+      if (node.formed_at > currentTs) return;
+      if (typeof minFormedAt === "number" && node.formed_at < minFormedAt) return;
+      const x1 = x(node.formed_at), x2 = x(currentTs);
+      if (x2 <= x1) return;
+      const yTop = y(node.high), yBottom = y(node.low);
+      // No text label here on purpose -- the color (and the legend) already
+      // say "haussier"/"baissier"; a label on every single zone was exactly
+      // the kind of on-chart noise that isn't needed to read the shape.
+      svgContent += `<rect class="zone-rect ${node.direction}" x="${x1.toFixed(1)}" y="${yTop.toFixed(1)}" `
+        + `width="${(x2 - x1).toFixed(1)}" height="${Math.max(1, yBottom - yTop).toFixed(1)}"></rect>`;
+    } else {
+      const formedAt = typeof node.formed_at === "number" ? node.formed_at : node.swept_at;
+      if (formedAt > currentTs) return;
+      if (typeof minFormedAt === "number" && formedAt < minFormedAt) return;
+      const sweptVisible = typeof node.swept_at === "number" && node.swept_at <= currentTs;
+      const endTs = sweptVisible ? node.swept_at : currentTs;
+      const x1 = x(formedAt), x2 = x(endTs);
+      if (x2 < x1) return;
+      const ly = y(node.level);
+      const directionClass = node.direction === "bullish" || node.direction === "bearish" ? node.direction : "neutral";
+      svgContent += `<line class="level-line-annotation ${directionClass}" x1="${x1.toFixed(1)}" x2="${x2.toFixed(1)}" `
+        + `y1="${ly.toFixed(1)}" y2="${ly.toFixed(1)}"></line>`;
+      if (sweptVisible) {
+        const mx = x2;
+        svgContent += `<path class="sweep-marker ${directionClass}" `
+          + `d="M${(mx - 3).toFixed(1)},${(ly - 3).toFixed(1)} L${(mx + 3).toFixed(1)},${(ly + 3).toFixed(1)} `
+          + `M${(mx - 3).toFixed(1)},${(ly + 3).toFixed(1)} L${(mx + 3).toFixed(1)},${(ly - 3).toFixed(1)}"></path>`;
+      }
+    }
+  });
+  return svgContent;
+}
+
+function previewDownsampleCandles(candles, maxCount) {
+  if (candles.length <= maxCount) return candles;
+  const bucketSize = Math.ceil(candles.length / maxCount);
+  const result = [];
+  for (let i = 0; i < candles.length; i += bucketSize) {
+    const bucket = candles.slice(i, i + bucketSize);
+    result.push({
+      timestamp: bucket[Math.floor(bucket.length / 2)].timestamp,
+      open: bucket[0].open, close: bucket[bucket.length - 1].close,
+      high: Math.max(...bucket.map((c) => c.high)), low: Math.min(...bucket.map((c) => c.low)),
+    });
+  }
+  return result;
+}
+
+// Which concept instance ids actually feed a microsystem in this preview
+// request -- a strategy built up over several wizard visits often carries
+// concept instances that got added, then abandoned/replaced and never
+// wired into anything. Without this filter every one of those shows up in
+// the readout and clutters the chart with zones/levels that have nothing
+// to do with what the microsystem(s) actually detected. size 0 (no
+// microsystems in this request at all -- a bare concept-only preview, or a
+// strategy with no microsystem yet) means there's nothing to filter
+// *against*, so every concept passed through, unfiltered.
+function computeWiredConceptIds(microsystems) {
+  const ids = new Set();
+  (microsystems || []).forEach((m) => (m.concept_instance_ids || []).forEach((id) => ids.add(id)));
+  return ids;
+}
+function filterWiredConcepts(concepts, wiredConceptIds) {
+  if (!wiredConceptIds || !wiredConceptIds.size) return concepts || {};
+  const filtered = {};
+  Object.entries(concepts || {}).forEach(([id, value]) => { if (wiredConceptIds.has(id)) filtered[id] = value; });
+  return filtered;
+}
+
+// Which timeline step's concept/microsystem output the chart/readout
+// should describe, and what time window the chart should be zoomed to.
+// Showing the *last* evaluated step made sense when there was nothing else
+// to anchor to, but it actively misleads once a trade exists: a trade
+// taken at candle 50 of 400 has nothing to do with whatever FVGs/sweeps
+// happen to still be active at candle 400 (the zone that caused it has
+// long since been superseded or aged out) -- worse, at full-scenario zoom
+// a 3-candle FVG pattern is a few invisible pixels wide. Anchoring to the
+// first trade's own entry -- the step at or just before it fired, and a
+// window tight enough around entry/exit to actually see the candles that
+// formed it -- makes the chart and the readout describe the *same* moment,
+// which is the whole point of "here's an example setup." No trades at all
+// (a concept/microsystem-only "i" preview never simulates any) falls back
+// to the previous full-scenario, last-step view -- there's no single
+// moment to anchor to there.
+function computeAnchorAndWindow(replay) {
+  const allTs = replay.price_path.map((p) => p.timestamp);
+  const fullMinTs = allTs[0], fullMaxTs = allTs[allTs.length - 1];
+  if (!replay.trades.length) {
+    const lastStep = replay.timeline[replay.timeline.length - 1] || null;
+    // null (not []) -- distinguishes "no trade to scope around, show
+    // everything wired" from "a trade exists but nothing matched", which
+    // renderPreviewChart's own fallback treats identically (both draw the
+    // full wired-concept tree) but that's a coincidence of the current
+    // fallback, not something to conflate in the data itself.
+    return { step: lastStep, trade: null, minTs: fullMinTs, maxTs: fullMaxTs, relevantNodes: null };
+  }
+  // preview_example already searches seeds for a scenario with at least one
+  // winning trade (see StrategyManager.preview_example) -- pointless if the
+  // chart then anchors on whichever trade merely happened first, which
+  // might be a *different*, losing one from later in the same scenario.
+  // The earliest *winning* trade is the one actually being showcased.
+  const winners = replay.trades.filter((t) => t.outcome === "win");
+  const candidates = winners.length ? winners : replay.trades;
+  const trade = candidates.reduce((a, b) => (a.entry_time <= b.entry_time ? a : b));
+  let step = replay.timeline[0] || null;
+  for (const candidate of replay.timeline) {
+    if (candidate.timestamp <= trade.entry_time) step = candidate;
+    else break;
+  }
+  const candleSeconds = (replay.candles && replay.candles.length > 1)
+    ? replay.candles[1].timestamp - replay.candles[0].timestamp : 60;
+  const padding = 20 * candleSeconds;
+  let minTs = Math.min(trade.entry_time, trade.exit_time) - padding;
+  const maxTs = Math.min(fullMaxTs, Math.max(trade.entry_time, trade.exit_time) + padding);
+
+  let relevantNodes = null;
+  if (step) {
+    const found = findEarliestRelevantFormation(step.microsystems, step.concepts, trade);
+    const earliest = found.earliest;
+    relevantNodes = found.relevantNodes;
+    // A liquidity pool a sweep consumes can have formed a *very* long time
+    // before the sweep itself (it just sits there until price finally
+    // reaches it) -- that's real and worth being reachable, but it's not
+    // "the FVG that predicted the push" the example is meant to showcase,
+    // and defaulting the chart's zoom to a span wide enough to include it
+    // makes the actual entry/exit a couple of invisible pixels (see the
+    // 82%-right-margin auto-scroll during playback too -- an unbounded
+    // pullback made it race through hundreds of empty candles to catch up).
+    // Capping how far back the *default* window reaches keeps the common
+    // case (the predicting FVG a handful of candles before entry) fully
+    // intact while a rare far-back pool origin just isn't part of the
+    // default story -- still on the chart's earlier candles if the user
+    // zooms/pans out manually, just not forced on everyone by default.
+    if (earliest !== null) {
+      const cappedEarliest = Math.max(earliest, trade.entry_time - PREVIEW_MAX_FORMATION_PULLBACK_CANDLES * candleSeconds);
+      minTs = Math.min(minTs, cappedEarliest - padding);
+    }
+  }
+  minTs = Math.max(minTs, fullMinTs);
+  return { step, trade, minTs, maxTs, relevantNodes };
+}
+
+// The padded window around entry/exit alone is often too narrow to show
+// *why* the trade happened: an ICT reversal's own initial FVG (the move
+// that pushed price toward the liquidity that got swept) can form dozens
+// of candles before the sweep it's paired with, well outside that padding.
+// Two independent, generic (not hardcoded to one microsystem's field
+// names) ways to find something worth widening for:
+//  1. A microsystem's own "setups"-shaped output (see summarizePreviewReadoutItem's
+//     same duck-typing) -- whichever setup's own most-recent zone/level node
+//     lines up with (at or before) this trade's entry is almost certainly
+//     the one that led to it; its *earliest* node is the start of that
+//     story.
+//  2. Whichever zone/level's own price level matches this trade's actual
+//     take-profit (tp_buffer_pct defaults to 0, so this is usually exact)
+//     is "the top of the leg" a management profile aimed at -- wherever it
+//     formed, however long before entry.
+// Returns { earliest, relevantNodes } -- relevantNodes is every {shape,
+// node} entry actually behind that earliest computation (bestSetup's own
+// walk, plus bestMatch if found), so a caller can draw *exactly* the
+// zones/levels that explain this trade instead of re-walking (and
+// re-drawing) everything wired into the strategy.
+function findEarliestRelevantFormation(microsystems, concepts, trade) {
+  let earliest = null;
+  const relevantNodes = [];
+  const consider = (ts) => {
+    if (typeof ts !== "number") return;
+    if (earliest === null || ts < earliest) earliest = ts;
+  };
+
+  let bestSetup = null;
+  let bestSetupRecency = -Infinity;
+  Object.values(microsystems || {}).forEach((value) => {
+    if (!value || !Array.isArray(value.setups)) return;
+    value.setups.forEach((setup) => {
+      const nodes = previewWalkForAnnotations(setup);
+      if (!nodes.length) return;
+      const recency = Math.max(...nodes.map((n) => {
+        if (typeof n.node.formed_at === "number") return n.node.formed_at;
+        if (typeof n.node.swept_at === "number") return n.node.swept_at;
+        return -Infinity;
+      }));
+      if (recency <= trade.entry_time && recency > bestSetupRecency) {
+        bestSetup = setup;
+        bestSetupRecency = recency;
+      }
+    });
+  });
+  if (bestSetup) {
+    previewWalkForAnnotations(bestSetup).forEach((entry) => {
+      consider(entry.node.formed_at);
+      consider(entry.node.swept_at);
+      relevantNodes.push(entry);
+    });
+  }
+
+  if (typeof trade.take_profit === "number") {
+    let bestMatch = null;
+    let bestDelta = Infinity;
+    // Whatever computed the take-profit could have read it from either
+    // layer -- a concept's own pools, or a zone a microsystem re-exposes
+    // (like the FVG extremes inside a "setups" array) -- so both are
+    // searched here, unlike the setup-matching step above which only ever
+    // makes sense at the microsystem layer.
+    [...previewWalkForAnnotations(concepts), ...previewWalkForAnnotations(microsystems)].forEach((entry) => {
+      const node = entry.node;
+      const level = typeof node.level === "number" ? node.level
+        : node.direction === "bullish" ? node.high
+        : node.direction === "bearish" ? node.low
+        : null;
+      if (typeof level !== "number") return;
+      const delta = Math.abs(level - trade.take_profit);
+      if (delta < bestDelta) { bestDelta = delta; bestMatch = entry; }
+    });
+    if (bestMatch && bestDelta <= Math.abs(trade.take_profit) * 0.01) {
+      consider(bestMatch.node.formed_at);
+      relevantNodes.push(bestMatch);
+    }
+  }
+
+  return { earliest, relevantNodes };
+}
+
+// wiredConceptIds (see computeWiredConceptIds) trims the annotations to
+// concepts actually feeding a microsystem, same reasoning as the readout.
+// reveal is how far into the story to show: candles/annotations/the trade
+// only draw up to this timestamp, so a caller animating it forward gets a
+// genuine "watch it happen" playback (see createPreviewPlayer).
+// domain is the *visible* window -- independent of anchor's own full span,
+// which only bounds how far domain/the cursor are ever allowed to move
+// (see computePreviewDomain/createPreviewPlayer). Letting the visible
+// window be narrower than the full setup, and slide as reveal advances, is
+// what makes "zoom way in" and "scrolls right during playback" both
+// possible without maintaining two separate code paths.
+function renderPreviewChart(svgEl, replay, wiredConceptIds, anchor, reveal, domain) {
+  svgEl.setAttribute("viewBox", `0 0 ${PREVIEW_CHART_W} ${PREVIEW_CHART_H}`);
+  if (!replay || !replay.price_path.length) {
+    svgEl.innerHTML = `<text class="axis-label" x="10" y="20">Aucune donnée de prix pour ce scénario.</text>`;
+    return;
+  }
+
+  const { minTs, maxTs } = domain;
+  const clampedReveal = Math.min(reveal, maxTs);
+  const candlesInWindow = (replay.candles || []).filter((c) => c.timestamp >= minTs && c.timestamp <= maxTs);
+  const pricePoints = candlesInWindow.length
+    ? candlesInWindow.flatMap((c) => [c.high, c.low])
+    : replay.price_path.filter((p) => p.timestamp >= minTs && p.timestamp <= maxTs).map((p) => p.price);
+  // Stop-loss/take-profit can sit further from price than any candle
+  // currently in view (that's the point of a stop) -- without folding them
+  // into the price range too, the position box below would draw partly
+  // off-chart. Only once the trade has actually been revealed, though --
+  // otherwise the Y-axis would visibly jump in anticipation of a trade the
+  // viewer hasn't "seen" happen yet.
+  const tradeRevealed = anchor.trade && anchor.trade.entry_time <= clampedReveal;
+  const tradeLevels = tradeRevealed
+    ? [anchor.trade.entry_price, anchor.trade.exit_price, anchor.trade.stop_loss, anchor.trade.take_profit].filter((v) => typeof v === "number")
+    : [];
+  const fallbackPrices = replay.price_path.map((p) => p.price);
+  const allPricePoints = [...pricePoints, ...tradeLevels];
+  const minPrice = allPricePoints.length ? Math.min(...allPricePoints) : Math.min(...fallbackPrices);
+  const maxPrice = allPricePoints.length ? Math.max(...allPricePoints) : Math.max(...fallbackPrices);
+
+  const x = (ts) => previewTimeScale(ts, minTs, maxTs);
+  const y = (price) => previewPriceScale(price, minPrice, maxPrice);
+
+  let svgContent = "";
+  [minPrice, (minPrice + maxPrice) / 2, maxPrice].forEach((p) => {
+    const py = y(p);
+    svgContent += `<line class="grid-line" x1="${PREVIEW_CHART_PAD.left}" x2="${PREVIEW_CHART_W - PREVIEW_CHART_PAD.right}" y1="${py}" y2="${py}"></line>`;
+    svgContent += `<text class="axis-label" x="${PREVIEW_CHART_W - PREVIEW_CHART_PAD.right + 4}" y="${py + 3}">${p.toFixed(2)}</text>`;
+  });
+
+  if (anchor.step) {
+    // anchor.relevantNodes (see findEarliestRelevantFormation) is exactly
+    // the setup that explains this trade, when one was found -- draw only
+    // that instead of everything wired into the strategy. Falls back to
+    // the old whole-tree walk when there's no trade to scope around (a
+    // concept/microsystem-only "i" preview, relevantNodes is null) or
+    // nothing matched (relevantNodes is empty) -- a chart should never
+    // render blank just because nothing could be narrowed down.
+    const nodes = (anchor.relevantNodes && anchor.relevantNodes.length)
+      ? anchor.relevantNodes
+      : previewWalkForAnnotations(filterWiredConcepts(anchor.step.concepts, wiredConceptIds));
+    svgContent += previewRenderAnnotations(x, y, clampedReveal, nodes, minTs);
+  }
+
+  const revealedCandles = candlesInWindow.filter((c) => c.timestamp <= clampedReveal);
+  if (revealedCandles.length) {
+    const rendered = previewDownsampleCandles(revealedCandles, PREVIEW_MAX_RENDERED_CANDLES);
+    const slotSeconds = (maxTs - minTs) / Math.max(candlesInWindow.length, 1);
+    const slotWidth = Math.max(1, x(minTs + slotSeconds) - x(minTs));
+    const bodyWidth = Math.max(1, slotWidth * 0.7);
+    rendered.forEach((c) => {
+      const cx = x(c.timestamp);
+      const up = c.close >= c.open;
+      const wickClass = up ? "up" : "down";
+      svgContent += `<line class="candle-wick ${wickClass}" x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" `
+        + `y1="${y(c.high).toFixed(1)}" y2="${y(c.low).toFixed(1)}"></line>`;
+      const bodyTop = y(Math.max(c.open, c.close));
+      const bodyHeight = Math.max(1, Math.abs(y(c.open) - y(c.close)));
+      svgContent += `<rect class="candle-body ${wickClass}" x="${(cx - bodyWidth / 2).toFixed(1)}" y="${bodyTop.toFixed(1)}" `
+        + `width="${bodyWidth.toFixed(1)}" height="${bodyHeight.toFixed(1)}"></rect>`;
+    });
+  } else if (!candlesInWindow.length) {
+    const pathD = replay.price_path
+      .filter((p) => p.timestamp >= minTs && p.timestamp <= clampedReveal)
+      .map((p, i) => `${i === 0 ? "M" : "L"}${x(p.timestamp).toFixed(1)},${y(p.price).toFixed(1)}`).join(" ");
+    svgContent += `<path class="price-line" d="${pathD}"></path>`;
+  }
+
+  // Only the anchor trade -- the one the whole window/readout is built
+  // around -- not every trade that happens to also fall in this time
+  // range, which would draw a second, unexplained position box with no
+  // matching readout card next to it.
+  if (tradeRevealed) svgContent += renderPreviewTrade(x, y, anchor.trade, clampedReveal);
+
+  svgEl.innerHTML = svgContent;
+}
+
+// TradingView's own "Long/Short Position" tool: a green box from entry to
+// take-profit (the planned reward), a red box from entry to stop-loss (the
+// planned risk), regardless of where price actually ended up -- that's
+// what "seeing the whole trade" means (the plan), not just two dots for
+// entry and exit. The real exit is still marked on top, colored by what
+// actually happened (win/loss), so both the plan and the outcome are
+// visible at once. Falls back to just the entry/exit markers when a trade
+// carries no stop-loss/take-profit (no management profile configured, or
+// one that returns neither). reveal clips the box/lines to how far the
+// animation has played -- the box visibly grows from entry until reveal
+// passes exit_time, then the exit marker appears, matching a real replay
+// instead of the whole trade snapping into view at once.
+function renderPreviewTrade(x, y, trade, reveal) {
+  let svgContent = "";
+  const x1 = x(trade.entry_time);
+  const revealedExitTime = Math.min(trade.exit_time, reveal);
+  const x2 = x(revealedExitTime);
+  const entryY = y(trade.entry_price);
+  const exited = reveal >= trade.exit_time;
+
+  // A full-height wash marking *where in time* the trade sits, independent
+  // of price -- entry/exit can be only a couple of candles wide, easy to
+  // lose against a much wider zoomed-out view otherwise; this makes the
+  // trade's own location on the timeline unmissable at any zoom level, not
+  // just when zoomed in tight enough for the dots themselves to read.
+  svgContent += `<rect class="trade-span" x="${x1.toFixed(1)}" y="${PREVIEW_CHART_PAD.top}" `
+    + `width="${Math.max(1, x2 - x1).toFixed(1)}" height="${(PREVIEW_CHART_H - PREVIEW_CHART_PAD.top - PREVIEW_CHART_PAD.bottom).toFixed(1)}"></rect>`;
+
+  if (typeof trade.take_profit === "number") {
+    const tpY = y(trade.take_profit);
+    const top = Math.min(entryY, tpY);
+    svgContent += `<rect class="position-box profit" x="${x1.toFixed(1)}" y="${top.toFixed(1)}" `
+      + `width="${Math.max(1, x2 - x1).toFixed(1)}" height="${Math.max(1, Math.abs(entryY - tpY)).toFixed(1)}"></rect>`;
+    svgContent += `<line class="tp-line" x1="${x1.toFixed(1)}" x2="${x2.toFixed(1)}" y1="${tpY.toFixed(1)}" y2="${tpY.toFixed(1)}"></line>`;
+    svgContent += `<text class="level-label" x="${x1.toFixed(1)}" y="${(tpY - 3).toFixed(1)}" fill="var(--good)">TP ${trade.take_profit.toFixed(2)}</text>`;
+  }
+  if (typeof trade.stop_loss === "number") {
+    const slY = y(trade.stop_loss);
+    const top = Math.min(entryY, slY);
+    svgContent += `<rect class="position-box risk" x="${x1.toFixed(1)}" y="${top.toFixed(1)}" `
+      + `width="${Math.max(1, x2 - x1).toFixed(1)}" height="${Math.max(1, Math.abs(entryY - slY)).toFixed(1)}"></rect>`;
+    svgContent += `<line class="sl-line" x1="${x1.toFixed(1)}" x2="${x2.toFixed(1)}" y1="${slY.toFixed(1)}" y2="${slY.toFixed(1)}"></line>`;
+    svgContent += `<text class="level-label" x="${x1.toFixed(1)}" y="${(slY + 10).toFixed(1)}" fill="var(--critical)">SL ${trade.stop_loss.toFixed(2)}</text>`;
+  }
+  svgContent += `<line class="entry-line" x1="${x1.toFixed(1)}" x2="${x2.toFixed(1)}" y1="${entryY.toFixed(1)}" y2="${entryY.toFixed(1)}"></line>`;
+  svgContent += `<text class="direction-label" x="${x1.toFixed(1)}" y="${(entryY - 3).toFixed(1)}">`
+    + `${trade.direction === "long" ? "LONG" : "SHORT"}</text>`;
+  svgContent += `<circle class="entry-marker-halo" cx="${x1.toFixed(1)}" cy="${entryY.toFixed(1)}" r="8"></circle>`;
+  svgContent += `<circle class="entry-marker" cx="${x1.toFixed(1)}" cy="${entryY.toFixed(1)}" r="5"></circle>`;
+  if (exited) {
+    const exitY = y(trade.exit_price).toFixed(1);
+    svgContent += `<circle class="exit-marker-halo ${trade.outcome}" cx="${x2.toFixed(1)}" cy="${exitY}" r="8"></circle>`;
+    svgContent += `<circle class="exit-marker ${trade.outcome}" cx="${x2.toFixed(1)}" cy="${exitY}" r="5"></circle>`;
+  }
+  return svgContent;
+}
+
+function summarizePreviewReadoutItem(kind, id, value) {
+  if (!value || typeof value !== "object") {
+    return { kind, id, headline: value === null ? "Rien à cet instant." : String(value), direction: null, detail: "" };
+  }
+  const lines = [];
+  let direction = null;
+
+  if (Array.isArray(value.fvgs)) {
+    lines.push(`${value.fvgs.length} FVG actif(s)`);
+    const nearest = value.nearest_above || value.nearest_below;
+    if (nearest) {
+      direction = nearest.direction;
+      lines.push(`plus proche : ${nearest.direction === "bullish" ? "haussier" : "baissier"} `
+        + `[${nearest.low.toFixed(2)} → ${nearest.high.toFixed(2)}]`);
+    }
+  }
+  if (Array.isArray(value.sweeps)) {
+    lines.push(`${value.sweeps.length} sweep(s) confirmé(s)`);
+    const latest = value.sweeps[0];
+    if (latest) {
+      direction = latest.direction;
+      lines.push(`dernier : ${latest.direction === "bullish" ? "haussier" : "baissier"} au niveau ${latest.level.toFixed(2)}`);
+    }
+  }
+  if (Array.isArray(value.active_pools_above) || Array.isArray(value.active_pools_below)) {
+    const n = (value.active_pools_above || []).length + (value.active_pools_below || []).length;
+    lines.push(`${n} pool(s) de liquidité actif(s)`);
+  }
+  if (Array.isArray(value.setups)) {
+    lines.push(`${value.setups.length} setup(s) détecté(s) au total`);
+  }
+  if (typeof value.dernier_signal === "string") {
+    direction = value.dernier_signal === "haussier" ? "bullish" : value.dernier_signal === "baissier" ? "bearish" : null;
+    lines.push(`signal actuel : ${value.dernier_signal}`);
+  }
+  if (typeof value.last_price === "number") lines.push(`dernier prix vu : ${value.last_price.toFixed(2)}`);
+  if (typeof value.candle_seconds === "number") lines.push(`granularité détectée : ${value.candle_seconds}s`);
+
+  if (!lines.length) return { kind, id, headline: JSON.stringify(value), direction: null, detail: "" };
+  return { kind, id, headline: lines[0], direction, detail: lines.slice(1).join(" · ") };
+}
+
+// Relative to the scenario's own start, not a real calendar date -- the
+// synthetic timeline has no genuine epoch (it starts at t=0), so "01/01/1970"
+// would be actively misleading where a real backtest's replay legitimately
+// shows a real date.
+function formatPreviewElapsed(seconds, startSeconds) {
+  const totalMinutes = Math.round((seconds - startSeconds) / 60);
+  if (totalMinutes < 60) return `+${totalMinutes} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `+${hours} h${minutes ? ` ${minutes} min` : ""}`;
+}
+
+function summarizeTradeReadoutItem(trade, index, startSeconds) {
+  const dirLabel = trade.direction === "long" ? "Long" : "Short";
+  const lines = [
+    `Entrée ${formatPreviewElapsed(trade.entry_time, startSeconds)} · `
+      + `Sortie ${formatPreviewElapsed(trade.exit_time, startSeconds)} (${trade.outcome === "win" ? "gain" : "perte"})`,
+  ];
+  // The script's own reasoning (captured via context.log at the moment this
+  // trade was opened -- see simulate_combo's detail=True path), not a
+  // description of the field values a reader could already see above --
+  // "pourquoi" the entry/SL/TP landed where they did, in the script
+  // author's own words.
+  if (trade.execution_log) lines.push(`Entrée : ${trade.execution_log}`);
+  if (trade.management_log) lines.push(`Gestion : ${trade.management_log}`);
+  return {
+    kind: "Trade", id: `#${index + 1}`,
+    headline: `${dirLabel} -- entrée ${trade.entry_price.toFixed(2)} → sortie ${trade.exit_price.toFixed(2)}`,
+    direction: trade.outcome,
+    detail: lines.join("\n"),
+  };
+}
+
+// Renders a complete preview (chart + legend + readout) into containerEl,
+// replacing whatever placeholder/status text was there. requestBody is the
+// same object sent to /api/strategies/example -- needed here too, to know
+// which concepts are actually wired into a microsystem (see
+// computeWiredConceptIds) and whether an execution profile was even part
+// of the request (an empty trades list means something different for a
+// concept-only preview, which never simulates trades at all, than for a
+// full-strategy test that simply didn't happen to trigger an entry).
+// An ultra-detailed, per-instance account of *this* strategy specifically
+// -- deliberately built from what the scripts themselves already author,
+// not a generated/invented narrative: "detail" (the long-form explanation
+// every concept/microsystem/execution/management script already declares
+// in its own *_INFO dict, one level deeper than the one-line "description"
+// already used elsewhere in this builder -- see e.g. concepts/fvg.py's own
+// "detail" field) plus the instance's actual resolved config values (the
+// concrete thresholds THIS strategy runs with, not just which script it
+// uses). No external/AI-generated summary: everything shown here already
+// exists in the project, sourced straight from its own catalog data, so it
+// stays accurate to whatever's actually configured (including a user's own
+// scripts, not just the ICT ones shipped in this repo) with no extra
+// network call, no API key, and nothing to keep in sync by hand.
+function formatConfigValueForSummary(field, resolvedConfig) {
+  const value = resolvedConfig && resolvedConfig[field.name] !== undefined ? resolvedConfig[field.name] : field.default;
+  return String(value);
+}
+
+function describeInstanceDetailed(kind, instanceId, info, config) {
+  if (!info) return null;
+  const configLines = (info.config_schema || []).map(
+    (field) => `<strong>${escapeAttr(field.label)}</strong> : ${escapeAttr(formatConfigValueForSummary(field, config))}`
+  );
+  return { kind, id: instanceId, label: info.label, detail: info.detail || info.description, configLines };
+}
+
+function describeStrategyComponentsDetailed(requestBody) {
+  const items = [];
+  (requestBody.concepts || []).forEach((c) => {
+    const item = describeInstanceDetailed("Concept", c.instance_id, conceptById(c.concept_id), c.config);
+    if (item) items.push(item);
+  });
+  (requestBody.microsystems || []).forEach((m) => {
+    const item = describeInstanceDetailed("Microsystème", m.instance_id, microsystemById(m.microsystem_id), m.config);
+    if (item) items.push(item);
+  });
+  if (requestBody.execution) {
+    const item = describeInstanceDetailed(
+      "Exécution", requestBody.execution.execution_id,
+      executionById(requestBody.execution.execution_id), requestBody.execution.config,
+    );
+    if (item) items.push(item);
+  }
+  if (requestBody.management) {
+    const item = describeInstanceDetailed(
+      "Gestion", requestBody.management.management_id,
+      managementById(requestBody.management.management_id), requestBody.management.config,
+    );
+    if (item) items.push(item);
+  }
+  return items;
+}
+
+function previewCandleSecondsFor(replay) {
+  return (replay.candles && replay.candles.length > 1)
+    ? replay.candles[1].timestamp - replay.candles[0].timestamp : 60;
+}
+
+// How much of the visible window stays *ahead* of the cursor while
+// actively playing -- a live or replayed chart (TradingView included, the
+// explicit reference here) keeps the current bar a bit left of the right
+// edge, never glued to it and never centered, so a newly forming bar has
+// room to appear into. 1 = cursor exactly at the right edge, 0 = cursor at
+// the left edge; 0.82 leaves a modest margin without wasting most of the
+// chart on empty space. Only applies while playing -- once paused, the
+// view is whatever the user last panned/zoomed it to (see
+// createPreviewPlayer), completely independent of this.
+const PREVIEW_CURSOR_RIGHT_FRACTION = 0.82;
+
+// The *visible* window: zoomCandles wide, right edge at viewRightTs --
+// independent of anchor's own full span, which only bounds how far this is
+// ever allowed to slide (shifted back into range at either edge, same
+// reasoning as backtest.html's own computeReplayDomain, not clipped, so a
+// zoom near either edge still shows a full window's worth of candles).
+function computePreviewDomain(replay, anchor, zoomCandles, viewRightTs) {
+  const candleSeconds = previewCandleSecondsFor(replay);
+  const span = Math.max(1, zoomCandles) * candleSeconds;
+  let maxTs = viewRightTs;
+  let minTs = maxTs - span;
+  if (minTs < anchor.minTs) { maxTs += anchor.minTs - minTs; minTs = anchor.minTs; }
+  if (maxTs > anchor.maxTs) { minTs -= maxTs - anchor.maxTs; maxTs = anchor.maxTs; }
+  minTs = Math.max(minTs, anchor.minTs);
+  maxTs = Math.min(maxTs, anchor.maxTs);
+  return { minTs, maxTs };
+}
+
+// Owns one preview's play/pause/zoom/pan state and wires its own toolbar +
+// drag controls -- containerEl carries the state (via _previewPlayer) so a
+// later "Régénérer"/re-opened "i" icon can pause a still-running instance
+// before replacing its DOM, and so several previews (concept/microsystem
+// icons, the end-of-wizard test) can each play independently.
+//
+// Two positions are tracked separately, on purpose:
+//   - cursorTs: how much of the story has *happened* -- gates which
+//     annotations/the trade box are drawn at all (see renderPreviewChart).
+//     Starts, and stays, at the very end (fully revealed) except while
+//     actively playing -- there is no "unrevealed" state to protect once
+//     nothing is animating, so panning/zooming while paused never hides
+//     anything, exactly like looking around a finished TradingView chart.
+//   - viewRightTs: the right edge of whatever's currently ON SCREEN. While
+//     playing it's slaved to cursorTs (see frame()); while paused, the user
+//     is free to drag/zoom it anywhere within the setup's own window,
+//     independent of cursorTs -- "se déplacer et zoomer n'importe où".
+// Starts paused, fully revealed, zoomed to fit anchor's *entire* own
+// window -- not some fixed candle count picked independent of what's
+// actually in it. anchor.minTs/maxTs (see computeAnchorAndWindow) is
+// already deliberately sized to contain the whole story: the setup's
+// earliest annotation through the trade's exit, with padding -- so
+// starting zoomed to exactly that guarantees entry AND exit are visible
+// from the very first frame, never cropped by an arbitrary default. A
+// user who wants to zoom in past that, onto individual candles/wicks, still
+// can (the whole point of the zoom controls) -- this only changes the
+// *resting* view, not what's reachable.
+// "c'est nous qui décide" of starting the replay, not it auto-playing
+// itself; pressing play always (re)plays from the very start when finished
+// or fresh, but resumes from exactly where a mid-playback pause left off.
+function createPreviewPlayer(containerEl, svgEl, replay, wiredConceptIds, anchor) {
+  const candleSeconds = previewCandleSecondsFor(replay);
+  const fullSpanCandles = Math.max(1, Math.round((anchor.maxTs - anchor.minTs) / candleSeconds));
+  const state = {
+    zoomCandles: fullSpanCandles,
+    cursorTs: anchor.maxTs,
+    viewRightTs: anchor.maxTs,
+    playing: false,
+    rafToken: null,
+    playFromTs: null,
+    playStartedAt: null,
+    speed: PREVIEW_DEFAULT_SPEED,
+  };
+
+  function render() {
+    const domain = computePreviewDomain(replay, anchor, state.zoomCandles, state.viewRightTs);
+    renderPreviewChart(svgEl, replay, wiredConceptIds, anchor, state.cursorTs, domain);
+    const label = containerEl.querySelector(".preview-zoom-label");
+    if (label) label.textContent = `${state.zoomCandles} bougies`;
+    const playBtn = containerEl.querySelector(".preview-play-btn");
+    if (playBtn) playBtn.textContent = state.playing ? "⏸ Pause" : "▶ Lecture";
+  }
+
+  function frame(now) {
+    if (!state.playing) return;
+    // Same pace (time per candle) regardless of where playback resumes
+    // from -- resuming from halfway covers half the distance in half the
+    // configured duration, not the full duration all over again.
+    const totalSpan = anchor.maxTs - state.playFromTs;
+    const fullSpan = anchor.maxTs - anchor.minTs || 1;
+    const baseDuration = PREVIEW_SPEED_DURATIONS_MS[state.speed] || PREVIEW_SPEED_DURATIONS_MS[PREVIEW_DEFAULT_SPEED];
+    const duration = baseDuration * (totalSpan / fullSpan);
+    const progress = duration > 0 ? Math.min(1, (now - state.playStartedAt) / duration) : 1;
+    state.cursorTs = state.playFromTs + progress * totalSpan;
+    const span = Math.max(1, state.zoomCandles) * candleSeconds;
+    state.viewRightTs = state.cursorTs + span * (1 - PREVIEW_CURSOR_RIGHT_FRACTION);
+    render();
+    if (progress < 1) {
+      state.rafToken = requestAnimationFrame(frame);
+    } else {
+      state.playing = false;
+      render();
+    }
+  }
+
+  function play() {
+    if (state.playing) return;
+    state.playing = true;
+    state.playFromTs = state.cursorTs >= anchor.maxTs ? anchor.minTs : state.cursorTs;
+    state.playStartedAt = performance.now();
+    render();
+    state.rafToken = requestAnimationFrame(frame);
+  }
+
+  function pause() {
+    if (!state.playing) return;
+    state.playing = false;
+    if (state.rafToken !== null) cancelAnimationFrame(state.rafToken);
+    render();
+  }
+
+  function setZoom(candles, anchorTs) {
+    // Keeps whichever timestamp is passed as the fixed point while the
+    // span around it grows/shrinks -- the view center for button/wheel
+    // zoom with no explicit point in mind, or the mouse position for wheel
+    // zoom, so zooming "toward where you're looking" (TradingView's own
+    // convention) rather than always toward the right edge.
+    const oldSpan = Math.max(1, state.zoomCandles) * candleSeconds;
+    const fixedTs = anchorTs !== undefined ? anchorTs : state.viewRightTs - oldSpan / 2;
+    const fixedFraction = oldSpan > 0 ? (state.viewRightTs - fixedTs) / oldSpan : 0;
+    state.zoomCandles = Math.max(PREVIEW_ZOOM_MIN_CANDLES, Math.min(Math.round(candles), fullSpanCandles));
+    const newSpan = Math.max(1, state.zoomCandles) * candleSeconds;
+    state.viewRightTs = fixedTs + fixedFraction * newSpan;
+    render();
+  }
+
+  function resetView() {
+    state.zoomCandles = fullSpanCandles;
+    state.viewRightTs = anchor.maxTs;
+    render();
+  }
+
+  function setSpeed(speed) {
+    state.speed = PREVIEW_SPEED_DURATIONS_MS[speed] ? speed : PREVIEW_DEFAULT_SPEED;
+  }
+
+  // Click-and-drag panning, paused-only -- an active playback already
+  // claims the view (auto-scrolling to follow the cursor); starting a drag
+  // pauses it first, same as grabbing a video's seek bar stops playback.
+  let dragState = null;
+  function pointerToTs(clientX) {
+    const rect = svgEl.getBoundingClientRect();
+    if (!rect.width) return state.viewRightTs;
+    const viewBoxX = (clientX - rect.left) * (PREVIEW_CHART_W / rect.width);
+    const domain = computePreviewDomain(replay, anchor, state.zoomCandles, state.viewRightTs);
+    const plotWidth = PREVIEW_CHART_W - PREVIEW_CHART_PAD.left - PREVIEW_CHART_PAD.right;
+    return domain.minTs + ((viewBoxX - PREVIEW_CHART_PAD.left) / plotWidth) * (domain.maxTs - domain.minTs);
+  }
+  svgEl.addEventListener("pointerdown", (event) => {
+    pause();
+    dragState = { startTs: pointerToTs(event.clientX), startViewRightTs: state.viewRightTs };
+    // Best-effort: real pointer capture keeps the drag tracking correctly
+    // even if the cursor leaves the chart mid-drag, but isn't available in
+    // every environment (e.g. synthesized pointer events in a test) -- the
+    // pointermove/pointerup listeners below still work without it, just
+    // without that specific edge-case guarantee.
+    try { svgEl.setPointerCapture(event.pointerId); } catch { /* best-effort only */ }
+  });
+  svgEl.addEventListener("pointermove", (event) => {
+    if (!dragState) return;
+    const nowTs = pointerToTs(event.clientX);
+    state.viewRightTs = dragState.startViewRightTs - (nowTs - dragState.startTs);
+    render();
+  });
+  const endDrag = () => { dragState = null; };
+  svgEl.addEventListener("pointerup", endDrag);
+  svgEl.addEventListener("pointercancel", endDrag);
+  svgEl.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const factor = event.deltaY < 0 ? 0.75 : 1 / 0.75;
+    setZoom(state.zoomCandles * factor, pointerToTs(event.clientX));
+  }, { passive: false });
+
+  const player = {
+    toggle: () => (state.playing ? pause() : play()),
+    pause,
+    zoomIn: () => setZoom(state.zoomCandles * 0.7),
+    zoomOut: () => setZoom(state.zoomCandles / 0.7),
+    resetView,
+    setSpeed,
+  };
+  containerEl._previewPlayer = player;
+  render();
+  return player;
+}
+
+function renderPreviewInto(containerEl, replay, requestBody) {
+  containerEl.innerHTML = `
+    <div class="preview-toolbar">
+      <button type="button" class="secondary preview-play-btn">▶ Lecture</button>
+      <select class="preview-speed-select" title="Vitesse de lecture">
+        <option value="slow" selected>Lecture lente</option>
+        <option value="normal">Lecture normale</option>
+        <option value="fast">Lecture rapide</option>
+      </select>
+      <span class="zoom-group">
+        <button type="button" class="secondary zoom-btn preview-zoom-out-btn" title="Dézoomer">−</button>
+        <span class="preview-zoom-label"></span>
+        <button type="button" class="secondary zoom-btn preview-zoom-in-btn" title="Zoomer">+</button>
+        <button type="button" class="secondary zoom-btn preview-zoom-reset-btn" title="Revenir à la vue par défaut">⤢</button>
+      </span>
+    </div>
+    <p style="margin:0 0 6px;font-size:11px;color:var(--muted)">Glisse pour te déplacer, molette pour zoomer -- n'importe où, comme sur un chart.</p>
+    <svg class="preview-chart" width="100%" height="${PREVIEW_CHART_H}"></svg>
+    <div class="example-preview-legend">
+      <span><span class="dot entry"></span>Entrée</span>
+      <span><span class="dot good"></span>Sortie -- gain</span>
+      <span><span class="dot critical"></span>Sortie -- perte</span>
+      <span><span class="swatch profit"></span>Zone visée (TP)</span>
+      <span><span class="swatch risk"></span>Zone de risque (SL)</span>
+      <span><span class="swatch bullish"></span>Détecté -- haussier</span>
+      <span><span class="swatch bearish"></span>Détecté -- baissier</span>
+    </div>
+    <div class="example-preview-readout"></div>
+    <div class="example-preview-strategy-summary"></div>
+  `;
+  const wiredConceptIds = computeWiredConceptIds(requestBody && requestBody.microsystems);
+  const anchor = computeAnchorAndWindow(replay);
+  const svgEl = containerEl.querySelector(".preview-chart");
+  const player = createPreviewPlayer(containerEl, svgEl, replay, wiredConceptIds, anchor);
+  containerEl.querySelector(".preview-play-btn").addEventListener("click", () => player.toggle());
+  containerEl.querySelector(".preview-zoom-in-btn").addEventListener("click", () => player.zoomIn());
+  containerEl.querySelector(".preview-zoom-out-btn").addEventListener("click", () => player.zoomOut());
+  containerEl.querySelector(".preview-zoom-reset-btn").addEventListener("click", () => player.resetView());
+  containerEl.querySelector(".preview-speed-select").addEventListener("change", (event) => player.setSpeed(event.target.value));
+
+  const hasMicrosystems = !!(requestBody && requestBody.microsystems && requestBody.microsystems.length);
+  const filteredConcepts = anchor.step ? filterWiredConcepts(anchor.step.concepts, wiredConceptIds) : {};
+  const startSeconds = replay.price_path.length ? replay.price_path[0].timestamp : 0;
+  const items = [
+    // Only the anchor trade -- see computeAnchorAndWindow -- not every
+    // trade in the scenario: the chart itself only ever draws that one
+    // trade's position box, and this is meant to show *one* clear example,
+    // not a mixed list that might lead with a loss even when a win exists.
+    ...(anchor.trade ? [summarizeTradeReadoutItem(anchor.trade, 0, startSeconds)] : []),
+    // Once there's a microsystem, its own output already is the conclusion
+    // ("2 setups détectés, signal haussier") -- the concepts feeding it are
+    // implementation plumbing a trader doesn't need spelled out separately,
+    // and the chart's own zones/levels already show that detail visually.
+    // A bare concept preview (no microsystem at all, the per-concept "i"
+    // icon) has nothing else to show, so it keeps its own card.
+    ...(!hasMicrosystems && anchor.step
+      ? Object.entries(filteredConcepts).map(([id, value]) => summarizePreviewReadoutItem("Concept", id, value)) : []),
+    ...(anchor.step ? Object.entries(anchor.step.microsystems || {}).map(([id, value]) => summarizePreviewReadoutItem("Microsystème", id, value)) : []),
+  ];
+  const noTradeNote = (requestBody && requestBody.execution && !replay.trades.length)
+    ? '<div class="import-status">Aucun trade déclenché sur ce scénario -- essaie un autre scénario ci-dessous.</div>'
+    : "";
+  containerEl.querySelector(".example-preview-readout").innerHTML = noTradeNote + (items.map((item) => `
+    <div class="item">
+      <div class="kind">${escapeAttr(item.kind)} · ${escapeAttr(item.id)}</div>
+      <div class="headline ${item.direction || ""}">${escapeAttr(item.headline)}</div>
+      ${item.detail ? `<div class="detail">${escapeAttr(item.detail)}</div>` : ""}
+    </div>
+  `).join("") || '<div class="empty">Rien à analyser sur ce scénario.</div>');
+
+  const summaryItems = describeStrategyComponentsDetailed(requestBody || {});
+  containerEl.querySelector(".example-preview-strategy-summary").innerHTML = summaryItems.length
+    ? `<strong>Fonctionnement détaillé de cette stratégie</strong>`
+      + summaryItems.map((item) => `
+        <div class="summary-block">
+          <div class="summary-kind">${escapeAttr(item.kind)} · ${escapeAttr(item.id)} -- ${escapeAttr(item.label)}</div>
+          <p>${escapeAttr(item.detail)}</p>
+          ${item.configLines.length ? `<ul class="summary-config">${item.configLines.map((l) => `<li>${l}</li>`).join("")}</ul>` : ""}
+        </div>
+      `).join("")
+    : "";
+
+  const regenerateBtn = document.createElement("button");
+  regenerateBtn.type = "button";
+  regenerateBtn.className = "secondary";
+  regenerateBtn.style.marginTop = "10px";
+  regenerateBtn.textContent = "↻ Essayer un autre scénario";
+  regenerateBtn.addEventListener("click", () => {
+    runExamplePreview(containerEl, { ...requestBody, seed: Math.floor(Math.random() * 1e9) });
+  });
+  containerEl.appendChild(regenerateBtn);
+}
+
+async function fetchExampleScenario(body) {
+  const res = await fetch("/api/strategies/example", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "échec de la génération de l'exemple");
+  return data;
+}
+
+// Shared by the end-of-wizard whole-strategy test and every per-item "i"
+// preview -- containerEl carries its own loading/error/result state, so
+// several of these can be open at once (one per concept/microsystem
+// instance) without interfering with each other.
+async function runExamplePreview(containerEl, body) {
+  // A still-playing previous instance (a "Régénérer" mid-animation, or an
+  // "i" icon reopened while its own last preview was playing) has to be
+  // stopped explicitly -- overwriting containerEl.innerHTML alone doesn't
+  // cancel its requestAnimationFrame loop.
+  if (containerEl._previewPlayer) containerEl._previewPlayer.pause();
+  containerEl.innerHTML = '<p class="import-status">Génération du scénario…</p>';
+  try {
+    const replay = await fetchExampleScenario(body);
+    renderPreviewInto(containerEl, replay, body);
+  } catch (error) {
+    containerEl.innerHTML = `<p class="import-status error">${escapeAttr(error.message)}</p>`;
+  }
+}
+
+// ============================================================
 // Step 1: Concepts
 // ============================================================
 
@@ -856,6 +1973,16 @@ createCombobox({
   onSelect: addConceptInstance, placeholder: "Aucun concept trouvé.",
 });
 
+// The whole catalog, not just the concepts already wired into this
+// strategy (same allConcepts source as the picker above) -- perfecting a
+// concept is independent of any one strategy under construction.
+createCombobox({
+  inputEl: el("concept-refine-search"), listboxEl: el("concept-refine-listbox"), containerEl: el("concept-refine-combobox"),
+  getItems: () => allConcepts.map((c) => ({ key: c.id, label: c.label })),
+  onSelect: (id) => { window.location.href = "/concept/refine?id=" + encodeURIComponent(id); },
+  placeholder: "Aucun concept trouvé.",
+});
+
 const conceptDataSelection = new Set();
 const conceptDataPicker = createAssetDataPicker({
   container: el("concept-data-picker"), selectedSet: conceptDataSelection,
@@ -901,10 +2028,13 @@ function renderConceptConfigForms() {
     const info = conceptById(instance.concept_id);
     const label = info ? info.label : instance.concept_id;
     return `<div class="panel" style="background:var(--surface-2)">`
-      + `<h2 style="font-size:12.5px"><span class="id">${instance.instance_id}</span> · ${label}</h2>`
+      + `<h2 style="font-size:12.5px"><span class="id">${instance.instance_id}</span> · ${label}`
+      + `<span class="example-icon" data-instance-id="${escapeAttr(instance.instance_id)}" tabindex="0" role="button" `
+      + `aria-label="Voir un exemple de ce concept">i</span></h2>`
       + `<div class="concept-config-form" data-instance-id="${escapeAttr(instance.instance_id)}"></div>`
       + `<strong style="font-size:11.5px;color:var(--muted);display:block;margin-top:10px">Données</strong>`
       + `<div class="concept-config-requirements" data-instance-id="${escapeAttr(instance.instance_id)}"></div>`
+      + `<div class="example-preview-inline" data-preview-for="${escapeAttr(instance.instance_id)}" style="display:none"></div>`
       + `</div>`;
   }).join("");
   strategyConcepts.forEach((instance) => {
@@ -915,6 +2045,28 @@ function renderConceptConfigForms() {
     if (reqEl && info) renderRequirementsPanel(reqEl, info.data_requirements, instance.data_bindings, () => {});
   });
 }
+
+el("concept-config-forms").addEventListener("click", (event) => {
+  const icon = event.target.closest(".example-icon");
+  if (!icon) return;
+  const instanceId = icon.dataset.instanceId;
+  const container = el("concept-config-forms");
+  const previewEl = container.querySelector(`.example-preview-inline[data-preview-for="${CSS.escape(instanceId)}"]`);
+  const instance = strategyConcepts.find((c) => c.instance_id === instanceId);
+  if (!previewEl || !instance) return;
+  if (previewEl.style.display !== "none") { previewEl.style.display = "none"; return; }
+  previewEl.style.display = "block";
+  const info = conceptById(instance.concept_id);
+  const formEl = container.querySelector(`.concept-config-form[data-instance-id="${CSS.escape(instanceId)}"]`);
+  const liveConfig = formEl && info ? readConfigForm(formEl, info.config_schema) : instance.config;
+  runExamplePreview(previewEl, {
+    concepts: [{
+      instance_id: instance.instance_id, concept_id: instance.concept_id,
+      config: liveConfig, data_bindings: instance.data_bindings,
+    }],
+    microsystems: [], execution: null, management: null,
+  });
+});
 
 function collectConceptConfigs() {
   const container = el("concept-config-forms");
@@ -941,10 +2093,13 @@ function renderMicrosystemInstancesList() {
     return `<div class="instance-block" data-instance-id="${escapeAttr(instance.instance_id)}">`
       + `<div class="instance-row">`
       + `<span><span class="id">${instance.instance_id}</span> · <span class="label">${label}</span> `
-      + `(${instance.concept_instance_ids.length} concept(s))</span>`
+      + `(${instance.concept_instance_ids.length} concept(s))`
+      + `<span class="example-icon" data-instance-id="${escapeAttr(instance.instance_id)}" tabindex="0" role="button" `
+      + `aria-label="Voir un exemple de ce microsystème">i</span></span>`
       + `<button type="button" class="secondary danger remove-microsystem-btn" data-instance-id="${escapeAttr(instance.instance_id)}">Retirer</button>`
       + `</div>`
       + `<div class="requirements-panel" data-instance-id="${escapeAttr(instance.instance_id)}"></div>`
+      + `<div class="example-preview-inline" data-preview-for="${escapeAttr(instance.instance_id)}" style="display:none"></div>`
       + `</div>`;
   }).join("");
   strategyMicrosystems.forEach((instance) => {
@@ -956,9 +2111,35 @@ function renderMicrosystemInstancesList() {
 
 el("microsystem-instances-list").addEventListener("click", (event) => {
   const button = event.target.closest(".remove-microsystem-btn");
-  if (!button) return;
-  strategyMicrosystems = strategyMicrosystems.filter((m) => m.instance_id !== button.dataset.instanceId);
-  renderMicrosystemInstancesList();
+  if (button) {
+    strategyMicrosystems = strategyMicrosystems.filter((m) => m.instance_id !== button.dataset.instanceId);
+    renderMicrosystemInstancesList();
+    return;
+  }
+  const icon = event.target.closest(".example-icon");
+  if (!icon) return;
+  const instanceId = icon.dataset.instanceId;
+  const container = el("microsystem-instances-list");
+  const previewEl = container.querySelector(`.example-preview-inline[data-preview-for="${CSS.escape(instanceId)}"]`);
+  const instance = strategyMicrosystems.find((m) => m.instance_id === instanceId);
+  if (!previewEl || !instance) return;
+  if (previewEl.style.display !== "none") { previewEl.style.display = "none"; return; }
+  previewEl.style.display = "block";
+  const dependentConcepts = strategyConcepts.filter((c) => instance.concept_instance_ids.includes(c.instance_id));
+  runExamplePreview(previewEl, {
+    concepts: dependentConcepts, microsystems: [instance], execution: null, management: null,
+  });
+});
+
+// The whole catalog, not just the microsystems already wired into this
+// strategy (same allMicrosystems source as the picker below) -- perfecting
+// a microsystem is independent of any one strategy under construction.
+createCombobox({
+  inputEl: el("microsystem-refine-search"), listboxEl: el("microsystem-refine-listbox"),
+  containerEl: el("microsystem-refine-combobox"),
+  getItems: () => allMicrosystems.map((m) => ({ key: m.id, label: m.label })),
+  onSelect: (id) => { window.location.href = "/microsystem/refine?id=" + encodeURIComponent(id); },
+  placeholder: "Aucun microsystème trouvé.",
 });
 
 // --- "Ajouter un microsystème existant" -- selecting one stages it (its
@@ -968,8 +2149,6 @@ el("microsystem-instances-list").addEventListener("click", (event) => {
 
 let pendingMicrosystemId = null;
 let pendingMicrosystemBindings = {};
-const microsystemWiringConcepts = new Set();
-
 createCombobox({
   inputEl: el("microsystem-search"), listboxEl: el("microsystem-listbox"), containerEl: el("microsystem-combobox"),
   getItems: () => allMicrosystems.map((m) => ({ key: m.id, label: m.label })),
@@ -977,7 +2156,6 @@ createCombobox({
   onSelect: (microsystemId) => {
     pendingMicrosystemId = microsystemId;
     pendingMicrosystemBindings = {};
-    microsystemWiringConcepts.clear();
     const info = microsystemById(microsystemId);
     (info ? info.data_requirements : []).forEach((requirement) => {
       if (requirement.swappable) pendingMicrosystemBindings[requirement.type] = requirement.keys[0];
@@ -986,13 +2164,55 @@ createCombobox({
   },
 });
 
+// Wires itself, no checkboxes to fill in by hand: a microsystem already
+// declares exactly which concept *types* (concept_inputs) it needs, and
+// context.concepts is keyed by that type -- for each required type, the
+// first strategyConcepts instance of that type (if any) is the unambiguous
+// right answer, the same way build_timeline itself only ever exposes one
+// instance per type to a microsystem (see backtest_engine.py's concepts_in:
+// a dict keyed by concept type, so wiring more than one instance of the
+// same type would just have the later one silently overwrite the earlier
+// one -- picking the first one deterministically here avoids that trap
+// entirely rather than reproducing it in the UI).
+function computeAutoWiring(microsystemId) {
+  const info = microsystemById(microsystemId);
+  const conceptInputs = info ? info.concept_inputs : [];
+  const wired = [];
+  const missing = [];
+  conceptInputs.forEach((conceptId) => {
+    const match = strategyConcepts.find((c) => c.concept_id === conceptId);
+    if (match) wired.push(match);
+    else missing.push(conceptId);
+  });
+  return { conceptInputs, wired, missing };
+}
+
 function renderPendingMicrosystemPanel() {
   const panelEl = el("microsystem-pending-panel");
   if (!pendingMicrosystemId) { panelEl.style.display = "none"; return; }
   panelEl.style.display = "block";
   const info = microsystemById(pendingMicrosystemId);
   el("microsystem-pending-label").textContent = info ? info.label : pendingMicrosystemId;
-  wiringConceptsPicker.render();
+
+  const { conceptInputs, wired, missing } = computeAutoWiring(pendingMicrosystemId);
+  const wiringEl = el("microsystem-wiring-concepts");
+  if (!conceptInputs.length) {
+    wiringEl.innerHTML = '<div class="empty">Aucun concept requis.</div>';
+  } else {
+    wiringEl.innerHTML = conceptInputs.map((conceptId) => {
+      const match = wired.find((c) => c.concept_id === conceptId);
+      const status = match
+        ? `<span class="req-ok">✓ ${escapeAttr(match.instance_id)}</span>`
+        : `<span class="req-missing">✗ manquant</span>`;
+      const label = conceptById(conceptId) ? conceptById(conceptId).label : conceptId;
+      return `<div class="requirement-row"><span class="req-type">${escapeAttr(label)}</span>${status}</div>`;
+    }).join("");
+  }
+  el("microsystem-confirm-add-btn").disabled = missing.length > 0;
+  el("microsystem-confirm-add-btn").title = missing.length
+    ? `Concept(s) manquant(s) dans la stratégie : ${missing.map((id) => (conceptById(id) ? conceptById(id).label : id)).join(", ")}`
+    : "";
+
   renderRequirementsPanel(
     el("microsystem-wiring-requirements"), info ? info.data_requirements : [],
     pendingMicrosystemBindings, () => {},
@@ -1001,24 +2221,17 @@ function renderPendingMicrosystemPanel() {
 
 el("microsystem-confirm-add-btn").addEventListener("click", () => {
   if (!pendingMicrosystemId) return;
+  const { missing, wired } = computeAutoWiring(pendingMicrosystemId);
+  if (missing.length) return;  // button is disabled in this case, but guard anyway
   const instanceId = `micro_${nextMicrosystemNum++}`;
   strategyMicrosystems.push({
     instance_id: instanceId, microsystem_id: pendingMicrosystemId,
-    concept_instance_ids: [...microsystemWiringConcepts], data_bindings: { ...pendingMicrosystemBindings },
+    concept_instance_ids: wired.map((c) => c.instance_id), data_bindings: { ...pendingMicrosystemBindings },
     config: {},
   });
   pendingMicrosystemId = null;
   renderPendingMicrosystemPanel();
   renderMicrosystemInstancesList();
-});
-
-const wiringConceptsPicker = createFilterableChecklist({
-  searchInputEl: null, listEl: el("microsystem-wiring-concepts"),
-  getItems: () => strategyConcepts.map((c) => {
-    const info = conceptById(c.concept_id);
-    return { key: c.instance_id, label: `${c.instance_id} (${info ? info.label : c.concept_id})`, detail: null };
-  }),
-  selectedSet: microsystemWiringConcepts,
 });
 
 const microsystemConceptSelection = new Set();
@@ -1063,7 +2276,6 @@ createImportPicker({
 });
 
 function renderStep3Dependents() {
-  wiringConceptsPicker.render();
   renderPendingMicrosystemPanel();
   microsystemConceptPicker.render();
   microsystemDataPicker.render();
@@ -1076,9 +2288,22 @@ el("step3-next-btn").addEventListener("click", () => showStep(4));
 // Step 4: Exécution
 // ============================================================
 
+// The very first time this runs for a freshly-loaded existing strategy,
+// the <select> itself hasn't been touched yet (its value is still ""), so
+// the loaded strategyExecution's own execution_id is exactly the right
+// fallback -- consumed once, so a later deliberate "(aucun)" selection (an
+// empty value again) is never mistaken for "still unrestored" and silently
+// reinstated on the next unrelated re-render (e.g. importing a new
+// profile).
+let executionRestoreConsumed = false;
+
 function renderExecutionSelect() {
   const select = el("execution-select");
-  const previous = select.value;
+  let previous = select.value;
+  if (!executionRestoreConsumed) {
+    executionRestoreConsumed = true;
+    if (strategyExecution) previous = strategyExecution.execution_id;
+  }
   select.innerHTML = '<option value="">(aucun)</option>'
     + allExecutionProfiles.map((info) => `<option value="${escapeAttr(info.id)}">${info.label}</option>`).join("");
   select.value = allExecutionProfiles.some((info) => info.id === previous) ? previous : "";
@@ -1091,8 +2316,12 @@ function renderExecutionConfigForm() {
   if (!executionId) { container.innerHTML = ""; strategyExecution = null; return; }
   const info = executionById(executionId);
   if (!info) { container.innerHTML = ""; return; }
-  strategyExecution = { execution_id: executionId, config: {} };
-  renderConfigForm(container, info.config_schema, {});
+  // Keep the loaded config values when the selection still matches what was
+  // saved (fresh load, or the user just re-picked the same profile) --
+  // only a genuine switch to a *different* profile resets to its defaults.
+  const savedConfig = (strategyExecution && strategyExecution.execution_id === executionId) ? strategyExecution.config : {};
+  strategyExecution = { execution_id: executionId, config: savedConfig };
+  renderConfigForm(container, info.config_schema, savedConfig);
 }
 
 el("execution-select").addEventListener("change", renderExecutionConfigForm);
@@ -1119,9 +2348,16 @@ el("step4-next-btn").addEventListener("click", () => showStep(5));
 // Step 5: Gestion
 // ============================================================
 
+// Same "consume the restore exactly once" reasoning as executionRestoreConsumed.
+let managementRestoreConsumed = false;
+
 function renderManagementSelect() {
   const select = el("management-select");
-  const previous = select.value;
+  let previous = select.value;
+  if (!managementRestoreConsumed) {
+    managementRestoreConsumed = true;
+    if (strategyManagement) previous = strategyManagement.management_id;
+  }
   select.innerHTML = '<option value="">(aucun)</option>'
     + allManagementProfiles.map((info) => `<option value="${escapeAttr(info.id)}">${info.label}</option>`).join("");
   select.value = allManagementProfiles.some((info) => info.id === previous) ? previous : "";
@@ -1134,8 +2370,9 @@ function renderManagementConfigForm() {
   if (!managementId) { container.innerHTML = ""; strategyManagement = null; return; }
   const info = managementById(managementId);
   if (!info) { container.innerHTML = ""; return; }
-  strategyManagement = { management_id: managementId, config: {} };
-  renderConfigForm(container, info.config_schema, {});
+  const savedConfig = (strategyManagement && strategyManagement.management_id === managementId) ? strategyManagement.config : {};
+  strategyManagement = { management_id: managementId, config: savedConfig };
+  renderConfigForm(container, info.config_schema, savedConfig);
 }
 
 el("management-select").addEventListener("change", renderManagementConfigForm);
@@ -1156,36 +2393,108 @@ createImportPicker({
 });
 
 el("step5-back-btn").addEventListener("click", () => showStep(4));
+el("step5-next-btn").addEventListener("click", () => showStep(6));
+
+// ============================================================
+// Step 6: Filtre
+// ============================================================
+
+// Same "consume the restore exactly once" reasoning as executionRestoreConsumed.
+let filterRestoreConsumed = false;
+
+function renderFilterSelect() {
+  const select = el("filter-select");
+  let previous = select.value;
+  if (!filterRestoreConsumed) {
+    filterRestoreConsumed = true;
+    if (strategyFilter) previous = strategyFilter.filter_id;
+  }
+  select.innerHTML = '<option value="">(aucun)</option>'
+    + allFilterProfiles.map((info) => `<option value="${escapeAttr(info.id)}">${info.label}</option>`).join("");
+  select.value = allFilterProfiles.some((info) => info.id === previous) ? previous : "";
+  renderFilterConfigForm();
+  el("filter-refine-btn").disabled = !isEditingExistingStrategy;
+  el("filter-refine-hint").style.display = isEditingExistingStrategy ? "none" : "block";
+}
+
+function renderFilterConfigForm() {
+  const filterId = el("filter-select").value;
+  const container = el("filter-config-form");
+  if (!filterId) { container.innerHTML = ""; strategyFilter = null; return; }
+  const info = filterById(filterId);
+  if (!info) { container.innerHTML = ""; return; }
+  const savedConfig = (strategyFilter && strategyFilter.filter_id === filterId) ? strategyFilter.config : {};
+  strategyFilter = { filter_id: filterId, config: savedConfig };
+  renderConfigForm(container, info.config_schema, savedConfig);
+}
+
+el("filter-select").addEventListener("change", renderFilterConfigForm);
+
+const filterPromptBox = createPromptBox({
+  detailsEl: el("filter-prompt-details"), preEl: el("filter-prompt-text"), copyBtnEl: el("filter-copy-prompt-btn"),
+  fetchContent: async () => {
+    const res = await fetch("/api/filter-prompt");
+    const data = await res.json();
+    return res.ok ? data.content : "Prompt indisponible : " + data.error;
+  },
+});
+
+createImportPicker({
+  buttonEl: el("filter-import-btn"), inputEl: el("filter-import-input"), statusEl: el("filter-import-status"),
+  endpoint: "/api/filter-profiles/import",
+  onImported: async () => { await loadCatalogs(); renderFilterSelect(); },
+});
+
+el("filter-refine-btn").addEventListener("click", () => {
+  if (!isEditingExistingStrategy) return;
+  window.location.href = "/strategy-filter/refine?strategy=" + encodeURIComponent(strategyName);
+});
+
+el("step6-back-btn").addEventListener("click", () => showStep(5));
+
+// Reads execution/management/filter straight from step 4/5/6's own form
+// elements -- shared by saveStrategy and the example-preview button so
+// both always reflect whatever's currently on screen, not a possibly-stale
+// snapshot.
+function collectExecutionAndManagement() {
+  const executionId = el("execution-select").value;
+  strategyExecution = executionId ? {
+    execution_id: executionId,
+    config: readConfigForm(el("execution-config-form"), executionById(executionId).config_schema),
+  } : null;
+  const managementId = el("management-select").value;
+  strategyManagement = managementId ? {
+    management_id: managementId,
+    config: readConfigForm(el("management-config-form"), managementById(managementId).config_schema),
+  } : null;
+  const filterId = el("filter-select").value;
+  strategyFilter = filterId ? {
+    filter_id: filterId,
+    config: readConfigForm(el("filter-config-form"), filterById(filterId).config_schema),
+  } : null;
+}
 
 async function saveStrategy() {
-  const executionId = el("execution-select").value;
-  if (executionId) {
-    strategyExecution = {
-      execution_id: executionId,
-      config: readConfigForm(el("execution-config-form"), executionById(executionId).config_schema),
-    };
-  } else {
-    strategyExecution = null;
-  }
-  const managementId = el("management-select").value;
-  if (managementId) {
-    strategyManagement = {
-      management_id: managementId,
-      config: readConfigForm(el("management-config-form"), managementById(managementId).config_schema),
-    };
-  } else {
-    strategyManagement = null;
-  }
+  collectExecutionAndManagement();
   const body = {
     name: strategyName,
     concepts: strategyConcepts,
     microsystems: strategyMicrosystems,
     execution: strategyExecution,
     management: strategyManagement,
+    filter: strategyFilter,
+    // Editing an existing strategy overwrites it by definition -- the user
+    // already chose to edit *this* strategy, so re-confirming "écraser ?"
+    // on every save would just be asking them to confirm what they already
+    // decided by navigating here. The 409-then-confirm dance below still
+    // covers the real case it's for: creating a *new* strategy whose name
+    // happens to collide with an existing one.
+    overwrite: isEditingExistingStrategy,
   };
   const status = el("save-status");
   status.className = "import-status";
   status.textContent = "Enregistrement…";
+  const menuParams = isEditingExistingStrategy ? "" : "&new=1";
   const res = await fetch("/api/strategies", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
@@ -1197,7 +2506,7 @@ async function saveStrategy() {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       if (retryRes.ok) {
-        window.location.href = `/menu?strategy=${encodeURIComponent(strategyName)}&new=1`;
+        window.location.href = `/menu?strategy=${encodeURIComponent(strategyName)}${menuParams}`;
         return;
       }
       const retryData = await retryRes.json();
@@ -1211,17 +2520,28 @@ async function saveStrategy() {
     status.textContent = data.error || "échec de l'enregistrement";
     return;
   }
-  window.location.href = `/menu?strategy=${encodeURIComponent(strategyName)}&new=1`;
+  window.location.href = `/menu?strategy=${encodeURIComponent(strategyName)}${menuParams}`;
 }
 
 el("save-strategy-btn").addEventListener("click", saveStrategy);
+
+el("example-preview-btn").addEventListener("click", () => {
+  collectConceptConfigs();
+  collectExecutionAndManagement();
+  const container = el("example-preview-result");
+  container.style.display = "block";
+  runExamplePreview(container, {
+    concepts: strategyConcepts, microsystems: strategyMicrosystems,
+    execution: strategyExecution, management: strategyManagement, filter: strategyFilter,
+  });
+});
 
 // ============================================================
 // Step navigation
 // ============================================================
 
 function showStep(n) {
-  for (let i = 1; i <= 5; i++) {
+  for (let i = 1; i <= 6; i++) {
     el(`step-${i}`).style.display = i === n ? "grid" : "none";
     el(`stepper`).querySelector(`.step-btn[data-step="${i}"]`).classList.toggle("active", i === n);
   }
@@ -1229,6 +2549,7 @@ function showStep(n) {
   if (n === 3) renderStep3Dependents();
   if (n === 4) renderExecutionSelect();
   if (n === 5) renderManagementSelect();
+  if (n === 6) renderFilterSelect();
 }
 
 document.querySelectorAll(".step-btn").forEach((button) => {
@@ -1242,10 +2563,57 @@ document.querySelectorAll(".step-btn").forEach((button) => {
 // Init
 // ============================================================
 
+// A name that already names a saved strategy is edited in place -- same
+// wizard, same URL shape (?name=X) as creating one, just pre-populated
+// instead of blank. A 404 here just means X doesn't exist yet, i.e. this
+// really is a new strategy -- the wizard's existing blank-state defaults
+// already handle that correctly, nothing else to do.
+function computeNextNum(instanceIds, prefix) {
+  let max = 0;
+  instanceIds.forEach((id) => {
+    const match = new RegExp(`^${prefix}(\\d+)$`).exec(id);
+    if (match) max = Math.max(max, parseInt(match[1], 10));
+  });
+  return max + 1;
+}
+
+let isEditingExistingStrategy = false;
+
+async function loadExistingStrategyIfAny() {
+  const res = await fetch(`/api/strategy?name=${encodeURIComponent(strategyName)}`);
+  if (!res.ok) return;
+  const data = await res.json();
+  isEditingExistingStrategy = true;
+  strategyConcepts = data.concepts || [];
+  strategyMicrosystems = data.microsystems || [];
+  strategyExecution = data.execution || null;
+  strategyManagement = data.management || null;
+  strategyFilter = data.filter || null;
+  nextConceptNum = computeNextNum(strategyConcepts.map((c) => c.instance_id), "concept_");
+  nextMicrosystemNum = computeNextNum(strategyMicrosystems.map((m) => m.instance_id), "micro_");
+  el("strategy-name-line").textContent = `Modification de la stratégie : ${strategyName}`;
+  el("save-strategy-btn").textContent = "Enregistrer les modifications";
+}
+
 async function init() {
   await loadCatalogs();
+  await loadExistingStrategyIfAny();
   renderStep1Dependents();
+  renderConceptInstancesList();
   renderStep3Dependents();
+  renderMicrosystemInstancesList();
+  // Steps 4/5/6's <select> only ever gets its saved execution_id/
+  // management_id/filter_id restored into it here or on that step's own
+  // showStep() visit -- unlike steps 1-3 above, which render eagerly
+  // regardless of which tab is active. Skipping that meant
+  // collectExecutionAndManagement() (used by both the example preview and
+  // saveStrategy itself) read an untouched, empty <select> whenever the
+  // user jumped straight to a later step without visiting 4/5/6 first,
+  // silently wiping a loaded strategy's execution/management/filter back
+  // to null -- on save, not just on preview.
+  renderExecutionSelect();
+  renderManagementSelect();
+  renderFilterSelect();
 }
 
 init();

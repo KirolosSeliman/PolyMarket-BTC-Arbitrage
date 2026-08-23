@@ -295,7 +295,7 @@ class CollectionRunManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 concepts_dir=root / "concepts",
                 microsystems_dir=root / "microsystems",
                 execution_dir=root / "execution_profiles",
-                management_dir=root / "management_profiles",
+                management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
             )
             with self.assertRaises(ValueError):
                 manager.start(sources=[], plugins=[], duration_seconds=None)
@@ -314,7 +314,7 @@ class CollectionRunManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 concepts_dir=root / "concepts",
                 microsystems_dir=root / "microsystems",
                 execution_dir=root / "execution_profiles",
-                management_dir=root / "management_profiles",
+                management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
             )
             state = manager.start(sources=["chainlink"], plugins=[], duration_seconds=None)
             self.assertEqual(manager.status()["run_id"], state.run_id)
@@ -355,7 +355,7 @@ class DeleteRunTests(unittest.IsolatedAsyncioTestCase):
             concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems",
             execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
 
     async def _finished_run(self, manager: CollectionRunManager) -> str:
@@ -435,7 +435,7 @@ class MergedCatalogTests(unittest.IsolatedAsyncioTestCase):
             concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems",
             execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
 
     def test_available_sources_includes_generated_entries_for_cached_symbols(self) -> None:
@@ -471,7 +471,7 @@ class MergedCatalogTests(unittest.IsolatedAsyncioTestCase):
                 concepts_dir=root / "concepts",
                 microsystems_dir=root / "microsystems",
                 execution_dir=root / "execution_profiles",
-                management_dir=root / "management_profiles",
+                management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
             )
             (root / "cache").mkdir(parents=True, exist_ok=True)
             (root / "cache" / "not_json_at_all.json").write_text("not json", encoding="utf-8")
@@ -515,7 +515,7 @@ class AccessModeTests(unittest.IsolatedAsyncioTestCase):
             concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems",
             execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
 
     async def test_access_run_skips_the_gateway_and_runs_only_the_plugin_once(self) -> None:
@@ -746,7 +746,7 @@ class ImportPluginFileTests(unittest.TestCase):
             concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems",
             execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
 
     def test_valid_plugin_is_written_and_recognized(self) -> None:
@@ -821,7 +821,7 @@ class ImportConceptFileTests(unittest.TestCase):
             concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems",
             execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
 
     def test_valid_concept_is_written_and_recognized(self) -> None:
@@ -863,7 +863,7 @@ class ImportMicrosystemExecutionAndManagementFileTests(unittest.TestCase):
             concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems",
             execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
 
     def test_valid_microsystem_is_written_and_recognized(self) -> None:
@@ -927,7 +927,7 @@ class ReadSourceTests(unittest.TestCase):
             concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems",
             execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
 
     def test_read_plugin_source_found(self) -> None:
@@ -962,6 +962,20 @@ class ReadSourceTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 manager.read_concept_source("nope")
 
+    def test_read_microsystem_source_found(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_microsystem_file("mon_micro.py", _MICROSYSTEM_SOURCE)
+            result = manager.read_microsystem_source("mon_micro")
+            self.assertEqual(result["filename"], "mon_micro.py")
+            self.assertIn("MICROSYSTEM_INFO", result["content"])
+
+    def test_read_microsystem_source_not_found_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(FileNotFoundError):
+                manager.read_microsystem_source("nope")
+
 
 class BuildPromptTests(unittest.TestCase):
     def _manager(self, root: Path) -> CollectionRunManager:
@@ -973,7 +987,7 @@ class BuildPromptTests(unittest.TestCase):
             concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems",
             execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
 
     def test_concept_prompt_embeds_source_and_plugin_context(self) -> None:
@@ -1035,7 +1049,7 @@ class DataRequirementsForTests(unittest.TestCase):
             concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems",
             execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
 
     def test_single_asset_key_is_swappable(self) -> None:

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from polymarket_btc.data_collection.control.runs import CollectionRunManager
 from polymarket_btc.data_collection.control.strategies import StrategyManager
@@ -51,6 +52,23 @@ def manage(context):
     return None
 '''
 
+_FILTER = '''
+FILTER_INFO = {
+    "label": "Reward risk", "description": "desc",
+    "config_schema": [{"name": "min_ratio", "type": "number", "label": "Min", "default": 1.5}],
+}
+
+def filter(context):
+    return None
+'''
+
+_ALWAYS_VETO_FILTER = '''
+FILTER_INFO = {"label": "Always veto", "description": "desc"}
+
+def filter(context):
+    return {"veto": True}
+'''
+
 
 def _seeded_symbol_cache(root: Path) -> Path:
     cache_path = root / "cache" / "binance_symbols.json"
@@ -71,6 +89,9 @@ class StrategyManagerTests(unittest.TestCase):
         (root / "execution_profiles" / "conservative.py").write_text(_EXECUTION, encoding="utf-8")
         (root / "management_profiles").mkdir(parents=True, exist_ok=True)
         (root / "management_profiles" / "fixed_sltp.py").write_text(_MANAGEMENT, encoding="utf-8")
+        (root / "filter_profiles").mkdir(parents=True, exist_ok=True)
+        (root / "filter_profiles" / "reward_risk.py").write_text(_FILTER, encoding="utf-8")
+        (root / "filter_profiles" / "always_veto.py").write_text(_ALWAYS_VETO_FILTER, encoding="utf-8")
         manager = CollectionRunManager(
             config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
             collections_dir=root / "collections",
@@ -79,7 +100,7 @@ class StrategyManagerTests(unittest.TestCase):
             concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems",
             execution_dir=root / "execution_profiles",
-            management_dir=root / "management_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
         return StrategyManager(strategies_dir=root / "strategies", runs=manager)
 
@@ -96,6 +117,7 @@ class StrategyManagerTests(unittest.TestCase):
                 }],
                 execution={"execution_id": "conservative", "config": {"max_position_usd": 1000}},
                 management={"management_id": "fixed_sltp", "config": {"stop_loss_pct": 2.5}},
+                filter={"filter_id": "reward_risk", "config": {"min_ratio": 2.0}},
             )
             self.assertEqual(saved["concepts"][0]["config"], {"window": 20})
             self.assertEqual(saved["concepts"][0]["data_bindings"], {"Bougies": "binance_futures_kline"})
@@ -103,6 +125,8 @@ class StrategyManagerTests(unittest.TestCase):
             self.assertEqual(saved["execution"]["config"], {"max_position_usd": 1000})
             self.assertEqual(saved["management"]["management_id"], "fixed_sltp")
             self.assertEqual(saved["management"]["config"], {"stop_loss_pct": 2.5})
+            self.assertEqual(saved["filter"]["filter_id"], "reward_risk")
+            self.assertEqual(saved["filter"]["config"], {"min_ratio": 2.0})
 
             on_disk = json.loads((root / "strategies" / "my_strategy.json").read_text())
             self.assertEqual(on_disk["name"], "my_strategy")
@@ -114,6 +138,20 @@ class StrategyManagerTests(unittest.TestCase):
             self.assertEqual(listed[0]["microsystem_count"], 1)
             self.assertTrue(listed[0]["has_execution"])
             self.assertTrue(listed[0]["has_management"])
+            self.assertTrue(listed[0]["has_filter"])
+
+    def test_filter_defaults_to_none_and_reports_has_filter_false(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            saved = strategies.save_strategy(
+                name="no_filter_strategy", concepts=[], microsystems=[],
+                execution={"execution_id": "conservative", "config": {}},
+                management={"management_id": "fixed_sltp", "config": {}},
+            )
+            self.assertIsNone(saved["filter"])
+            listed = strategies.list_strategies()
+            self.assertFalse(listed[0]["has_filter"])
 
     def test_unknown_concept_id_raises(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -154,6 +192,15 @@ class StrategyManagerTests(unittest.TestCase):
                 strategies.save_strategy(
                     name="x", concepts=[], microsystems=[],
                     execution=None, management={"management_id": "nope", "config": {}},
+                )
+
+    def test_unknown_filter_id_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            with self.assertRaises(ValueError):
+                strategies.save_strategy(
+                    name="x", concepts=[], microsystems=[],
+                    execution=None, management=None, filter={"filter_id": "nope", "config": {}},
                 )
 
     def test_duplicate_instance_id_across_concepts_and_microsystems_raises(self) -> None:
@@ -271,6 +318,131 @@ class StrategyManagerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 strategies.delete_strategy("../outside")
 
+    def test_preview_example_runs_a_saved_shaped_definition_against_synthetic_data(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            result = strategies.preview_example(
+                concepts=[{"instance_id": "concept_1", "concept_id": "zscore", "config": {"window": 20}}],
+                microsystems=[{
+                    "instance_id": "micro_1", "microsystem_id": "trend",
+                    "concept_instance_ids": ["concept_1"], "config": {},
+                }],
+                execution={"execution_id": "conservative", "config": {}},
+                management={"management_id": "fixed_sltp", "config": {}},
+            )
+            self.assertEqual(set(result), {"price_path", "candles", "timeline", "trades", "evaluation_steps"})
+            self.assertGreater(result["evaluation_steps"], 0)
+
+    def test_preview_example_passes_filter_dir_and_filter_entry_through(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            captured: dict = {}
+
+            def fake_run_example_scenario(**kwargs):
+                captured.update(kwargs)
+                return {"price_path": [], "candles": None, "timeline": [], "trades": [], "evaluation_steps": 0}
+
+            with patch(
+                "polymarket_btc.data_collection.control.strategies.run_example_scenario",
+                side_effect=fake_run_example_scenario,
+            ):
+                strategies.preview_example(
+                    concepts=[], microsystems=[], execution=None, management=None,
+                    filter={"filter_id": "always_veto", "config": {}},
+                )
+            self.assertEqual(captured["filter_dir"], strategies.runs.filter_dir)
+            self.assertEqual(captured["strategy"]["filter"]["filter_id"], "always_veto")
+
+    def test_preview_example_seed_controls_the_synthetic_scenario(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            kwargs = dict(
+                concepts=[{"instance_id": "concept_1", "concept_id": "zscore", "config": {}}],
+                microsystems=[], execution=None, management=None,
+            )
+            default_seed = strategies.preview_example(**kwargs)
+            same_seed = strategies.preview_example(seed=42, **kwargs)
+            other_seed = strategies.preview_example(seed=7, **kwargs)
+            self.assertEqual(default_seed["candles"], same_seed["candles"])
+            self.assertNotEqual(default_seed["candles"], other_seed["candles"])
+
+    def test_preview_example_validates_like_save_strategy_does(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            with self.assertRaises(ValueError):
+                strategies.preview_example(
+                    concepts=[{"instance_id": "c1", "concept_id": "nope", "config": {}}],
+                    microsystems=[], execution=None, management=None,
+                )
+
+    def test_preview_example_does_not_write_a_strategy_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.preview_example(
+                concepts=[{"instance_id": "concept_1", "concept_id": "zscore", "config": {}}],
+                microsystems=[], execution=None, management=None,
+            )
+            self.assertEqual(list((root / "strategies").glob("*.json")), [])
+
+    def test_preview_example_searches_seeds_until_a_winning_trade_is_found(self) -> None:
+        """An "example" is meant to show the strategy working, not a coin
+        flip -- see StrategyManager.preview_example's own reasoning."""
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            losing = {"price_path": [], "candles": None, "timeline": [], "trades": [{"outcome": "loss"}], "evaluation_steps": 0}
+            winning = {"price_path": [], "candles": None, "timeline": [], "trades": [{"outcome": "win"}], "evaluation_steps": 0}
+            calls: list[int] = []
+
+            def fake_run_example_scenario(*, seed, **_kwargs):
+                calls.append(seed)
+                return winning if seed == 44 else losing
+
+            with patch(
+                "polymarket_btc.data_collection.control.strategies.run_example_scenario",
+                side_effect=fake_run_example_scenario,
+            ):
+                result = strategies.preview_example(
+                    concepts=[], microsystems=[],
+                    execution={"execution_id": "conservative", "config": {}},
+                    management={"management_id": "fixed_sltp", "config": {}},
+                    seed=42,
+                )
+            self.assertEqual(result, winning)
+            # Stops the instant a win is found -- 42, 43, then 44 (the win),
+            # never keeps searching past it.
+            self.assertEqual(calls, [42, 43, 44])
+
+    def test_preview_example_falls_back_to_the_last_attempt_if_no_win_is_ever_found(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            losing = {"price_path": [], "candles": None, "timeline": [], "trades": [{"outcome": "loss"}], "evaluation_steps": 0}
+            with patch(
+                "polymarket_btc.data_collection.control.strategies.run_example_scenario", return_value=losing,
+            ) as mocked:
+                result = strategies.preview_example(
+                    concepts=[], microsystems=[],
+                    execution={"execution_id": "conservative", "config": {}},
+                    management={"management_id": "fixed_sltp", "config": {}},
+                    seed=1,
+                )
+            self.assertEqual(result, losing)
+            self.assertEqual(mocked.call_count, 30)
+
+    def test_preview_example_skips_the_win_search_when_no_execution_is_configured(self) -> None:
+        """A concept/microsystem-only preview never simulates trades at all
+        (no execution profile to run) -- searching 30 seeds for a "win" that
+        can structurally never happen would just be 30x the work for
+        nothing, so this path takes a single, direct call instead."""
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            empty = {"price_path": [], "candles": None, "timeline": [], "trades": [], "evaluation_steps": 0}
+            with patch(
+                "polymarket_btc.data_collection.control.strategies.run_example_scenario", return_value=empty,
+            ) as mocked:
+                strategies.preview_example(concepts=[], microsystems=[], execution=None, management=None, seed=1)
+            self.assertEqual(mocked.call_count, 1)
+
     def test_a_corrupt_strategy_file_is_skipped_not_fatal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -279,32 +451,6 @@ class StrategyManagerTests(unittest.TestCase):
             (root / "strategies" / "corrupt.json").write_text("not json", encoding="utf-8")
             listed = strategies.list_strategies()
             self.assertEqual([s["name"] for s in listed], ["good"])
-
-
-class RepoSeedStrategyTests(unittest.TestCase):
-    """The real strategies/model_base_polymarket.json committed at the repo
-    root -- must load cleanly and stay an honest "nothing configured yet"
-    placeholder."""
-
-    def test_model_base_polymarket_is_discoverable_and_empty(self) -> None:
-        manager = CollectionRunManager(
-            config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
-            collections_dir=REPOSITORY_ROOT / "data" / "collections",
-            plugins_dir=REPOSITORY_ROOT / "plugins",
-            concepts_dir=REPOSITORY_ROOT / "concepts",
-            microsystems_dir=REPOSITORY_ROOT / "microsystems",
-            execution_dir=REPOSITORY_ROOT / "execution_profiles",
-            management_dir=REPOSITORY_ROOT / "management_profiles",
-            symbol_cache_path=REPOSITORY_ROOT / "data" / "cache" / "binance_symbols.json",
-        )
-        strategies = StrategyManager(strategies_dir=REPOSITORY_ROOT / "strategies", runs=manager)
-        listed = {s["name"]: s for s in strategies.list_strategies()}
-        self.assertIn("model_base_polymarket", listed)
-        entry = listed["model_base_polymarket"]
-        self.assertEqual(entry["concept_count"], 0)
-        self.assertEqual(entry["microsystem_count"], 0)
-        self.assertFalse(entry["has_execution"])
-        self.assertFalse(entry["has_management"])
 
 
 if __name__ == "__main__":

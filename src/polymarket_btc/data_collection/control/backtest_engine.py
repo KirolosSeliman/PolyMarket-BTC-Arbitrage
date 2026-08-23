@@ -30,6 +30,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
+import random
 
 from .backtest_data import read_records
 from .concepts import ConceptContext, ConceptInfo, discover_concepts
@@ -37,6 +38,7 @@ from .config_schema import resolve_config
 from .execution import ExecutionContext, ExecutionInfo, discover_execution_profiles
 from .management import ManagementContext, ManagementInfo, discover_management_profiles
 from .microsystems import MicrosystemContext, MicrosystemInfo, discover_microsystems
+from .strategy_filter import FilterContext, FilterInfo, discover_filter_profiles
 
 
 def _noop_log(_message: str) -> None:
@@ -383,9 +385,11 @@ def simulate_combo(
     execution_config: dict,
     management_info: ManagementInfo | None,
     management_config: dict,
+    filter_info: FilterInfo | None = None,
+    filter_config: dict | None = None,
     detail: bool = False,
 ) -> dict[str, object]:
-    """Replays execution -> management -> trade-outcome against a
+    """Replays execution -> management -> filter -> trade-outcome against a
     precomputed timeline for one parameter combination. Cheap by design --
     no concept/microsystem work happens here. `detail=True` additionally
     records each trade's own entry/exit for the "voir les trades pris"
@@ -393,11 +397,19 @@ def simulate_combo(
     open_trade/win-loss, just keeping the record instead of only counting
     it, so it costs nothing extra to compute (only to carry in the return
     value) and is only requested for the one combo a user can actually
-    inspect (see run_backtest), never for every combo in a sweep."""
+    inspect (see run_backtest), never for every combo in a sweep.
+
+    `filter_info` (None when the strategy has no filter -- every trade
+    management proposes opens unconditionally, exactly today's behavior)
+    runs last, once management has already computed a fully-resolved
+    proposed trade -- see strategy_filter.py's own module docstring for the
+    veto contract and why an exception there fails open rather than
+    closed."""
     price_cursor = 0
     open_trade: dict[str, object] | None = None
     trades = 0
     wins = 0
+    filter_vetoes = 0
     last_price: float | None = None
     last_ts: float | None = None
     trade_log: list[dict[str, object]] = []
@@ -412,6 +424,9 @@ def simulate_combo(
                 "exit_time": exit_time, "exit_price": exit_price,
                 "direction": open_trade["direction"], "outcome": outcome,
                 "stop_loss": open_trade["stop_loss"], "take_profit": open_trade["take_profit"],
+                "execution_log": open_trade.get("execution_log"),
+                "management_log": open_trade.get("management_log"),
+                "filter_log": open_trade.get("filter_log"),
             })
         open_trade = None
 
@@ -436,7 +451,17 @@ def simulate_combo(
             if hit is not None:
                 close(step.timestamp, price, hit)
 
-        exec_context = ExecutionContext(microsystems=step.microsystem_outputs, config=execution_config, log=_noop_log)
+        # Captured (rather than sent to _noop_log like every other context in
+        # this module) only when detail=True -- the one-combo replay a user
+        # can actually inspect, never a sweep -- so the script's own
+        # human-readable reasoning ("rebond confirmé sur un FVG ...", "SL=...
+        # (mèche), TP=...") reaches the preview's own readout instead of
+        # being thrown away, without adding any overhead to a real sweep.
+        exec_log_lines: list[str] = []
+        exec_context = ExecutionContext(
+            microsystems=step.microsystem_outputs, config=execution_config,
+            log=(exec_log_lines.append if detail else _noop_log),
+        )
         try:
             execution_output = execution_info.execute(exec_context)
         except Exception:
@@ -454,10 +479,13 @@ def simulate_combo(
 
         if open_trade is None and direction is not None:
             stop_loss = take_profit = None
+            management_output = None
+            management_log_lines: list[str] = []
             if management_info is not None:
                 mgmt_context = ManagementContext(
                     execution=execution_output, microsystems=step.microsystem_outputs,
-                    config=management_config, log=_noop_log,
+                    config=management_config,
+                    log=(management_log_lines.append if detail else _noop_log),
                 )
                 try:
                     management_output = management_info.manage(mgmt_context)
@@ -470,10 +498,32 @@ def simulate_combo(
                         stop_loss = price * (1 - sl_pct / 100) if direction == "long" else price * (1 + sl_pct / 100)
                     if isinstance(tp_pct, (int, float)) and not isinstance(tp_pct, bool):
                         take_profit = price * (1 + tp_pct / 100) if direction == "long" else price * (1 - tp_pct / 100)
-            open_trade = {
-                "direction": direction, "entry_time": step.timestamp, "entry_price": price,
-                "stop_loss": stop_loss, "take_profit": take_profit,
-            }
+
+            vetoed = False
+            filter_log_lines: list[str] = []
+            if filter_info is not None:
+                filter_context = FilterContext(
+                    execution=execution_output, management=management_output,
+                    direction=direction, entry_price=price, stop_loss=stop_loss, take_profit=take_profit,
+                    microsystems=step.microsystem_outputs, config=filter_config or {},
+                    log=(filter_log_lines.append if detail else _noop_log),
+                )
+                try:
+                    filter_output = filter_info.filter(filter_context)
+                    vetoed = isinstance(filter_output, dict) and bool(filter_output.get("veto"))
+                except Exception:
+                    vetoed = False  # fails open, see this function's own docstring
+
+            if vetoed:
+                filter_vetoes += 1
+            else:
+                open_trade = {
+                    "direction": direction, "entry_time": step.timestamp, "entry_price": price,
+                    "stop_loss": stop_loss, "take_profit": take_profit,
+                    "execution_log": exec_log_lines[-1] if exec_log_lines else None,
+                    "management_log": management_log_lines[-1] if management_log_lines else None,
+                    "filter_log": filter_log_lines[-1] if filter_log_lines else None,
+                }
 
     if open_trade is not None and last_price is not None:
         won = (
@@ -482,7 +532,10 @@ def simulate_combo(
         )
         close(last_ts, last_price, "win" if won else "loss")
 
-    result: dict[str, object] = {"trades": trades, "wins": wins, "win_rate": (wins / trades) if trades else None}
+    result: dict[str, object] = {
+        "trades": trades, "wins": wins, "win_rate": (wins / trades) if trades else None,
+        "filter_vetoes": filter_vetoes,
+    }
     if detail:
         result["trade_log"] = trade_log
     return result
@@ -540,15 +593,18 @@ _worker_state: dict[str, object] = {}
 
 def _init_worker(
     timeline: list[TimelineStep], price_path: list[dict], execution_dir: Path, management_dir: Path,
+    filter_dir: Path,
 ) -> None:
     _worker_state["timeline"] = timeline
     _worker_state["price_path"] = price_path
     _worker_state["execution_dir"] = execution_dir
     _worker_state["management_dir"] = management_dir
+    _worker_state["filter_dir"] = filter_dir
 
 
 def _run_combo_in_worker(
     execution_id: str, execution_config: dict, management_id: str | None, management_config: dict,
+    filter_id: str | None, filter_config: dict,
 ) -> dict[str, object]:
     execution_info = next(
         info for info in discover_execution_profiles(_worker_state["execution_dir"]) if info.id == execution_id
@@ -558,9 +614,15 @@ def _run_combo_in_worker(
         management_info = next(
             info for info in discover_management_profiles(_worker_state["management_dir"]) if info.id == management_id
         )
+    filter_info = None
+    if filter_id is not None:
+        filter_info = next(
+            info for info in discover_filter_profiles(_worker_state["filter_dir"]) if info.id == filter_id
+        )
     result = simulate_combo(
         _worker_state["timeline"], _worker_state["price_path"],
         execution_info, execution_config, management_info, management_config,
+        filter_info, filter_config,
     )
     return {"execution_config": execution_config, "management_config": management_config, **result}
 
@@ -572,6 +634,7 @@ def run_backtest(
     microsystems_dir: Path,
     execution_dir: Path,
     management_dir: Path,
+    filter_dir: Path,
     data_requirements_for: Callable[[list[str]], list[dict[str, object]]],
     manifests: list[dict],
     instrument: str,
@@ -582,6 +645,7 @@ def run_backtest(
     management_sweep: Mapping[str, object],
     execution_config: Mapping[str, object] = {},
     management_config: Mapping[str, object] = {},
+    filter_config: Mapping[str, object] = {},
     max_workers: int | None = None,
     on_progress: Callable[[float], None] | None = None,
 ) -> dict[str, object]:
@@ -590,11 +654,20 @@ def run_backtest(
     almost always the dominant cost, see its docstring) covers 0..0.9;
     the sweep's combos completing (or, for a single combo, one immediate
     jump) covers the remaining 0.9..1.0. A rough split, not a promise --
-    good enough for a UI progress bar/ETA, not a scheduling guarantee."""
+    good enough for a UI progress bar/ETA, not a scheduling guarantee.
+
+    filter_config is not part of the sweep (unlike execution_config/
+    management_config, whose sweep-expanded values `combos` iterates) --
+    the strategy's own saved filter config applies as one fixed value
+    across every combo, matching how execution/management's own non-swept
+    fields already work, and avoiding a third partner in the sweep's
+    cartesian merge (see the `combos` comprehension below, already fragile
+    with just two)."""
     concept_infos = {info.id: info for info in discover_concepts(concepts_dir)}
     microsystem_infos = {info.id: info for info in discover_microsystems(microsystems_dir)}
     execution_infos = {info.id: info for info in discover_execution_profiles(execution_dir)}
     management_infos = {info.id: info for info in discover_management_profiles(management_dir)}
+    filter_infos = {info.id: info for info in discover_filter_profiles(filter_dir)}
 
     execution_entry = strategy.get("execution")
     if execution_entry is None:
@@ -605,6 +678,9 @@ def run_backtest(
 
     management_entry = strategy.get("management")
     management_info = management_infos.get(management_entry["management_id"]) if management_entry else None
+
+    filter_entry = strategy.get("filter")
+    filter_info = filter_infos.get(filter_entry["filter_id"]) if filter_entry else None
 
     concept_requirements = {
         cid: data_requirements_for(list(info.data_sources)) for cid, info in concept_infos.items()
@@ -632,6 +708,11 @@ def run_backtest(
     # mark price as a last resort. A key already in records_by_key (the
     # strategy needed it anyway) is reused rather than fetched twice.
     price_path: list[dict[str, object]] = []
+    # Real OHLC (klines only -- aggTrades/mark price have no candle
+    # structure to give) lets the replay chart draw actual candlesticks
+    # when zoomed in close, instead of only ever a price line. None when
+    # the winning price source doesn't carry it.
+    candles: list[dict[str, object]] | None = None
     for candidate_key, price_field in (
         ("binance_futures_trade", "price"),
         ("binance_futures_kline", "close"),
@@ -645,6 +726,14 @@ def run_backtest(
             for record in records if price_field in record
         ]
         if price_path:
+            candles = [
+                {
+                    "timestamp": record["timestamp"], "open": record["open"], "high": record["high"],
+                    "low": record["low"], "close": record["close"],
+                }
+                for record in records
+                if all(field in record for field in ("open", "high", "low", "close"))
+            ] or None
             break
     if not price_path:
         raise ValueError(
@@ -672,6 +761,12 @@ def run_backtest(
         })
         if management_info is not None else {}
     )
+    filter_fixed = (
+        resolve_config(filter_info.config_schema, {
+            **((filter_entry or {}).get("config") or {}), **filter_config,
+        })
+        if filter_info is not None else {}
+    )
 
     combos = [
         {
@@ -692,6 +787,7 @@ def run_backtest(
         combo = combos[0]
         result = simulate_combo(
             timeline, price_path, execution_info, combo["execution_config"], management_info, combo["management_config"],
+            filter_info, filter_fixed,
         )
         results.append({**combo, **result})
         if on_progress is not None:
@@ -699,12 +795,13 @@ def run_backtest(
     else:
         with ProcessPoolExecutor(
             max_workers=max_workers, initializer=_init_worker,
-            initargs=(timeline, price_path, execution_dir, management_dir),
+            initargs=(timeline, price_path, execution_dir, management_dir, filter_dir),
         ) as pool:
             futures = {
                 pool.submit(
                     _run_combo_in_worker, execution_info.id, combo["execution_config"],
                     management_info.id if management_info else None, combo["management_config"],
+                    filter_info.id if filter_info else None, filter_fixed,
                 ): combo
                 for combo in combos
             }
@@ -732,10 +829,11 @@ def run_backtest(
     if best is not None:
         detailed = simulate_combo(
             timeline, price_path, execution_info, best["execution_config"],
-            management_info, best["management_config"], detail=True,
+            management_info, best["management_config"], filter_info, filter_fixed, detail=True,
         )
         replay = {
             "price_path": price_path,
+            "candles": candles,
             "timeline": [
                 {"timestamp": step.timestamp, "concepts": step.concept_outputs, "microsystems": step.microsystem_outputs}
                 for step in timeline
@@ -748,7 +846,204 @@ def run_backtest(
     return {"results": results, "best": best, "evaluation_steps": len(timeline), "replay": replay}
 
 
+# --- Example scenarios: "did I wire this correctly," not a real backtest --
+# runs a strategy (or any subset of it, e.g. one concept in isolation, for
+# the builder's own per-item preview) against invented data instead of a
+# real collection, so a strategy under construction can be sanity-checked
+# before any data has even been collected for it. Reuses build_timeline/
+# simulate_combo exactly as run_backtest does; only *where the data comes
+# from* differs, so the result is genuinely what the strategy's own scripts
+# actually do, not a mocked-up approximation of it. ---
+
+_SYNTHETIC_BASE_KEYS = ("binance_futures_kline", "binance_futures_trade")
+
+
+def _synthetic_kline_records(
+    *, count: int, candle_seconds: float, seed: int, start_price: float,
+) -> list[dict[str, object]]:
+    """A reproducible, plausible-looking OHLC series -- not hand-fitted to
+    any one concept's pattern (this has to work for whatever a strategy
+    author writes, not just the ICT concepts shipped in this repo), just
+    volatile enough that gap- and stop-hunt-like structures have a real
+    chance to occur on their own. Occasional larger "impulse" candles
+    (volatility clustering, the way real markets actually move) make that
+    meaningfully more likely than a flat-variance random walk would."""
+    rng = random.Random(seed)
+    candles: list[dict[str, object]] = []
+    price = start_price
+    ts = 0.0
+    for _ in range(count):
+        is_impulse = rng.random() < 0.08
+        pct = rng.gauss(0, 0.006 if is_impulse else 0.0015)
+        open_price = price
+        close_price = max(0.01, open_price * (1 + pct))
+        wick_reach = abs(rng.gauss(0, 0.0015))
+        high = max(open_price, close_price) * (1 + wick_reach)
+        low = min(open_price, close_price) * (1 - wick_reach)
+        close_time = ts + candle_seconds - 0.001
+        candles.append({
+            "open_time": ts, "close_time": close_time, "timestamp": close_time,
+            "open": round(open_price, 2), "high": round(high, 2),
+            "low": round(low, 2), "close": round(close_price, 2),
+            "volume": round(abs(rng.gauss(10, 3)) + 0.1, 3),
+        })
+        price = close_price
+        ts += candle_seconds
+    return candles
+
+
+def _synthetic_trade_records(
+    candles: list[dict[str, object]], *, seed: int, trades_per_candle: int = 4,
+) -> list[dict[str, object]]:
+    """A handful of trades per synthetic candle, interpolated within its
+    own [low, high] range and time span -- for a concept that reads
+    binance_futures_trade directly instead of klines. Derived from the
+    same candles (not an independent random series) so both keys describe
+    one consistent invented market, exactly like real trades and real
+    klines for the same instrument always agree."""
+    rng = random.Random(seed + 1)
+    trades: list[dict[str, object]] = []
+    for candle in candles:
+        span = candle["close_time"] - candle["open_time"]
+        for i in range(trades_per_candle):
+            frac = (i + rng.random()) / trades_per_candle
+            price = rng.uniform(candle["low"], candle["high"])
+            trades.append({
+                "price": round(price, 2), "quantity": round(abs(rng.gauss(0.5, 0.2)) + 0.01, 3),
+                "timestamp": candle["open_time"] + frac * span,
+                "taker_side": rng.choice(["buy", "sell"]),
+            })
+    return trades
+
+
+def run_example_scenario(
+    *,
+    strategy: dict,
+    concepts_dir: Path,
+    microsystems_dir: Path,
+    execution_dir: Path,
+    management_dir: Path,
+    filter_dir: Path,
+    data_requirements_for: Callable[[list[str]], list[dict[str, object]]],
+    cadence_seconds: float = 60.0,
+    candle_count: int = 400,
+    seed: int = 42,
+) -> dict[str, object]:
+    """Same replay shape run_backtest's own `"replay"` field returns
+    (price_path, candles, timeline, trades) -- built from synthetic data
+    instead of a real collection, so the exact chart the backtest page
+    already draws can render this too, unmodified. `strategy` doesn't have
+    to be a complete, saved strategy: the builder's own per-concept/
+    per-microsystem "i" preview passes just the one instance being
+    inspected (plus, for a microsystem, whichever concept instances feed
+    it) with execution/management left out -- trades stay empty, but the
+    concept/microsystem outputs on the chart are exactly what that one
+    script actually does against a real-shaped input."""
+    concept_infos = {info.id: info for info in discover_concepts(concepts_dir)}
+    microsystem_infos = {info.id: info for info in discover_microsystems(microsystems_dir)}
+    execution_infos = {info.id: info for info in discover_execution_profiles(execution_dir)}
+    management_infos = {info.id: info for info in discover_management_profiles(management_dir)}
+    filter_infos = {info.id: info for info in discover_filter_profiles(filter_dir)}
+
+    concept_requirements = {
+        cid: data_requirements_for(list(info.data_sources)) for cid, info in concept_infos.items()
+    }
+    microsystem_requirements = {
+        mid: data_requirements_for(list(info.data_inputs)) for mid, info in microsystem_infos.items()
+    }
+
+    keys = required_concrete_keys(strategy, concept_infos, microsystem_infos, data_requirements_for)
+    needed_base_keys = {key.split(":", 1)[0] for key in keys}
+
+    # seed_klines is the one series every synthetic key derives from, so a
+    # strategy needing both klines and trades still sees one internally
+    # consistent invented market rather than two unrelated random walks.
+    # Always computed (cheap, and start_ts/end_ts need it regardless) but
+    # only *exposed* under a base key the strategy's own resolved instances
+    # actually asked for -- mirrors how a real collection only ever has
+    # data for what was actually collected. Concretely: a strategy built
+    # purely on klines never gets trades fabricated for it, so the
+    # price-path fallback below naturally lands on kline close price and
+    # the chart gets real OHLC candles -- exactly what a genuinely
+    # kline-only real backtest would show too.
+    seed_klines = _synthetic_kline_records(count=candle_count, candle_seconds=cadence_seconds, seed=seed, start_price=100.0)
+    synthetic_by_base_key: dict[str, list[dict[str, object]]] = {}
+    if "binance_futures_kline" in needed_base_keys:
+        synthetic_by_base_key["binance_futures_kline"] = seed_klines
+    if "binance_futures_trade" in needed_base_keys:
+        synthetic_by_base_key["binance_futures_trade"] = _synthetic_trade_records(seed_klines, seed=seed)
+
+    # A compound key ("binance_futures_kline:ETH") describes a different
+    # asset than the bare key, but there's no "real" ETH here either --
+    # every asset gets the same invented series, keyed by its own base type
+    # only, same tolerance discover_concepts/read_records already have for
+    # keys outside their own known set (silently empty, never a crash).
+    records_by_key: dict[str, list[dict[str, object]]] = {
+        key: list(synthetic_by_base_key.get(key.split(":", 1)[0], [])) for key in keys
+    }
+
+    start_ts = seed_klines[0]["open_time"] if seed_klines else 0.0
+    end_ts = seed_klines[-1]["timestamp"] if seed_klines else 0.0
+
+    # Mirrors run_backtest's own price-path fallback chain (trade fidelity
+    # first, then kline close) minus mark_price, which has no synthetic
+    # series here -- nothing in this scenario is ever priced from it.
+    price_path: list[dict[str, object]] = []
+    candles_out: list[dict[str, object]] | None = None
+    for candidate_key, price_field in (("binance_futures_trade", "price"), ("binance_futures_kline", "close")):
+        records = synthetic_by_base_key.get(candidate_key, [])
+        candidates = [{"timestamp": r["timestamp"], "price": r[price_field]} for r in records if price_field in r]
+        if candidates:
+            price_path = candidates
+            if candidate_key == "binance_futures_kline":
+                candles_out = [
+                    {"timestamp": r["timestamp"], "open": r["open"], "high": r["high"], "low": r["low"], "close": r["close"]}
+                    for r in records
+                ]
+            break
+
+    timeline = build_timeline(
+        strategy, concept_infos, microsystem_infos, records_by_key,
+        concept_requirements, microsystem_requirements, start_ts, end_ts, cadence_seconds,
+    )
+
+    trade_log: list[dict[str, object]] = []
+    execution_entry = strategy.get("execution")
+    if execution_entry is not None and price_path:
+        execution_info = execution_infos.get(execution_entry["execution_id"])
+        if execution_info is not None:
+            management_entry = strategy.get("management")
+            management_info = management_infos.get(management_entry["management_id"]) if management_entry else None
+            filter_entry = strategy.get("filter")
+            filter_info = filter_infos.get(filter_entry["filter_id"]) if filter_entry else None
+            execution_fixed = resolve_config(execution_info.config_schema, execution_entry.get("config") or {})
+            management_fixed = (
+                resolve_config(management_info.config_schema, (management_entry or {}).get("config") or {})
+                if management_info is not None else {}
+            )
+            filter_fixed = (
+                resolve_config(filter_info.config_schema, (filter_entry or {}).get("config") or {})
+                if filter_info is not None else {}
+            )
+            detailed = simulate_combo(
+                timeline, price_path, execution_info, execution_fixed,
+                management_info, management_fixed, filter_info, filter_fixed, detail=True,
+            )
+            trade_log = detailed["trade_log"]
+
+    return {
+        "price_path": price_path,
+        "candles": candles_out,
+        "timeline": [
+            {"timestamp": step.timestamp, "concepts": step.concept_outputs, "microsystems": step.microsystem_outputs}
+            for step in timeline
+        ],
+        "trades": trade_log,
+        "evaluation_steps": len(timeline),
+    }
+
+
 __all__ = [
     "build_timeline", "expand_numeric_range", "expand_sweep", "normalize_direction",
-    "required_concrete_keys", "run_backtest", "simulate_combo", "TimelineStep",
+    "required_concrete_keys", "run_backtest", "run_example_scenario", "simulate_combo", "TimelineStep",
 ]

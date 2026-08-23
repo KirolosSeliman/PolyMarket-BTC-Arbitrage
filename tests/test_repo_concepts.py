@@ -16,6 +16,7 @@ from pathlib import Path
 import unittest
 
 from polymarket_btc.data_collection.control.concepts import ConceptContext, discover_concepts
+from polymarket_btc.data_collection.control.management import ManagementContext, discover_management_profiles
 from polymarket_btc.data_collection.control.microsystems import MicrosystemContext, discover_microsystems
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -138,12 +139,70 @@ class FvgSweepReversalMicrosystemTests(unittest.TestCase):
         self.assertEqual(len(result["setups"]), 1)
         self.assertEqual(result["dernier_signal"], "haussier")
 
+    def test_last_price_is_propagated_from_the_concept_outputs(self) -> None:
+        """An execution profile only ever receives context.microsystems, never
+        context.concepts (see fvg_rebound_entry.py) -- without this, no
+        execution profile downstream of this microsystem could ever confirm a
+        rebound against the current price."""
+        result = self._compute({"last_price": 101.5}, {"last_price": 202.0})
+        self.assertEqual(result["last_price"], 101.5)  # fvg's own last_price wins when both are present
+
+    def test_last_price_falls_back_to_the_sweep_concept_when_fvg_lacks_it(self) -> None:
+        result = self._compute({}, {"last_price": 202.0})
+        self.assertEqual(result["last_price"], 202.0)
+
     def test_missing_candle_seconds_from_both_concepts_yields_no_setups(self) -> None:
         result = self._compute(
             {"fvgs": [{"direction": "bearish", "high": 100, "low": 99, "formed_at": 0}]},
             {"sweeps": [{"direction": "bullish", "level": 99, "swept_at": 60}]},
         )
-        self.assertEqual(result, {"setups": [], "dernier_signal": "neutre"})
+        self.assertEqual(result, {"setups": [], "dernier_signal": "neutre", "last_price": None})
+
+
+class FvgStopLegTargetManagementTests(unittest.TestCase):
+    """The backtest engine only ever recognizes stop_loss_pct/take_profit_pct
+    from a management profile's return value (see simulate_combo in
+    backtest_engine.py and docs/nouveau_management_prompt.md's "Forme
+    reconnue" section) -- this profile computes real ICT price levels (an
+    entry-candle wick, a liquidity-pool target) internally, which is the
+    whole point of it, but has to re-express them as a % distance from the
+    entry price at the very end, or the engine silently ignores them and
+    every trade rides unmanaged to a signal flip or the end of the range."""
+
+    def _compute(self, execution: dict, microsystems: dict, config: dict | None = None) -> dict:
+        infos = {info.id: info for info in discover_management_profiles(REPOSITORY_ROOT / "management_profiles")}
+        info = infos["fvg_stop_leg_target"]
+        context = ManagementContext(execution=execution, microsystems=microsystems, config=config or {}, log=_noop_log)
+        return info.manage(context)
+
+    def test_returns_stop_loss_pct_and_take_profit_pct_not_absolute_levels(self) -> None:
+        result = self._compute(
+            execution={"direction": "haussier", "fvg": {"direction": "bullish", "high": 110, "low": 100, "fill_pct": 0}},
+            microsystems={"m1": {"last_price": 105, "active_pools_above": [{"side": "buyside", "level": 130}]}},
+        )
+        self.assertNotIn("stop_loss", result)
+        self.assertNotIn("take_profit", result)
+        self.assertIn("stop_loss_pct", result)
+        self.assertIn("take_profit_pct", result)
+        # Unconfirmed (price hasn't advanced 20% beyond the zone) -> SL sits
+        # on the far edge of the zone (100), 5/105 below the 105 entry.
+        self.assertAlmostEqual(result["stop_loss_pct"], (5 / 105) * 100, places=6)
+        # TP targets the buyside pool at 130, 25/105 above the 105 entry.
+        self.assertAlmostEqual(result["take_profit_pct"], (25 / 105) * 100, places=6)
+
+    def test_neutral_direction_returns_none_for_both_pct_fields(self) -> None:
+        result = self._compute(execution={"direction": "neutre"}, microsystems={})
+        self.assertEqual(result, {"stop_loss_pct": None, "take_profit_pct": None, "reward_risk_ratio": None})
+
+    def test_reward_risk_below_minimum_returns_none_pct_fields(self) -> None:
+        result = self._compute(
+            execution={"direction": "haussier", "fvg": {"direction": "bullish", "high": 110, "low": 100, "fill_pct": 0}},
+            microsystems={"m1": {"last_price": 105, "active_pools_above": [{"side": "buyside", "level": 106}]}},
+            config={"min_reward_risk_ratio": 5},
+        )
+        self.assertIsNone(result["stop_loss_pct"])
+        self.assertIsNone(result["take_profit_pct"])
+        self.assertIsNotNone(result["reward_risk_ratio"])
 
 
 if __name__ == "__main__":

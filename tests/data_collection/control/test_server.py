@@ -6,9 +6,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from polymarket_btc.data_collection.control.concept_refinement import ConceptRefinementManager
+from polymarket_btc.data_collection.control.microsystem_refinement import MicrosystemRefinementManager
 from polymarket_btc.data_collection.control.runs import CollectionRunManager
 from polymarket_btc.data_collection.control.server import ControlPanelServer
 from polymarket_btc.data_collection.control.strategies import StrategyManager
+from polymarket_btc.data_collection.control.strategy_filter_refinement import StrategyFilterRefinementManager
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
@@ -39,11 +42,25 @@ class ControlPanelServerTests(unittest.IsolatedAsyncioTestCase):
             microsystems_dir=REPOSITORY_ROOT / "microsystems",
             execution_dir=REPOSITORY_ROOT / "execution_profiles",
             management_dir=REPOSITORY_ROOT / "management_profiles",
+            filter_dir=REPOSITORY_ROOT / "filter_profiles",
         )
         self.strategies = StrategyManager(
             strategies_dir=REPOSITORY_ROOT / "strategies", runs=self.runs,
         )
-        self.server = ControlPanelServer(runs=self.runs, strategies=self.strategies, host="127.0.0.1", port=0)
+        self.concept_feedback = ConceptRefinementManager(
+            feedback_dir=root / "concept_feedback", runs=self.runs,
+        )
+        self.microsystem_feedback = MicrosystemRefinementManager(
+            feedback_dir=root / "microsystem_feedback", runs=self.runs,
+        )
+        self.filter_feedback = StrategyFilterRefinementManager(
+            feedback_dir=root / "filter_feedback", runs=self.runs, strategies=self.strategies,
+        )
+        self.server = ControlPanelServer(
+            runs=self.runs, strategies=self.strategies, concept_feedback=self.concept_feedback,
+            microsystem_feedback=self.microsystem_feedback, filter_feedback=self.filter_feedback,
+            host="127.0.0.1", port=0,
+        )
         await self.server.start()
 
     async def asyncTearDown(self) -> None:
@@ -246,6 +263,67 @@ class ControlPanelServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("500", head)
         self.assertIn("error", body)
 
+    async def test_strategy_example_preview_runs_the_real_fvg_concept_with_real_candles(self) -> None:
+        """Uses the repo's own shipped fvg concept (reads binance_futures_kline
+        directly, not synthesized trades) end-to-end through the real HTTP
+        route -- the builder's per-concept "i" preview sends exactly this
+        shape: one concept instance alone, no microsystems/execution/
+        management."""
+        head, body = await self._request(
+            "POST", "/api/strategies/example",
+            json_body={
+                "concepts": [{"instance_id": "c1", "concept_id": "fvg", "config": {}}],
+                "microsystems": [], "execution": None, "management": None,
+            },
+        )
+        self.assertIn("200 OK", head)
+        self.assertIsNotNone(body["candles"])
+        self.assertGreater(len(body["candles"]), 0)
+        self.assertGreater(body["evaluation_steps"], 0)
+        self.assertIn("c1", body["timeline"][-1]["concepts"])
+        self.assertEqual(body["trades"], [])
+
+    async def test_strategy_example_preview_unknown_concept_is_400(self) -> None:
+        head, body = await self._request(
+            "POST", "/api/strategies/example",
+            json_body={
+                "concepts": [{"instance_id": "c1", "concept_id": "nope", "config": {}}],
+                "microsystems": [], "execution": None, "management": None,
+            },
+        )
+        self.assertIn("400", head)
+        self.assertIn("error", body)
+
+    async def test_strategy_example_preview_invalid_body_shape_is_400(self) -> None:
+        head, body = await self._request(
+            "POST", "/api/strategies/example", json_body={"concepts": "not-a-list"},
+        )
+        self.assertIn("400", head)
+        self.assertIn("error", body)
+
+    async def test_strategy_example_preview_seed_changes_the_scenario(self) -> None:
+        body_for = {
+            "concepts": [{"instance_id": "c1", "concept_id": "fvg", "config": {}}],
+            "microsystems": [], "execution": None, "management": None,
+        }
+        _head, default_seed = await self._request("POST", "/api/strategies/example", json_body=body_for)
+        _head, explicit_same_seed = await self._request(
+            "POST", "/api/strategies/example", json_body={**body_for, "seed": 42},
+        )
+        _head, other_seed = await self._request(
+            "POST", "/api/strategies/example", json_body={**body_for, "seed": 7},
+        )
+        self.assertEqual(default_seed["candles"], explicit_same_seed["candles"])
+        self.assertNotEqual(default_seed["candles"], other_seed["candles"])
+
+    async def test_strategy_example_preview_invalid_seed_is_400(self) -> None:
+        head, body = await self._request(
+            "POST", "/api/strategies/example",
+            json_body={"concepts": [], "microsystems": [], "execution": None, "management": None, "seed": "nope"},
+        )
+        self.assertIn("400", head)
+        self.assertIn("error", body)
+
 
 class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
     """Isolated plugins_dir -- must never write into the repo's real plugins/
@@ -261,6 +339,7 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.microsystems_dir = root / "microsystems"
         self.execution_dir = root / "execution_profiles"
         self.management_dir = root / "management_profiles"
+        self.filter_dir = root / "filter_profiles"
         self.concept_prompt_path = root / "concept_prompt.md"
         self.concept_prompt_path.write_text("# Prompt de concept de test\ncontenu.", encoding="utf-8")
         self.microsystem_prompt_path = root / "microsystem_prompt.md"
@@ -269,6 +348,8 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.execution_prompt_path.write_text("# Prompt d'exécution de test\ncontenu.", encoding="utf-8")
         self.management_prompt_path = root / "management_prompt.md"
         self.management_prompt_path.write_text("# Prompt de gestion de test\ncontenu.", encoding="utf-8")
+        self.filter_prompt_path = root / "filter_prompt.md"
+        self.filter_prompt_path.write_text("# Prompt de filtre de test\ncontenu.", encoding="utf-8")
         self.runs = CollectionRunManager(
             config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
             collections_dir=root / "collections",
@@ -278,16 +359,29 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
             microsystems_dir=self.microsystems_dir,
             execution_dir=self.execution_dir,
             management_dir=self.management_dir,
+            filter_dir=self.filter_dir,
         )
         self.strategies_dir = root / "strategies"
         self.strategies = StrategyManager(strategies_dir=self.strategies_dir, runs=self.runs)
+        self.concept_feedback = ConceptRefinementManager(
+            feedback_dir=root / "concept_feedback", runs=self.runs,
+        )
+        self.microsystem_feedback = MicrosystemRefinementManager(
+            feedback_dir=root / "microsystem_feedback", runs=self.runs,
+        )
+        self.filter_feedback = StrategyFilterRefinementManager(
+            feedback_dir=root / "filter_feedback", runs=self.runs, strategies=self.strategies,
+        )
         self.server = ControlPanelServer(
-            runs=self.runs, strategies=self.strategies, host="127.0.0.1", port=0,
+            runs=self.runs, strategies=self.strategies, concept_feedback=self.concept_feedback,
+            microsystem_feedback=self.microsystem_feedback, filter_feedback=self.filter_feedback,
+            host="127.0.0.1", port=0,
             prompt_doc_path=self.prompt_path,
             concept_prompt_doc_path=self.concept_prompt_path,
             microsystem_prompt_doc_path=self.microsystem_prompt_path,
             execution_prompt_doc_path=self.execution_prompt_path,
             management_prompt_doc_path=self.management_prompt_path,
+            filter_prompt_doc_path=self.filter_prompt_path,
         )
         await self.server.start()
 
@@ -321,7 +415,11 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Prompt de test", body["content"])
 
     async def test_plugin_prompt_endpoint_404s_when_unconfigured(self) -> None:
-        server = ControlPanelServer(runs=self.runs, strategies=self.strategies, host="127.0.0.1", port=0)
+        server = ControlPanelServer(
+            runs=self.runs, strategies=self.strategies, concept_feedback=self.concept_feedback,
+            microsystem_feedback=self.microsystem_feedback, filter_feedback=self.filter_feedback,
+            host="127.0.0.1", port=0,
+        )
         await server.start()
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
@@ -904,6 +1002,530 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(status["error"])
         self.assertEqual(status["result"]["best"]["trades"], 1)
         self.assertEqual(status["result"]["best"]["wins"], 1)
+
+    async def test_concept_refine_page_serves_200(self) -> None:
+        head, _body = await self._request("GET", "/concept/refine?id=whatever")
+        self.assertIn("200 OK", head)
+
+    def _write_zone_concept_fixture(self, up_candle_count: int) -> None:
+        """Writes a concept (via the filesystem directly, not the import
+        endpoint -- equivalent end state, less noise in a test that's
+        mostly about the /api/concept-refine/* routes) that emits one zone
+        candidate per up-candle, plus enough real collected kline data to
+        find up_candle_count of them."""
+        self.concepts_dir.mkdir(parents=True, exist_ok=True)
+        (self.concepts_dir / "zone_route_test.py").write_text(
+            'CONCEPT_INFO = {"label": "x", "description": "y", "data_sources": ["binance_futures_kline"]}\n'
+            "def compute(context):\n"
+            '    candles = context.data.get("binance_futures_kline") or []\n'
+            "    zones = []\n"
+            "    for c in candles:\n"
+            '        if c["close"] > c["open"]:\n'
+            '            zones.append({"direction": "bullish", "high": c["high"], "low": c["low"], "formed_at": c["timestamp"]})\n'
+            '    return {"zones": zones}\n',
+            encoding="utf-8",
+        )
+        run_dir = self.runs.collections_dir / "run1"
+        from decimal import Decimal
+        import time as time_module
+
+        from polymarket_btc.data_collection.market_data.models import (
+            BinanceKlinePayload, EventSource, EventStream, MarketDataEvent,
+        )
+        from polymarket_btc.data_collection.market_data.storage import RawEventStorage
+
+        storage = RawEventStorage(run_dir, zstd_level=3)
+        candles = []
+        t = 0.0
+        for i in range(up_candle_count):
+            candles.append((t, 100, 101, 99, 99))  # down filler
+            t += 60.0
+            candles.append((t, 99, 103 + i, 99, 102))  # up
+            t += 60.0
+        for i, (ts, o, h, low, c) in enumerate(candles):
+            close_ns = int(ts * 1e9)
+            payload = BinanceKlinePayload(
+                market="futures", interval="1m", open_time_ns=close_ns - 60_000_000_000, close_time_ns=close_ns,
+                open=Decimal(str(o)), high=Decimal(str(h)), low=Decimal(str(low)), close=Decimal(str(c)),
+                base_volume=Decimal("1"), quote_volume=Decimal("1"), trade_count=1, is_closed=True,
+            )
+            event = MarketDataEvent(
+                schema_version=2, ingest_sequence=i, event_id=f"kline-{i}",
+                source=EventSource.BINANCE_FUTURES_KLINE, stream=EventStream.BINANCE_KLINE,
+                instrument="BTCUSDT", source_timestamp_ns=close_ns, server_timestamp_ns=close_ns,
+                received_wall_timestamp_ns=close_ns, received_monotonic_ns=time_module.monotonic_ns(),
+                source_sequence=None, timeframe=None, market_id=None, condition_id=None,
+                asset_id=None, outcome=None, payload=payload,
+            )
+            storage.write(event)
+        storage.close()
+        from datetime import UTC, datetime
+        manifest = {
+            "mode": "access", "sources": ["binance_futures_kline"], "plugins": [],
+            # Must bound the *actual* candle timestamps above (epoch-relative,
+            # not a real calendar date) -- combined_coverage/read_records
+            # only ever look at this declared range, not the raw data itself,
+            # so a mismatch here silently scans zero records.
+            "start_ts_utc": datetime.fromtimestamp(-60.0, tz=UTC).isoformat(),
+            "end_ts_utc": datetime.fromtimestamp(t + 60.0, tz=UTC).isoformat(),
+            "data_dir": str(run_dir),
+        }
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    async def _run_scan_and_wait(self, concept_id: str) -> dict:
+        head, body = await self._request(
+            "POST", "/api/concept-refine/scan", json_body={"concept_id": concept_id},
+        )
+        self.assertIn("200 OK", head)
+        job_id = body["job_id"]
+        status = None
+        for _ in range(200):
+            _head, status = await self._request("GET", f"/api/concept-refine/scan-status?job_id={job_id}")
+            if status["done"]:
+                break
+            await asyncio.sleep(0.02)
+        self.assertTrue(status["done"])
+        return status
+
+    async def test_concept_refine_full_round_trip(self) -> None:
+        self._write_zone_concept_fixture(up_candle_count=12)
+        status = await self._run_scan_and_wait("zone_route_test")
+        self.assertIsNone(status["error"])
+        self.assertEqual(status["result"]["added"], 12)
+
+        # Below the gate: 9 "oui" only -- no "non" at all yet.
+        for _ in range(9):
+            _head, next_body = await self._request(
+                "POST", "/api/concept-refine/next", json_body={"concept_id": "zone_route_test"},
+            )
+            instance = next_body["instance"]
+            await self._request(
+                "POST", "/api/concept-refine/label",
+                json_body={
+                    "concept_id": "zone_route_test", "shape": instance["shape"], "node": instance["node"],
+                    "trigger_ts": instance["trigger_ts"], "label": "oui",
+                },
+            )
+        head, prompt_body = await self._request(
+            "POST", "/api/concept-refine/prompt", json_body={"concept_id": "zone_route_test"},
+        )
+        self.assertIn("400 Bad Request", head)
+
+        # The 10th example, labeled "non" -- now both gates (>=10 total,
+        # >=1 non) are met.
+        _head, next_body = await self._request(
+            "POST", "/api/concept-refine/next", json_body={"concept_id": "zone_route_test"},
+        )
+        instance = next_body["instance"]
+        head, label_body = await self._request(
+            "POST", "/api/concept-refine/label",
+            json_body={
+                "concept_id": "zone_route_test", "shape": instance["shape"], "node": instance["node"],
+                "trigger_ts": instance["trigger_ts"], "label": "non", "note": "il manque la nuance X",
+            },
+        )
+        self.assertIn("200 OK", head)
+        self.assertTrue(label_body["eligible_for_prompt"])
+
+        head, prompt_body = await self._request(
+            "POST", "/api/concept-refine/prompt", json_body={"concept_id": "zone_route_test"},
+        )
+        self.assertIn("200 OK", head)
+        self.assertIn("il manque la nuance X", prompt_body["content"])
+
+    async def test_concept_refine_label_non_without_note_is_400(self) -> None:
+        self._write_zone_concept_fixture(up_candle_count=1)
+        await self._run_scan_and_wait("zone_route_test")
+        _head, next_body = await self._request(
+            "POST", "/api/concept-refine/next", json_body={"concept_id": "zone_route_test"},
+        )
+        instance = next_body["instance"]
+        head, body = await self._request(
+            "POST", "/api/concept-refine/label",
+            json_body={
+                "concept_id": "zone_route_test", "shape": instance["shape"], "node": instance["node"],
+                "label": "non", "note": "",
+            },
+        )
+        self.assertIn("400 Bad Request", head)
+
+    async def test_concept_refine_scan_unknown_concept_reports_error_via_status(self) -> None:
+        status = await self._run_scan_and_wait("no_such_concept")
+        self.assertIsNotNone(status["error"])
+        self.assertIn("no_such_concept", status["error"])
+
+    async def test_concept_refine_next_missing_concept_id_is_400(self) -> None:
+        head, _body = await self._request("POST", "/api/concept-refine/next", json_body={})
+        self.assertIn("400 Bad Request", head)
+
+    async def test_microsystem_refine_page_serves_200(self) -> None:
+        head, _body = await self._request("GET", "/microsystem/refine?id=whatever")
+        self.assertIn("200 OK", head)
+
+    def _write_setup_microsystem_fixture(self, up_candle_count: int) -> None:
+        """Mirrors _write_zone_concept_fixture, with an extra microsystem
+        layer wired to the same zone concept -- each up-candle's zone
+        becomes one compound "setup" candidate (entry_zone +
+        confirmation_level), the shape /api/microsystem-refine/* judges as
+        a whole, not fragmented into its own zone/level sub-fields."""
+        self.concepts_dir.mkdir(parents=True, exist_ok=True)
+        (self.concepts_dir / "zone_route_test.py").write_text(
+            'CONCEPT_INFO = {"label": "x", "description": "y", "data_sources": ["binance_futures_kline"]}\n'
+            "def compute(context):\n"
+            '    candles = context.data.get("binance_futures_kline") or []\n'
+            "    zones = []\n"
+            "    for c in candles:\n"
+            '        if c["close"] > c["open"]:\n'
+            '            zones.append({"direction": "bullish", "high": c["high"], "low": c["low"], "formed_at": c["timestamp"]})\n'
+            '    return {"zones": zones}\n',
+            encoding="utf-8",
+        )
+        self.microsystems_dir.mkdir(parents=True, exist_ok=True)
+        (self.microsystems_dir / "setup_route_test.py").write_text(
+            'MICROSYSTEM_INFO = {"label": "x", "description": "y", "concept_inputs": ["zone_route_test"]}\n'
+            "def compute(context):\n"
+            '    zone_result = context.concepts.get("zone_route_test") or {}\n'
+            '    zones = zone_result.get("zones") or []\n'
+            "    setups = []\n"
+            "    for z in zones:\n"
+            "        setups.append({\n"
+            '            "signal": "haussier", "entry_zone": z,\n'
+            '            "confirmation_level": {\n'
+            '                "direction": "bullish", "level": z["low"],\n'
+            '                "formed_at": z["formed_at"], "swept_at": z["formed_at"] + 30.0,\n'
+            "            },\n"
+            "        })\n"
+            '    return {"setups": setups}\n',
+            encoding="utf-8",
+        )
+        run_dir = self.runs.collections_dir / "run1"
+        from decimal import Decimal
+        import time as time_module
+
+        from polymarket_btc.data_collection.market_data.models import (
+            BinanceKlinePayload, EventSource, EventStream, MarketDataEvent,
+        )
+        from polymarket_btc.data_collection.market_data.storage import RawEventStorage
+
+        storage = RawEventStorage(run_dir, zstd_level=3)
+        candles = []
+        t = 0.0
+        for i in range(up_candle_count):
+            candles.append((t, 100, 101, 99, 99))  # down filler
+            t += 60.0
+            candles.append((t, 99, 103 + i, 99, 102))  # up
+            t += 60.0
+        for i, (ts, o, h, low, c) in enumerate(candles):
+            close_ns = int(ts * 1e9)
+            payload = BinanceKlinePayload(
+                market="futures", interval="1m", open_time_ns=close_ns - 60_000_000_000, close_time_ns=close_ns,
+                open=Decimal(str(o)), high=Decimal(str(h)), low=Decimal(str(low)), close=Decimal(str(c)),
+                base_volume=Decimal("1"), quote_volume=Decimal("1"), trade_count=1, is_closed=True,
+            )
+            event = MarketDataEvent(
+                schema_version=2, ingest_sequence=i, event_id=f"kline-{i}",
+                source=EventSource.BINANCE_FUTURES_KLINE, stream=EventStream.BINANCE_KLINE,
+                instrument="BTCUSDT", source_timestamp_ns=close_ns, server_timestamp_ns=close_ns,
+                received_wall_timestamp_ns=close_ns, received_monotonic_ns=time_module.monotonic_ns(),
+                source_sequence=None, timeframe=None, market_id=None, condition_id=None,
+                asset_id=None, outcome=None, payload=payload,
+            )
+            storage.write(event)
+        storage.close()
+        from datetime import UTC, datetime
+        manifest = {
+            "mode": "access", "sources": ["binance_futures_kline"], "plugins": [],
+            "start_ts_utc": datetime.fromtimestamp(-60.0, tz=UTC).isoformat(),
+            "end_ts_utc": datetime.fromtimestamp(t + 60.0, tz=UTC).isoformat(),
+            "data_dir": str(run_dir),
+        }
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    async def _run_microsystem_scan_and_wait(self, microsystem_id: str) -> dict:
+        head, body = await self._request(
+            "POST", "/api/microsystem-refine/scan", json_body={"microsystem_id": microsystem_id},
+        )
+        self.assertIn("200 OK", head)
+        job_id = body["job_id"]
+        status = None
+        for _ in range(200):
+            _head, status = await self._request("GET", f"/api/microsystem-refine/scan-status?job_id={job_id}")
+            if status["done"]:
+                break
+            await asyncio.sleep(0.02)
+        self.assertTrue(status["done"])
+        return status
+
+    async def test_microsystem_refine_full_round_trip(self) -> None:
+        self._write_setup_microsystem_fixture(up_candle_count=12)
+        status = await self._run_microsystem_scan_and_wait("setup_route_test")
+        self.assertIsNone(status["error"])
+        self.assertEqual(status["result"]["added"], 12)
+
+        # Below the gate: 9 "oui" only -- no "non" at all yet.
+        for _ in range(9):
+            _head, next_body = await self._request(
+                "POST", "/api/microsystem-refine/next", json_body={"microsystem_id": "setup_route_test"},
+            )
+            instance = next_body["instance"]
+            self.assertEqual(instance["shape"], "setup")
+            await self._request(
+                "POST", "/api/microsystem-refine/label",
+                json_body={
+                    "microsystem_id": "setup_route_test", "shape": instance["shape"], "node": instance["node"],
+                    "trigger_ts": instance["trigger_ts"], "label": "oui",
+                },
+            )
+        head, _prompt_body = await self._request(
+            "POST", "/api/microsystem-refine/prompt", json_body={"microsystem_id": "setup_route_test"},
+        )
+        self.assertIn("400 Bad Request", head)
+
+        # The 10th example, labeled "non" -- now both gates (>=10 total,
+        # >=1 non) are met.
+        _head, next_body = await self._request(
+            "POST", "/api/microsystem-refine/next", json_body={"microsystem_id": "setup_route_test"},
+        )
+        instance = next_body["instance"]
+        head, label_body = await self._request(
+            "POST", "/api/microsystem-refine/label",
+            json_body={
+                "microsystem_id": "setup_route_test", "shape": instance["shape"], "node": instance["node"],
+                "trigger_ts": instance["trigger_ts"], "label": "non", "note": "il manque la nuance Y",
+            },
+        )
+        self.assertIn("200 OK", head)
+        self.assertTrue(label_body["eligible_for_prompt"])
+
+        head, prompt_body = await self._request(
+            "POST", "/api/microsystem-refine/prompt", json_body={"microsystem_id": "setup_route_test"},
+        )
+        self.assertIn("200 OK", head)
+        self.assertIn("il manque la nuance Y", prompt_body["content"])
+
+    async def test_microsystem_refine_label_non_without_note_is_400(self) -> None:
+        self._write_setup_microsystem_fixture(up_candle_count=1)
+        await self._run_microsystem_scan_and_wait("setup_route_test")
+        _head, next_body = await self._request(
+            "POST", "/api/microsystem-refine/next", json_body={"microsystem_id": "setup_route_test"},
+        )
+        instance = next_body["instance"]
+        head, _body = await self._request(
+            "POST", "/api/microsystem-refine/label",
+            json_body={
+                "microsystem_id": "setup_route_test", "shape": instance["shape"], "node": instance["node"],
+                "label": "non", "note": "",
+            },
+        )
+        self.assertIn("400 Bad Request", head)
+
+    async def test_microsystem_refine_scan_unknown_microsystem_reports_error_via_status(self) -> None:
+        status = await self._run_microsystem_scan_and_wait("no_such_microsystem")
+        self.assertIsNotNone(status["error"])
+        self.assertIn("no_such_microsystem", status["error"])
+
+    async def test_microsystem_refine_next_missing_microsystem_id_is_400(self) -> None:
+        head, _body = await self._request("POST", "/api/microsystem-refine/next", json_body={})
+        self.assertIn("400 Bad Request", head)
+
+    async def test_filter_profiles_endpoint_lists_imported_profiles(self) -> None:
+        head, body = await self._request(
+            "POST", "/api/filter-profiles/import",
+            json_body={
+                "filename": "reward_risk_route_test.py",
+                "content": 'FILTER_INFO = {"label": "x", "description": "y"}\ndef filter(context):\n    return None\n',
+            },
+        )
+        self.assertIn("200 OK", head)
+        head, body = await self._request("GET", "/api/filter-profiles")
+        self.assertIn("200 OK", head)
+        self.assertIn("reward_risk_route_test", [f["id"] for f in body["filter_profiles"]])
+
+    async def test_filter_prompt_endpoint_returns_document_content(self) -> None:
+        head, body = await self._request("GET", "/api/filter-prompt")
+        self.assertIn("200 OK", head)
+        self.assertIn("Prompt de filtre de test", body["content"])
+
+    async def test_strategy_filter_refine_page_serves_200(self) -> None:
+        head, _body = await self._request("GET", "/strategy-filter/refine?strategy=whatever")
+        self.assertIn("200 OK", head)
+
+    def _write_filter_refine_fixture(self, candle_count: int) -> None:
+        """A strategy that always opens a long (ENTER_ONCE-style execution,
+        unconditional) with fixed 5% SL/TP -- one trivial kline-reading
+        concept (so backtest_eligibility's own required-keys coverage isn't
+        vacuously empty, see combined_coverage's own "not required_keys ->
+        []" rule) plus real kline data giving /api/strategy-filter-refine/*
+        real trade candidates to find. Price alternates 100/106 every
+        candle: each step's TP (105.0) or SL (95.0-ish, relative to
+        whichever price a trade most recently opened at) is crossed by the
+        very next candle, so a trade closes and a new one opens on almost
+        every single step -- plenty of real, deterministic candidates."""
+        self.concepts_dir.mkdir(parents=True, exist_ok=True)
+        (self.concepts_dir / "kline_reader_route_test.py").write_text(
+            'CONCEPT_INFO = {"label": "x", "description": "y", "data_sources": ["binance_futures_kline"]}\n'
+            "def compute(context):\n"
+            '    return {"last_close": None}\n',
+            encoding="utf-8",
+        )
+        self.execution_dir.mkdir(parents=True, exist_ok=True)
+        (self.execution_dir / "enter_once_route_test.py").write_text(
+            'EXECUTION_INFO = {"label": "x", "description": "y"}\n'
+            "def execute(context):\n"
+            '    return {"direction": "long"}\n',
+            encoding="utf-8",
+        )
+        self.management_dir.mkdir(parents=True, exist_ok=True)
+        (self.management_dir / "fixed_sltp_route_test.py").write_text(
+            "MANAGEMENT_INFO = {\n"
+            '    "label": "x", "description": "y",\n'
+            '    "config_schema": [\n'
+            '        {"name": "stop_loss_pct", "type": "number", "label": "SL", "default": 5.0},\n'
+            '        {"name": "take_profit_pct", "type": "number", "label": "TP", "default": 5.0},\n'
+            "    ],\n"
+            "}\n"
+            "def manage(context):\n"
+            '    return {"stop_loss_pct": 5.0, "take_profit_pct": 5.0}\n',
+            encoding="utf-8",
+        )
+        run_dir = self.runs.collections_dir / "run1"
+        from decimal import Decimal
+        import time as time_module
+
+        from polymarket_btc.data_collection.market_data.models import (
+            BinanceKlinePayload, EventSource, EventStream, MarketDataEvent,
+        )
+        from polymarket_btc.data_collection.market_data.storage import RawEventStorage
+
+        storage = RawEventStorage(run_dir, zstd_level=3)
+        t = 0.0
+        for i in range(candle_count):
+            price = 100.0 if i % 2 == 0 else 106.0
+            close_ns = int(t * 1e9)
+            payload = BinanceKlinePayload(
+                market="futures", interval="1m", open_time_ns=close_ns - 60_000_000_000, close_time_ns=close_ns,
+                open=Decimal(str(price)), high=Decimal(str(price)), low=Decimal(str(price)), close=Decimal(str(price)),
+                base_volume=Decimal("1"), quote_volume=Decimal("1"), trade_count=1, is_closed=True,
+            )
+            event = MarketDataEvent(
+                schema_version=2, ingest_sequence=i, event_id=f"kline-{i}",
+                source=EventSource.BINANCE_FUTURES_KLINE, stream=EventStream.BINANCE_KLINE,
+                instrument="BTCUSDT", source_timestamp_ns=close_ns, server_timestamp_ns=close_ns,
+                received_wall_timestamp_ns=close_ns, received_monotonic_ns=time_module.monotonic_ns(),
+                source_sequence=None, timeframe=None, market_id=None, condition_id=None,
+                asset_id=None, outcome=None, payload=payload,
+            )
+            storage.write(event)
+            t += 60.0
+        storage.close()
+        from datetime import UTC, datetime
+        manifest = {
+            "mode": "access", "sources": ["binance_futures_kline"], "plugins": [],
+            "start_ts_utc": datetime.fromtimestamp(-60.0, tz=UTC).isoformat(),
+            "end_ts_utc": datetime.fromtimestamp(t + 60.0, tz=UTC).isoformat(),
+            "data_dir": str(run_dir),
+        }
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        self.strategies.save_strategy(
+            name="filter_route_test",
+            concepts=[{
+                "instance_id": "concept_1", "concept_id": "kline_reader_route_test",
+                "config": {}, "data_bindings": {},
+            }],
+            microsystems=[],
+            execution={"execution_id": "enter_once_route_test", "config": {}},
+            management={"management_id": "fixed_sltp_route_test", "config": {}},
+        )
+
+    async def _run_filter_scan_and_wait(self, strategy_name: str) -> dict:
+        head, body = await self._request(
+            "POST", "/api/strategy-filter-refine/scan", json_body={"strategy_name": strategy_name},
+        )
+        self.assertIn("200 OK", head)
+        job_id = body["job_id"]
+        status = None
+        for _ in range(300):
+            _head, status = await self._request("GET", f"/api/strategy-filter-refine/scan-status?job_id={job_id}")
+            if status["done"]:
+                break
+            await asyncio.sleep(0.02)
+        self.assertTrue(status["done"])
+        return status
+
+    async def test_filter_refine_full_round_trip(self) -> None:
+        self._write_filter_refine_fixture(candle_count=30)
+        status = await self._run_filter_scan_and_wait("filter_route_test")
+        self.assertIsNone(status["error"])
+        self.assertGreaterEqual(status["result"]["added"], 10)
+
+        for _ in range(9):
+            _head, next_body = await self._request(
+                "POST", "/api/strategy-filter-refine/next", json_body={"strategy_name": "filter_route_test"},
+            )
+            instance = next_body["instance"]
+            self.assertEqual(instance["shape"], "trade")
+            await self._request(
+                "POST", "/api/strategy-filter-refine/label",
+                json_body={
+                    "strategy_name": "filter_route_test", "shape": instance["shape"], "node": instance["node"],
+                    "trigger_ts": instance["trigger_ts"], "label": "oui",
+                },
+            )
+        head, _prompt_body = await self._request(
+            "POST", "/api/strategy-filter-refine/prompt", json_body={"strategy_name": "filter_route_test"},
+        )
+        self.assertIn("400 Bad Request", head)
+
+        _head, next_body = await self._request(
+            "POST", "/api/strategy-filter-refine/next", json_body={"strategy_name": "filter_route_test"},
+        )
+        instance = next_body["instance"]
+        head, label_body = await self._request(
+            "POST", "/api/strategy-filter-refine/label",
+            json_body={
+                "strategy_name": "filter_route_test", "shape": instance["shape"], "node": instance["node"],
+                "trigger_ts": instance["trigger_ts"], "label": "non", "note": "ce trade n'aurait pas dû être pris",
+            },
+        )
+        self.assertIn("200 OK", head)
+        self.assertTrue(label_body["eligible_for_prompt"])
+
+        head, prompt_body = await self._request(
+            "POST", "/api/strategy-filter-refine/prompt", json_body={"strategy_name": "filter_route_test"},
+        )
+        self.assertIn("200 OK", head)
+        self.assertIn("ce trade n'aurait pas dû être pris", prompt_body["content"])
+        # No filter configured for this strategy yet -- confirms the
+        # "build one from nothing" placeholder path, not a source read.
+        self.assertIn("Aucun filtre", prompt_body["content"])
+
+    async def test_filter_refine_label_non_without_note_is_400(self) -> None:
+        self._write_filter_refine_fixture(candle_count=4)
+        await self._run_filter_scan_and_wait("filter_route_test")
+        _head, next_body = await self._request(
+            "POST", "/api/strategy-filter-refine/next", json_body={"strategy_name": "filter_route_test"},
+        )
+        instance = next_body["instance"]
+        head, _body = await self._request(
+            "POST", "/api/strategy-filter-refine/label",
+            json_body={
+                "strategy_name": "filter_route_test", "shape": instance["shape"], "node": instance["node"],
+                "label": "non", "note": "",
+            },
+        )
+        self.assertIn("400 Bad Request", head)
+
+    async def test_filter_refine_scan_unknown_strategy_reports_error_via_status(self) -> None:
+        status = await self._run_filter_scan_and_wait("no_such_strategy")
+        self.assertIsNotNone(status["error"])
+
+    async def test_filter_refine_next_missing_strategy_name_is_400(self) -> None:
+        head, _body = await self._request("POST", "/api/strategy-filter-refine/next", json_body={})
+        self.assertIn("400 Bad Request", head)
 
 
 if __name__ == "__main__":

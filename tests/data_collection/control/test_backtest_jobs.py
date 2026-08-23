@@ -102,7 +102,7 @@ class BacktestJobManagerTests(unittest.IsolatedAsyncioTestCase):
                 collections_dir=root / "collections", symbol_cache_path=_seeded_symbol_cache(root),
                 plugins_dir=root / "plugins", concepts_dir=root / "concepts",
                 microsystems_dir=root / "microsystems", execution_dir=root / "execution_profiles",
-                management_dir=root / "management_profiles",
+                management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
             )
             strategy = {
                 "concepts": [{"instance_id": "concept_1", "concept_id": "last_price_concept", "config": {}, "data_bindings": {}}],
@@ -117,7 +117,7 @@ class BacktestJobManagerTests(unittest.IsolatedAsyncioTestCase):
             jobs = BacktestJobManager()
             job = jobs.start(
                 strategy=strategy, concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[manifest], instrument="BTC", start_ts=0, end_ts=10, cadence_seconds=10,
                 execution_sweep={}, management_sweep={},
@@ -152,13 +152,13 @@ class BacktestJobManagerTests(unittest.IsolatedAsyncioTestCase):
                 collections_dir=root / "collections", symbol_cache_path=_seeded_symbol_cache(root),
                 plugins_dir=root / "plugins", concepts_dir=root / "concepts",
                 microsystems_dir=root / "microsystems", execution_dir=root / "execution_profiles",
-                management_dir=root / "management_profiles",
+                management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
             )
             jobs = BacktestJobManager()
             job = jobs.start(
                 strategy={"concepts": [], "microsystems": [], "execution": None, "management": None},
                 concepts_dir=root / "concepts", microsystems_dir=root / "microsystems",
-                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles",
+                execution_dir=root / "execution_profiles", management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
                 data_requirements_for=manager._data_requirements_for,
                 manifests=[], instrument="BTC", start_ts=0, end_ts=10, cadence_seconds=10,
                 execution_sweep={}, management_sweep={},

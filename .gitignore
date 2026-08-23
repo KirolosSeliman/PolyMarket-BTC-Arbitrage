@@ -10,3 +10,7 @@ dist/
 *.egg-info/
 venv/
 data/
+concept_feedback/
+microsystem_feedback/
+filter_feedback/
+*.log

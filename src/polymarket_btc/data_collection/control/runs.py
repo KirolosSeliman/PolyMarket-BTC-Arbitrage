@@ -48,6 +48,7 @@ from .execution import discover_execution_profiles
 from .management import discover_management_profiles
 from .microsystems import discover_microsystems
 from .plugins import PluginContext, discover_plugins, run_plugin
+from .strategy_filter import discover_filter_profiles
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -305,6 +306,7 @@ class CollectionRunManager:
         microsystems_dir: Path,
         execution_dir: Path,
         management_dir: Path,
+        filter_dir: Path,
         symbol_cache_path: Path | None = None,
     ) -> None:
         self.config_path = config_path
@@ -314,6 +316,7 @@ class CollectionRunManager:
         self.microsystems_dir = microsystems_dir
         self.execution_dir = execution_dir
         self.management_dir = management_dir
+        self.filter_dir = filter_dir
         # Shared/global cache, deliberately outside collections_dir -- it's
         # not per-run data, it's Binance's tradable-symbol list.
         self.symbol_cache_path = symbol_cache_path or (
@@ -552,6 +555,36 @@ class CollectionRunManager:
         )
         return {"filename": filename, "recognized": recognized}
 
+    def available_filter_profiles(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": info.id, "label": info.label, "description": info.description,
+                "category": info.category, "detail": info.detail,
+                "config_schema": [config_field_to_dict(f) for f in info.config_schema],
+            }
+            for info in discover_filter_profiles(self.filter_dir)
+        ]
+
+    def import_filter_profile_file(
+        self, filename: str, content: str, *, overwrite: bool = False,
+    ) -> dict[str, object]:
+        """Same contract/trust level as import_plugin_file, targeting
+        filter_dir instead."""
+        if not SCRIPT_FILENAME_RE.match(filename):
+            raise ValueError(
+                "filename must be a simple name ending in .py (letters, digits, "
+                "underscores, not starting with '_')"
+            )
+        self.filter_dir.mkdir(parents=True, exist_ok=True)
+        target = self.filter_dir / filename
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"{filename} already exists in {self.filter_dir}")
+        target.write_text(content, encoding="utf-8")
+        recognized = any(
+            info.id == target.stem for info in discover_filter_profiles(self.filter_dir)
+        )
+        return {"filename": filename, "recognized": recognized}
+
     def read_plugin_source(self, plugin_id: str) -> dict[str, str]:
         """{"id","filename","content"} for a discovered plugin's own .py
         file -- lets a concept/microsystem author see exactly what a
@@ -570,6 +603,24 @@ class CollectionRunManager:
             if info.id == concept_id:
                 return {"id": info.id, "filename": info.path.name, "content": info.path.read_text(encoding="utf-8")}
         raise FileNotFoundError(f"no concept named {concept_id!r}")
+
+    def read_microsystem_source(self, microsystem_id: str) -> dict[str, str]:
+        """Same shape as read_concept_source, for a discovered microsystem --
+        lets microsystem refinement embed the current script in its prompt."""
+        for info in discover_microsystems(self.microsystems_dir):
+            if info.id == microsystem_id:
+                return {"id": info.id, "filename": info.path.name, "content": info.path.read_text(encoding="utf-8")}
+        raise FileNotFoundError(f"no microsystem named {microsystem_id!r}")
+
+    def read_strategy_filter_source(self, filter_id: str) -> dict[str, str]:
+        """Same shape as read_concept_source, for a discovered strategy
+        filter -- unlike execution/management (which never need their own
+        source read back), a filter's own refinement prompt must embed its
+        current script, same reasoning as concept/microsystem refinement."""
+        for info in discover_filter_profiles(self.filter_dir):
+            if info.id == filter_id:
+                return {"id": info.id, "filename": info.path.name, "content": info.path.read_text(encoding="utf-8")}
+        raise FileNotFoundError(f"no filter named {filter_id!r}")
 
     def _data_context_blocks(self, *, sources: list[str], plugins: list[str]) -> list[str]:
         """One markdown block per selected data-catalog entry: built-in

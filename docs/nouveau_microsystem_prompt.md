@@ -115,6 +115,37 @@ plus lent sur une longue période). Ne concerne que les `data_inputs` propres
 au microsystème -- chaque concept auquel il est branché gère sa propre
 fenêtre indépendamment via sa propre déclaration.
 
+### Important -- si tu veux qu'un profil d'exécution puisse agir sur le prix
+
+Un profil d'exécution (l'étage suivant) ne reçoit **jamais** `context.concepts`
+directement, seulement `context.microsystems` -- la sortie de *ton* `compute()`,
+rien d'autre. Si un concept que tu utilises expose déjà un prix courant (beaucoup
+le font, sous le nom `last_price`), ça ne "remonte" pas tout seul jusqu'au profil
+d'exécution : ce n'est visible que si **toi** tu le recopies explicitement dans le
+dict que tu retournes.
+
+Beaucoup de profils d'exécution ont besoin de confirmer une condition contre le
+prix actuel (un rebond, une cassure, ...) et cherchent un champ nommé
+`last_price` (et parfois `last_high`/`last_low`) n'importe où dans la sortie du
+microsystème. Si ton microsystème ne l'expose jamais, un tel profil d'exécution
+restera **silencieusement neutre pour toujours** -- aucune erreur, juste aucun
+trade, jamais, quel que soit le scénario. Si l'un des concepts que tu reçois
+expose déjà `last_price` (ou une donnée équivalente), pense à le recopier dans
+ton propre retour, par exemple :
+
+```python
+def compute(context) -> dict:
+    ...
+    return {
+        "...": ...,
+        "last_price": mon_concept_result.get("last_price"),  # propage-le, ne le recalcule pas
+    }
+```
+
+Ce n'est pas obligatoire (un microsystème purement informatif n'a pas besoin
+d'exposer de prix), mais si tu comptes brancher un profil d'exécution qui réagit
+au prix, c'est le point le plus facile à oublier.
+
 ### Règles strictes
 
 1. **Un seul fichier** `.py`, autonome, aucun import relatif vers d'autres fichiers

@@ -75,7 +75,11 @@ def _parser() -> argparse.ArgumentParser:
     control.add_argument("--microsystems-dir", type=Path, default=Path("microsystems"))
     control.add_argument("--execution-dir", type=Path, default=Path("execution_profiles"))
     control.add_argument("--management-dir", type=Path, default=Path("management_profiles"))
+    control.add_argument("--filter-dir", type=Path, default=Path("filter_profiles"))
     control.add_argument("--strategies-dir", type=Path, default=Path("strategies"))
+    control.add_argument("--concept-feedback-dir", type=Path, default=Path("concept_feedback"))
+    control.add_argument("--microsystem-feedback-dir", type=Path, default=Path("microsystem_feedback"))
+    control.add_argument("--filter-feedback-dir", type=Path, default=Path("filter_feedback"))
     control.add_argument(
         "--plugin-prompt", type=Path, default=Path("docs/nouveau_plugin_prompt.md"),
     )
@@ -90,6 +94,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     control.add_argument(
         "--management-prompt", type=Path, default=Path("docs/nouveau_management_prompt.md"),
+    )
+    control.add_argument(
+        "--filter-prompt", type=Path, default=Path("docs/nouveau_strategy_filter_prompt.md"),
     )
     status = commands.add_parser("status")
     status.add_argument("--health-file", type=Path, required=True)
@@ -304,26 +311,36 @@ def _live(args: argparse.Namespace) -> int:
 
 async def _run_control(
     config_path: Path, host: str, port: int, collections_dir: Path, plugins_dir: Path,
-    concepts_dir: Path, microsystems_dir: Path, execution_dir: Path, management_dir: Path,
-    strategies_dir: Path,
+    concepts_dir: Path, microsystems_dir: Path, execution_dir: Path, management_dir: Path, filter_dir: Path,
+    strategies_dir: Path, concept_feedback_dir: Path, microsystem_feedback_dir: Path, filter_feedback_dir: Path,
     plugin_prompt: Path, concept_prompt: Path, microsystem_prompt: Path, execution_prompt: Path,
-    management_prompt: Path,
+    management_prompt: Path, filter_prompt: Path,
 ) -> None:
+    from ..control.concept_refinement import ConceptRefinementManager
+    from ..control.microsystem_refinement import MicrosystemRefinementManager
     from ..control.runs import CollectionRunManager
     from ..control.server import ControlPanelServer
     from ..control.strategies import StrategyManager
+    from ..control.strategy_filter_refinement import StrategyFilterRefinementManager
 
     manager = CollectionRunManager(
         config_path=config_path, collections_dir=collections_dir, plugins_dir=plugins_dir,
         concepts_dir=concepts_dir, microsystems_dir=microsystems_dir, execution_dir=execution_dir,
-        management_dir=management_dir,
+        management_dir=management_dir, filter_dir=filter_dir,
     )
     strategy_manager = StrategyManager(strategies_dir=strategies_dir, runs=manager)
+    concept_feedback_manager = ConceptRefinementManager(feedback_dir=concept_feedback_dir, runs=manager)
+    microsystem_feedback_manager = MicrosystemRefinementManager(feedback_dir=microsystem_feedback_dir, runs=manager)
+    filter_feedback_manager = StrategyFilterRefinementManager(
+        feedback_dir=filter_feedback_dir, runs=manager, strategies=strategy_manager,
+    )
     server = ControlPanelServer(
-        runs=manager, strategies=strategy_manager, host=host, port=port,
+        runs=manager, strategies=strategy_manager, concept_feedback=concept_feedback_manager,
+        microsystem_feedback=microsystem_feedback_manager, filter_feedback=filter_feedback_manager,
+        host=host, port=port,
         prompt_doc_path=plugin_prompt, concept_prompt_doc_path=concept_prompt,
         microsystem_prompt_doc_path=microsystem_prompt, execution_prompt_doc_path=execution_prompt,
-        management_prompt_doc_path=management_prompt,
+        management_prompt_doc_path=management_prompt, filter_prompt_doc_path=filter_prompt,
     )
     await server.start()
     print(f"control panel ready: {server.url}", flush=True)
@@ -350,10 +367,10 @@ def _control(args: argparse.Namespace) -> int:
     _configure_logging(config.service.log_level)
     asyncio.run(_run_control(
         args.config, args.host, args.port, args.collections_dir, args.plugins_dir,
-        args.concepts_dir, args.microsystems_dir, args.execution_dir, args.management_dir,
-        args.strategies_dir,
+        args.concepts_dir, args.microsystems_dir, args.execution_dir, args.management_dir, args.filter_dir,
+        args.strategies_dir, args.concept_feedback_dir, args.microsystem_feedback_dir, args.filter_feedback_dir,
         args.plugin_prompt, args.concept_prompt, args.microsystem_prompt, args.execution_prompt,
-        args.management_prompt,
+        args.management_prompt, args.filter_prompt,
     ))
     return 0
 

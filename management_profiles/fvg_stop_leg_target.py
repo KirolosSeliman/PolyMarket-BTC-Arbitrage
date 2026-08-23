@@ -149,7 +149,7 @@ def manage(context) -> dict:
     direction = execution.get("direction", "neutre")
     if direction not in ("haussier", "baissier"):
         context.log("aucune position à gérer (direction neutre)")
-        return {"stop_loss": None, "take_profit": None, "reward_risk_ratio": None}
+        return {"stop_loss_pct": None, "take_profit_pct": None, "reward_risk_ratio": None}
 
     fvg_direction = "bullish" if direction == "haussier" else "bearish"
     microsystems = context.microsystems if isinstance(context.microsystems, dict) else {}
@@ -164,14 +164,14 @@ def manage(context) -> dict:
 
     if fvg is None:
         context.log(f"aucun FVG associé à la position {direction} -- gestion impossible")
-        return {"stop_loss": None, "take_profit": None, "reward_risk_ratio": None}
+        return {"stop_loss_pct": None, "take_profit_pct": None, "reward_risk_ratio": None}
 
     high = _to_float(fvg.get("high"))
     low = _to_float(fvg.get("low"))
     fill_pct = _to_float(fvg.get("fill_pct")) or 0.0
     if high is None or low is None or high <= low:
         context.log("FVG associé invalide -- gestion impossible")
-        return {"stop_loss": None, "take_profit": None, "reward_risk_ratio": None}
+        return {"stop_loss_pct": None, "take_profit_pct": None, "reward_risk_ratio": None}
     gap_height = high - low
 
     last_price = _collect_reference_price(microsystems)
@@ -223,7 +223,7 @@ def manage(context) -> dict:
                     f"ratio risque/récompense {reward_risk_ratio:.2f} sous le "
                     f"minimum {min_rr:.2f} -- pas de gestion exploitable"
                 )
-                return {"stop_loss": None, "take_profit": None, "reward_risk_ratio": reward_risk_ratio}
+                return {"stop_loss_pct": None, "take_profit_pct": None, "reward_risk_ratio": reward_risk_ratio}
 
     context.log(
         f"position {direction} -- SL={stop_loss:.6g} "
@@ -231,9 +231,25 @@ def manage(context) -> dict:
         f"TP={'aucun' if take_profit is None else round(take_profit, 6)}"
     )
 
+    # The backtest engine only recognizes stop_loss_pct/take_profit_pct (a
+    # distance in % of the entry price -- see docs/nouveau_management_
+    # prompt.md's "Forme reconnue" section); it applies the direction-aware
+    # sign itself. Everything above computes real ICT price levels (the
+    # entry-candle wick, a liquidity-pool target) because that's what makes
+    # the stop/target meaningful here, not an arbitrary flat percentage --
+    # this is only the last step, re-expressing those levels as the
+    # distance the engine actually understands, without losing that
+    # precision (reference_price is the same price the engine itself enters
+    # at, via last_price -- see _collect_reference_price).
+    stop_loss_pct = (abs(reference_price - stop_loss) / reference_price) * 100.0 if reference_price else None
+    take_profit_pct = (
+        (abs(take_profit - reference_price) / reference_price) * 100.0
+        if take_profit is not None and reference_price else None
+    )
+
     return {
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
+        "stop_loss_pct": stop_loss_pct,
+        "take_profit_pct": take_profit_pct,
         "reward_risk_ratio": reward_risk_ratio,
         "trailing": False,
     }

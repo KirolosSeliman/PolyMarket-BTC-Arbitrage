@@ -52,6 +52,7 @@ a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
   <h1>PolyMarket BTC — Centre de contrôle</h1>
   <p>Le collecteur alimente trois destinations. Choisis-en une.</p>
   <p class="strategy" id="strategy-line" style="display:none"></p>
+  <a class="back" id="edit-strategy-link" href="#" style="display:none">Modifier cette stratégie</a>
 </header>
 <div class="cards">
   <a class="card" href="/live" id="live-card">
@@ -91,6 +92,9 @@ if (!strategy) {
   document.getElementById("live-card").href = `/live?${params.toString()}`;
   document.getElementById("live-card-status").textContent = strategy;
   document.getElementById("backtest-card").href = `/backtest?${params.toString()}`;
+  const editLink = document.getElementById("edit-strategy-link");
+  editLink.href = `/strategy/build?name=${encodeURIComponent(strategy)}`;
+  editLink.style.display = "inline-block";
 }
 </script>
 </body>

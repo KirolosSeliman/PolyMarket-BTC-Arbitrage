@@ -10,6 +10,12 @@
   --text-1: #f2f2f0; --text-2: #b7b6b0; --muted: #7a7972;
   --border: rgba(255,255,255,0.12); --accent: #3987e5; --warning: #d99a2b; --critical: #d0554d;
   --good: #3f9142;
+  /* Bullish/bearish zone & level annotations on the replay chart -- distinct
+     from --accent (price line) and --good/--critical (trade outcome) so the
+     same hue never carries two different meanings on one chart; validated
+     via dataviz's palette script (all-pairs CVD + normal-vision floors pass
+     against --accent on the dark surface). */
+  --zone-bullish: #c98500; --zone-bearish: #d55181;
 }
 * { box-sizing: border-box; }
 body {
@@ -109,13 +115,58 @@ label.check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; c
 #replay-chart .hover-target { fill: transparent; cursor: crosshair; }
 #replay-chart .chart-tooltip-bg { fill: var(--surface-1); stroke: var(--border); }
 #replay-chart .chart-tooltip-text { fill: var(--text-1); font-size: 10.5px; }
+/* Concept/microsystem "reasoning" annotations -- zones (FVGs: a shaded
+   rectangle) and levels (liquidity pools/sweeps: a dashed line), drawn
+   behind the price line so it stays legible on top. Direction is carried
+   by fill/stroke color AND by a direct text label (see renderAnnotation*),
+   never color alone. */
+#replay-chart .zone-rect.bullish { fill: var(--zone-bullish); fill-opacity: 0.16; stroke: var(--zone-bullish); stroke-opacity: 0.55; stroke-width: 1; }
+#replay-chart .zone-rect.bearish { fill: var(--zone-bearish); fill-opacity: 0.16; stroke: var(--zone-bearish); stroke-opacity: 0.55; stroke-width: 1; }
+#replay-chart .zone-label { font-size: 9px; opacity: 0.9; }
+#replay-chart .zone-label.bullish { fill: var(--zone-bullish); }
+#replay-chart .zone-label.bearish { fill: var(--zone-bearish); }
+#replay-chart .level-line-annotation { stroke-width: 1.5; stroke-dasharray: 3 3; opacity: 0.75; }
+#replay-chart .level-line-annotation.bullish { stroke: var(--zone-bullish); }
+#replay-chart .level-line-annotation.bearish { stroke: var(--zone-bearish); }
+#replay-chart .level-line-annotation.neutral { stroke: var(--text-2); }
+#replay-chart .sweep-marker { stroke-width: 1.5; }
+#replay-chart .sweep-marker.bullish { stroke: var(--zone-bullish); fill: var(--zone-bullish); }
+#replay-chart .sweep-marker.bearish { stroke: var(--zone-bearish); fill: var(--zone-bearish); }
+/* Real candlesticks (open/high/low/close), shown instead of the price line
+   once zoomed in close enough for individual candles to be worth drawing --
+   standard green/up, red/down convention (the same --good/--critical
+   already used for trade win/loss elsewhere on this chart: a deliberate,
+   explicit exception to picking a fresh hue, since red/green candles are
+   too universal a convention in trading UIs to swap for anything else, and
+   the candle body is a wide filled rect while a trade marker is a small
+   dot at a specific point -- shape and scale already keep them apart). */
+#replay-chart .candle-wick { stroke-width: 1; }
+#replay-chart .candle-wick.up { stroke: var(--good); }
+#replay-chart .candle-wick.down { stroke: var(--critical); }
+#replay-chart .candle-body.up { fill: var(--good); }
+#replay-chart .candle-body.down { fill: var(--critical); }
+
+.zoom-group { display: inline-flex; align-items: center; gap: 6px; margin-left: 4px; }
+.zoom-btn { padding: 5px 10px !important; font-size: 13px !important; line-height: 1; min-width: 28px; }
+#replay-zoom-label { font-size: 11px; color: var(--text-2); white-space: nowrap; min-width: 70px; text-align: center; }
 
 .replay-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--text-2); align-items: center; }
 .replay-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
 .replay-legend .dot.entry { background: var(--text-1); }
 .replay-legend .dot.good { background: var(--good); }
 .replay-legend .dot.critical { background: var(--critical); }
+.replay-legend .swatch { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.replay-legend .swatch.bullish { background: var(--zone-bullish); opacity: 0.7; }
+.replay-legend .swatch.bearish { background: var(--zone-bearish); opacity: 0.7; }
 .replay-cursor-label { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+.replay-readout-summary { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.replay-readout-item { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+.replay-readout-item .kind { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.02em; }
+.replay-readout-item .headline { margin-top: 2px; }
+.replay-readout-item .headline.bullish { color: var(--zone-bullish); }
+.replay-readout-item .headline.bearish { color: var(--zone-bearish); }
+.replay-readout-item .detail { color: var(--text-2); font-size: 11px; margin-top: 3px; }
 
 .replay-trades-list { max-height: 200px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; }
 .replay-trade-row {
@@ -235,12 +286,12 @@ label.check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; c
       <div class="progress-bar-fill" id="backtest-progress-fill"></div>
     </div>
     <div id="results"></div>
-    <button type="button" class="secondary" id="show-replay-btn" style="display:none;margin-top:12px">Voir les trades pris</button>
+    <button type="button" class="secondary" id="show-replay-btn" style="display:none;margin-top:12px">Voir le raisonnement</button>
   </div>
 
   <div class="panel" id="replay-panel" style="display:none">
     <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:10px">
-      <h2 style="margin:0">Trades pris -- rejouer</h2>
+      <h2 style="margin:0">Rejouer l'analyse</h2>
       <div class="row" style="gap:8px">
         <button type="button" class="secondary" id="replay-play-btn">▶ Lecture</button>
         <select id="replay-speed">
@@ -249,23 +300,36 @@ label.check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; c
           <option value="fast">Rapide</option>
           <option value="instant">Instantané</option>
         </select>
+        <span class="zoom-group">
+          <button type="button" class="secondary zoom-btn" id="replay-zoom-out-btn" title="Dézoomer">−</button>
+          <span id="replay-zoom-label">Vue complète</span>
+          <button type="button" class="secondary zoom-btn" id="replay-zoom-in-btn" title="Zoomer">+</button>
+          <button type="button" class="secondary zoom-btn" id="replay-zoom-reset-btn" title="Revenir à la vue complète">Réinitialiser</button>
+        </span>
       </div>
     </div>
-    <svg id="replay-chart" width="100%" height="240" style="margin-top:10px;display:block"></svg>
+    <svg id="replay-chart" width="100%" height="280" style="margin-top:10px;display:block"></svg>
     <div class="replay-legend">
       <span><span class="dot entry"></span>Entrée</span>
       <span><span class="dot good"></span>Sortie -- gain</span>
       <span><span class="dot critical"></span>Sortie -- perte</span>
+      <span><span class="swatch bullish"></span>Détecté -- haussier</span>
+      <span><span class="swatch bearish"></span>Détecté -- baissier</span>
       <span class="replay-cursor-label" id="replay-cursor-label"></span>
     </div>
+    <p class="hint" style="margin:6px 0 0">
+      Les zones colorées sont ce que les concepts (FVG, liquidité, ...) ont détecté au fil du temps --
+      elles apparaissent dès que le programme les repère, avant même qu'un trade soit pris. Avance la
+      lecture pour voir le raisonnement se construire.
+    </p>
     <div class="row" style="gap:16px;align-items:flex-start;margin-top:12px;flex-wrap:wrap">
       <div style="flex:1;min-width:220px">
         <strong style="font-size:12px">Trades (clique pour centrer)</strong>
         <div id="replay-trades-list" class="replay-trades-list"></div>
       </div>
-      <div style="flex:1;min-width:220px">
-        <strong style="font-size:12px">Concepts / microsystèmes à l'instant courant</strong>
-        <table class="results-table" id="replay-readout-table"><tbody></tbody></table>
+      <div style="flex:1;min-width:260px">
+        <strong style="font-size:12px">Ce que le programme analyse, à l'instant courant</strong>
+        <div id="replay-readout-summary" class="replay-readout-summary"></div>
       </div>
     </div>
   </div>
@@ -805,10 +869,46 @@ el("backtest-btn").addEventListener("click", runBacktest);
 // that scrubs (by hover, by clicking a trade, or via play/pause) through
 // the same timeline the concept/microsystem readout below is synced to --
 // so the aggregate win rate can actually be checked against what happened,
-// not just trusted.
+// not just trusted. Available even when zero trades were taken (see
+// prepareReplay) -- "what did the program actually examine" matters on its
+// own, not only as an explanation for a trade.
+//
+// Concept/microsystem outputs are also drawn directly on the chart as
+// "reasoning" annotations -- a Fair Value Gap as a shaded zone, a liquidity
+// pool/sweep as a dashed level -- extracted by duck-typing each output's
+// shape (looksLikeZone/looksLikeLevel below) exactly the way execution_
+// profiles/fvg_rebound_entry.py's own _looks_like_fvg/_walk already do
+// server-side, so a strategy author's own concept gets drawn here the same
+// way without this chart needing to know its id. A shape re-appearing
+// across consecutive steps (a concept typically re-reports every active
+// FVG at every step, not just once) is deduplicated to one annotation
+// spanning its whole observed lifetime, not redrawn as overlapping copies.
 // ============================================================
 
-const CHART_W = 800, CHART_H = 240;
+function walkForAnnotations(value, depth = 0, found = []) {
+  if (depth > 6 || value === null || typeof value !== "object") return found;
+  if (Array.isArray(value)) {
+    value.forEach((item) => walkForAnnotations(item, depth + 1, found));
+  } else {
+    if (looksLikeZone(value)) found.push({ shape: "zone", node: value });
+    else if (looksLikeLevel(value)) found.push({ shape: "level", node: value });
+    Object.values(value).forEach((item) => walkForAnnotations(item, depth + 1, found));
+  }
+  return found;
+}
+
+function looksLikeZone(node) {
+  return (node.direction === "bullish" || node.direction === "bearish")
+    && typeof node.high === "number" && typeof node.low === "number" && node.high > node.low
+    && typeof node.formed_at === "number";
+}
+
+function looksLikeLevel(node) {
+  return typeof node.level === "number"
+    && (typeof node.formed_at === "number" || typeof node.swept_at === "number");
+}
+
+const CHART_W = 800, CHART_H = 280;
 const CHART_PAD = { top: 10, right: 46, bottom: 22, left: 10 };
 
 let replayData = null;
@@ -825,15 +925,146 @@ function priceScale(price, minPrice, maxPrice) {
   return CHART_H - CHART_PAD.bottom - ((price - minPrice) / span) * (CHART_H - CHART_PAD.top - CHART_PAD.bottom);
 }
 
+// Draws exactly what the concepts report as active at the *current* replay
+// step -- not everything ever seen across the whole replay. A concept
+// naturally re-reports every still-active item at every step (that's the
+// same "full history in, the concept trims its own lookback/fill state"
+// contract build_timeline relies on), so the current step's own output is
+// already the complete, correctly-bounded "what's relevant right now" --
+// no separate accumulation needed, and it can never grow unbounded the way
+// showing every historical zone at once did (hundreds of overlapping bands
+// by the end of a multi-day replay, unreadable against the price line).
+function renderAnnotations(x, y, currentTs, concepts) {
+  let svgContent = "";
+  walkForAnnotations(concepts).forEach(({ shape, node }) => {
+    if (shape === "zone") {
+      if (node.formed_at > currentTs) return;
+      const x1 = x(node.formed_at), x2 = x(currentTs);
+      if (x2 <= x1) return;
+      const yTop = y(node.high), yBottom = y(node.low);
+      svgContent += `<rect class="zone-rect ${node.direction}" x="${x1.toFixed(1)}" y="${yTop.toFixed(1)}" `
+        + `width="${(x2 - x1).toFixed(1)}" height="${Math.max(1, yBottom - yTop).toFixed(1)}"></rect>`;
+      svgContent += `<text class="zone-label ${node.direction}" x="${(x1 + 3).toFixed(1)}" y="${(yTop - 3).toFixed(1)}">`
+        + `FVG ${node.direction === "bullish" ? "▲" : "▼"}</text>`;
+    } else {
+      const formedAt = typeof node.formed_at === "number" ? node.formed_at : node.swept_at;
+      if (formedAt > currentTs) return;
+      const sweptVisible = typeof node.swept_at === "number" && node.swept_at <= currentTs;
+      const endTs = sweptVisible ? node.swept_at : currentTs;
+      const x1 = x(formedAt), x2 = x(endTs);
+      if (x2 < x1) return;
+      const ly = y(node.level);
+      const directionClass = node.direction === "bullish" || node.direction === "bearish" ? node.direction : "neutral";
+      svgContent += `<line class="level-line-annotation ${directionClass}" x1="${x1.toFixed(1)}" x2="${x2.toFixed(1)}" `
+        + `y1="${ly.toFixed(1)}" y2="${ly.toFixed(1)}"></line>`;
+      if (sweptVisible) {
+        const mx = x2;
+        svgContent += `<path class="sweep-marker ${directionClass}" `
+          + `d="M${(mx - 3).toFixed(1)},${(ly - 3).toFixed(1)} L${(mx + 3).toFixed(1)},${(ly + 3).toFixed(1)} `
+          + `M${(mx - 3).toFixed(1)},${(ly + 3).toFixed(1)} L${(mx + 3).toFixed(1)},${(ly - 3).toFixed(1)}"></path>`;
+      }
+    }
+  });
+  return svgContent;
+}
+
+// null = full replay view (a price line, current behaviour). A number =
+// how many candles wide the visible window is, centered on the replay
+// cursor -- "agrandir de vraiment proche" zooms toward individual candles,
+// so the window follows the cursor rather than a fixed pan the user has to
+// manage separately.
+let replayZoomCandles = null;
+const REPLAY_ZOOM_MIN_CANDLES = 8;
+const REPLAY_ZOOM_DEFAULT_CANDLES = 60;
+// A DOM/render cap, not a data cap -- domain.candles (the real, full-
+// resolution set for whatever's in view) is what annotations/hover/trade
+// markers still use; only the candlesticks actually drawn get bucketed
+// down to this many bars so a long backtest can't turn every replay tick
+// into redrawing tens of thousands of SVG nodes.
+const REPLAY_MAX_RENDERED_CANDLES = 400;
+
+function replayCandleSeconds() {
+  if (!replayData || !replayData.candles || replayData.candles.length < 2) return null;
+  return replayData.candles[1].timestamp - replayData.candles[0].timestamp;
+}
+
+// Aggregates consecutive real candles into one OHLC bar per bucket when
+// there are more candles in view than are worth drawing individually --
+// open/close from the bucket's first/last candle, high/low the extremes
+// across it, timestamp its midpoint (for x-position only; it no longer
+// represents one real candle_seconds-wide slot, see slotSeconds where this
+// is consumed).
+function downsampleCandles(candles, maxCount) {
+  if (candles.length <= maxCount) return candles;
+  const bucketSize = Math.ceil(candles.length / maxCount);
+  const result = [];
+  for (let i = 0; i < candles.length; i += bucketSize) {
+    const bucket = candles.slice(i, i + bucketSize);
+    result.push({
+      timestamp: bucket[Math.floor(bucket.length / 2)].timestamp,
+      open: bucket[0].open,
+      close: bucket[bucket.length - 1].close,
+      high: Math.max(...bucket.map((c) => c.high)),
+      low: Math.min(...bucket.map((c) => c.low)),
+    });
+  }
+  return result;
+}
+
+// The visible [minTs,maxTs]x[minPrice,maxPrice] window renderReplayChart
+// draws into, plus the candle subset in view (null when not zoomed, or the
+// price source has no OHLC -- see run_backtest's own candles field) so the
+// caller knows whether to draw candlesticks or fall back to the line.
+function computeReplayDomain() {
+  const allTs = replayData.price_path.map((p) => p.timestamp);
+  const fullMinTs = allTs[0], fullMaxTs = allTs[allTs.length - 1];
+
+  // No OHLC at all (a trade-priced backtest -- see run_backtest's own
+  // candles field) is the only case with no candles to draw, zoomed or
+  // not -- the line is a genuine fallback there, never a default.
+  if (!replayData.candles || !replayData.candles.length) {
+    const prices = replayData.price_path.map((p) => p.price);
+    return {
+      minTs: fullMinTs, maxTs: fullMaxTs,
+      minPrice: Math.min(...prices), maxPrice: Math.max(...prices),
+      candles: null,
+    };
+  }
+
+  let minTs = fullMinTs, maxTs = fullMaxTs;
+  if (replayZoomCandles) {
+    const candleSeconds = replayCandleSeconds() || 60;
+    const currentTs = replayData.timeline[replayCurrentIndex]?.timestamp ?? fullMaxTs;
+    const halfSpan = (replayZoomCandles / 2) * candleSeconds;
+    minTs = currentTs - halfSpan; maxTs = currentTs + halfSpan;
+    // Shift the window back into range rather than clip it, so zooming
+    // near either edge still shows a full window's worth of candles.
+    if (minTs < fullMinTs) { maxTs += fullMinTs - minTs; minTs = fullMinTs; }
+    if (maxTs > fullMaxTs) { minTs -= maxTs - fullMaxTs; maxTs = fullMaxTs; }
+    minTs = Math.max(minTs, fullMinTs);
+    maxTs = Math.min(maxTs, fullMaxTs);
+  }
+
+  const candles = replayData.candles.filter((c) => c.timestamp >= minTs && c.timestamp <= maxTs);
+  const pricePoints = candles.length
+    ? candles.flatMap((c) => [c.high, c.low])
+    : replayData.price_path.filter((p) => p.timestamp >= minTs && p.timestamp <= maxTs).map((p) => p.price);
+  const fallbackPrices = replayData.price_path.map((p) => p.price);
+  return {
+    minTs, maxTs,
+    minPrice: pricePoints.length ? Math.min(...pricePoints) : Math.min(...fallbackPrices),
+    maxPrice: pricePoints.length ? Math.max(...pricePoints) : Math.max(...fallbackPrices),
+    candles,
+  };
+}
+
 function renderReplayChart() {
   const svg = el("replay-chart");
   svg.setAttribute("viewBox", `0 0 ${CHART_W} ${CHART_H}`);
   if (!replayData || !replayData.price_path.length) { svg.innerHTML = ""; return; }
 
-  const timestamps = replayData.price_path.map((p) => p.timestamp);
-  const prices = replayData.price_path.map((p) => p.price);
-  const minTs = Math.min(...timestamps), maxTs = Math.max(...timestamps);
-  const minPrice = Math.min(...prices), maxPrice = Math.max(...prices);
+  const domain = computeReplayDomain();
+  const { minTs, maxTs, minPrice, maxPrice } = domain;
   const x = (ts) => timeScale(ts, minTs, maxTs);
   const y = (price) => priceScale(price, minPrice, maxPrice);
 
@@ -845,9 +1076,42 @@ function renderReplayChart() {
     svgContent += `<text class="axis-label" x="${CHART_W - CHART_PAD.right + 4}" y="${py + 3}">${p.toFixed(2)}</text>`;
   });
 
-  const pathD = replayData.price_path
-    .map((p, i) => `${i === 0 ? "M" : "L"}${x(p.timestamp).toFixed(1)},${y(p.price).toFixed(1)}`).join(" ");
-  svgContent += `<path class="price-line" d="${pathD}"></path>`;
+  const currentStep = replayData.timeline[replayCurrentIndex];
+  const currentTs = currentStep?.timestamp ?? maxTs;
+  if (currentStep) {
+    svgContent += renderAnnotations(x, y, currentTs, currentStep.concepts);
+  }
+
+  if (domain.candles) {
+    // Real candlesticks are the default view now, not just something
+    // zoomed-in reveals -- a wide backtest can carry tens of thousands of
+    // candles, and redrawing that many SVG nodes on every replay tick
+    // would visibly jank the playback, so what's actually drawn is capped
+    // and downsampled (aggregated OHLC per bucket) exactly the way any
+    // real trading chart thins out candles once each one would render
+    // narrower than a pixel or two -- the shape stays a candlestick chart
+    // throughout, it just represents more real candles per bar when
+    // zoomed all the way out.
+    const rendered = downsampleCandles(domain.candles, REPLAY_MAX_RENDERED_CANDLES);
+    const slotSeconds = (maxTs - minTs) / Math.max(rendered.length, 1);
+    const slotWidth = Math.max(1, x(minTs + slotSeconds) - x(minTs));
+    const bodyWidth = Math.max(1, slotWidth * 0.7);
+    rendered.forEach((c) => {
+      const cx = x(c.timestamp);
+      const up = c.close >= c.open;
+      const wickClass = up ? "up" : "down";
+      svgContent += `<line class="candle-wick ${wickClass}" x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" `
+        + `y1="${y(c.high).toFixed(1)}" y2="${y(c.low).toFixed(1)}"></line>`;
+      const bodyTop = y(Math.max(c.open, c.close));
+      const bodyHeight = Math.max(1, Math.abs(y(c.open) - y(c.close)));
+      svgContent += `<rect class="candle-body ${wickClass}" x="${(cx - bodyWidth / 2).toFixed(1)}" y="${bodyTop.toFixed(1)}" `
+        + `width="${bodyWidth.toFixed(1)}" height="${bodyHeight.toFixed(1)}"></rect>`;
+    });
+  } else {
+    const pathD = replayData.price_path
+      .map((p, i) => `${i === 0 ? "M" : "L"}${x(p.timestamp).toFixed(1)},${y(p.price).toFixed(1)}`).join(" ");
+    svgContent += `<path class="price-line" d="${pathD}"></path>`;
+  }
 
   const activeTrade = replaySelectedTradeIndex !== null ? replayData.trades[replaySelectedTradeIndex] : null;
   if (activeTrade) {
@@ -870,7 +1134,6 @@ function renderReplayChart() {
     svgContent += `<circle class="exit-marker ${trade.outcome} ${isSelected ? "selected" : ""}" cx="${x(trade.exit_time)}" cy="${y(trade.exit_price)}" r="4" data-trade="${i}"></circle>`;
   });
 
-  const currentStep = replayData.timeline[replayCurrentIndex];
   if (currentStep) {
     const cursorX = x(currentStep.timestamp);
     svgContent += `<line class="cursor-line" x1="${cursorX}" x2="${cursorX}" y1="${CHART_PAD.top}" y2="${CHART_H - CHART_PAD.bottom}"></line>`;
@@ -886,6 +1149,7 @@ function renderReplayChart() {
     });
   });
   svg.querySelector(".hover-target").addEventListener("mousemove", onReplayChartHover);
+  svg.querySelector(".hover-target").addEventListener("wheel", onReplayChartWheel, { passive: false });
 }
 
 function onReplayChartHover(event) {
@@ -893,9 +1157,13 @@ function onReplayChartHover(event) {
   const rect = el("replay-chart").getBoundingClientRect();
   if (!rect.width) return;
   const mouseX = (event.clientX - rect.left) * (CHART_W / rect.width);
-  const timestamps = replayData.timeline.map((s) => s.timestamp);
-  const minTs = timestamps[0], maxTs = timestamps[timestamps.length - 1];
+  // Uses the same visible domain the chart was actually drawn with -- when
+  // zoomed in, mapping against the full timeline range instead would make
+  // hovering land on a timestamp nowhere near what's visually under the
+  // cursor.
+  const { minTs, maxTs } = computeReplayDomain();
   const targetTs = minTs + ((mouseX - CHART_PAD.left) / (CHART_W - CHART_PAD.left - CHART_PAD.right)) * (maxTs - minTs);
+  const timestamps = replayData.timeline.map((s) => s.timestamp);
   let nearest = 0, nearestDist = Infinity;
   timestamps.forEach((ts, i) => {
     const dist = Math.abs(ts - targetTs);
@@ -904,18 +1172,83 @@ function onReplayChartHover(event) {
   setReplayIndex(nearest);
 }
 
+// Scroll-to-zoom, the way any real trading chart works -- up/away zooms
+// in, down/toward zooms out, centered on wherever the replay cursor
+// currently is (see setReplayZoom/computeReplayDomain). Only meaningful
+// when there's real OHLC to zoom into; a no-op otherwise.
+function onReplayChartWheel(event) {
+  if (!replayData || !replayData.candles || !replayData.candles.length) return;
+  event.preventDefault();
+  const current = replayZoomCandles || replayData.candles.length;
+  const factor = event.deltaY < 0 ? 0.75 : 1 / 0.75;
+  setReplayZoom(Math.round(current * factor));
+}
+
+// Translates a concept/microsystem's raw output into a short, readable
+// summary when its shape is recognized (the same fvgs/sweeps/pools/setups
+// shapes walkForAnnotations already knows) -- falling back to the raw
+// value for anything else, since concepts are user-authored and this can
+// never cover every possible shape. This is the "make sure the user
+// understands what's being analyzed" surface paired with the chart.
+function summarizeReadoutItem(kind, id, value) {
+  if (!value || typeof value !== "object") {
+    return { kind, id, headline: value === null ? "Rien à cet instant." : String(value), direction: null, detail: "" };
+  }
+  const lines = [];
+  let direction = null;
+
+  if (Array.isArray(value.fvgs)) {
+    lines.push(`${value.fvgs.length} FVG actif(s)`);
+    const nearest = value.nearest_above || value.nearest_below;
+    if (nearest) {
+      direction = nearest.direction;
+      lines.push(`plus proche : ${nearest.direction === "bullish" ? "haussier" : "baissier"} `
+        + `[${nearest.low.toFixed(2)} → ${nearest.high.toFixed(2)}]`);
+    }
+  }
+  if (Array.isArray(value.sweeps)) {
+    lines.push(`${value.sweeps.length} sweep(s) confirmé(s)`);
+    const latest = value.sweeps[0];
+    if (latest) {
+      direction = latest.direction;
+      lines.push(`dernier : ${latest.direction === "bullish" ? "haussier" : "baissier"} au niveau ${latest.level.toFixed(2)}`);
+    }
+  }
+  if (Array.isArray(value.active_pools_above) || Array.isArray(value.active_pools_below)) {
+    const n = (value.active_pools_above || []).length + (value.active_pools_below || []).length;
+    lines.push(`${n} pool(s) de liquidité actif(s)`);
+  }
+  if (Array.isArray(value.setups)) {
+    lines.push(`${value.setups.length} setup(s) détecté(s) au total`);
+  }
+  if (typeof value.dernier_signal === "string") {
+    direction = value.dernier_signal === "haussier" ? "bullish" : value.dernier_signal === "baissier" ? "bearish" : null;
+    lines.push(`signal actuel : ${value.dernier_signal}`);
+  }
+  if (typeof value.last_price === "number") lines.push(`dernier prix vu : ${value.last_price.toFixed(2)}`);
+  if (typeof value.candle_seconds === "number") lines.push(`granularité détectée : ${value.candle_seconds}s`);
+
+  if (!lines.length) {
+    return { kind, id, headline: JSON.stringify(value), direction: null, detail: "" };
+  }
+  return { kind, id, headline: lines[0], direction, detail: lines.slice(1).join(" · ") };
+}
+
 function renderReplayReadout() {
   const step = replayData.timeline[replayCurrentIndex];
-  const tbody = el("replay-readout-table").querySelector("tbody");
-  if (!step) { tbody.innerHTML = ""; return; }
-  const rows = [];
-  Object.entries(step.concepts || {}).forEach(([id, value]) => {
-    rows.push(`<tr><td>concept · ${escapeAttr(id)}</td><td>${escapeAttr(JSON.stringify(value))}</td></tr>`);
-  });
-  Object.entries(step.microsystems || {}).forEach(([id, value]) => {
-    rows.push(`<tr><td>microsystème · ${escapeAttr(id)}</td><td>${escapeAttr(JSON.stringify(value))}</td></tr>`);
-  });
-  tbody.innerHTML = rows.join("") || '<tr><td colspan="2" class="empty">Rien à cet instant.</td></tr>';
+  const container = el("replay-readout-summary");
+  if (!step) { container.innerHTML = ""; return; }
+  const items = [
+    ...Object.entries(step.concepts || {}).map(([id, value]) => summarizeReadoutItem("Concept", id, value)),
+    ...Object.entries(step.microsystems || {}).map(([id, value]) => summarizeReadoutItem("Microsystème", id, value)),
+  ];
+  container.innerHTML = items.map((item) => `
+    <div class="replay-readout-item">
+      <div class="kind">${escapeAttr(item.kind)} · ${escapeAttr(item.id)}</div>
+      <div class="headline ${item.direction || ""}">${escapeAttr(item.headline)}</div>
+      ${item.detail ? `<div class="detail">${escapeAttr(item.detail)}</div>` : ""}
+    </div>
+  `).join("") || '<div class="empty">Rien à analyser à cet instant.</div>';
 }
 
 function renderReplayTradesList() {
@@ -991,15 +1324,54 @@ el("replay-play-btn").addEventListener("click", () => {
   else startReplay();
 });
 
+function updateReplayZoomLabel() {
+  el("replay-zoom-label").textContent = replayZoomCandles ? `${replayZoomCandles} bougies` : "Vue complète";
+}
+
+function setReplayZoom(candles) {
+  if (!replayData || !replayData.candles || !replayData.candles.length) return;
+  const maxCandles = replayData.candles.length;
+  // >= the full candle count collapses to null (full view) rather than a
+  // number that happens to equal it -- one canonical "not zoomed" state,
+  // so the label reads "Vue complète" and zoom-out disables consistently
+  // whether it got there via the button or the wheel.
+  replayZoomCandles = candles === null || candles >= maxCandles
+    ? null : Math.max(REPLAY_ZOOM_MIN_CANDLES, candles);
+  updateReplayZoomLabel();
+  renderReplayChart();
+}
+
+el("replay-zoom-in-btn").addEventListener("click", () => {
+  setReplayZoom(Math.round((replayZoomCandles || REPLAY_ZOOM_DEFAULT_CANDLES) / 2));
+});
+el("replay-zoom-out-btn").addEventListener("click", () => {
+  if (!replayZoomCandles) return; // already at full view, nothing wider to go to
+  setReplayZoom(replayZoomCandles * 2);
+});
+el("replay-zoom-reset-btn").addEventListener("click", () => setReplayZoom(null));
+
 function prepareReplay(replay) {
   replayData = replay;
   replayCurrentIndex = 0;
   replaySelectedTradeIndex = null;
-  if (!replay || !replay.trades.length) {
+  replayZoomCandles = null;
+  updateReplayZoomLabel();
+  // Shown whenever there's a replay at all -- even zero trades still means
+  // the program examined the whole period, and that's exactly what this
+  // view is for: watching the reasoning, not only its trade outcomes.
+  if (!replay || !replay.timeline.length) {
     el("show-replay-btn").style.display = "none";
     return;
   }
   el("show-replay-btn").style.display = "inline-block";
+  // Zooming needs real OHLC (candles), which only a kline-priced backtest
+  // carries (see run_backtest's own candles field) -- disabled, not
+  // hidden, so it's clear the option exists but isn't available this time
+  // rather than looking like it was simply forgotten.
+  const canZoom = !!(replay.candles && replay.candles.length);
+  el("replay-zoom-in-btn").disabled = !canZoom;
+  el("replay-zoom-out-btn").disabled = !canZoom;
+  el("replay-zoom-reset-btn").disabled = !canZoom;
   renderReplayTradesList();
   setReplayIndex(0);
 }

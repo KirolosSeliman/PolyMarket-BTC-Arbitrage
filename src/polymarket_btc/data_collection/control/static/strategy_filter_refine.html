@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perfectionner un filtre de stratégie</title>
+<style>
+:root {
+  /* Same palette as concept_refine.html/strategy_builder.html -- kept
+     identical across pages, not re-picked per page. */
+  --surface-0: #000000; --surface-1: #111111; --surface-2: #1c1c1c;
+  --text-1: #f2f2f0; --text-2: #b7b6b0; --muted: #7a7972;
+  --border: rgba(255,255,255,0.12); --accent: #3987e5; --warning: #d99a2b; --critical: #d0554d;
+  --good: #3f9142;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; background: var(--surface-0); color: var(--text-1);
+  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header { padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--surface-1); }
+header a.back { color: var(--muted); text-decoration: none; font-size: 12px; }
+header a.back:hover { color: var(--text-2); }
+header h1 { font-size: 16px; margin: 8px 0 4px; }
+header p { color: var(--muted); margin: 0; font-size: 12.5px; }
+
+main { max-width: 900px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+.panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.panel h2 { font-size: 13px; margin: 0 0 10px; }
+.empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+textarea {
+  font: inherit; font-size: 12.5px; color: var(--text-1); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; width: 100%;
+  resize: vertical; min-height: 70px;
+}
+textarea:focus { outline: none; border-color: var(--accent); }
+button {
+  font: inherit; font-size: 12.5px; color: #fff; background: var(--accent);
+  border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; white-space: nowrap;
+}
+button:hover { filter: brightness(1.1); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.secondary { color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border); }
+button.secondary:hover { border-color: var(--accent); filter: none; }
+button.good { background: var(--good); }
+button.critical { background: var(--critical); }
+
+.progress-bar-track { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.progress-bar-fill { height: 100%; background: var(--accent); transition: width 0.2s; }
+.progress-line { font-size: 11.5px; color: var(--text-2); margin-top: 6px; }
+.progress-line strong { color: var(--text-1); }
+
+.refine-chart {
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; display: block; width: 100%;
+}
+.refine-chart .axis-label { fill: var(--muted); font-size: 10px; }
+.refine-chart .grid-line { stroke: var(--border); stroke-width: 1; opacity: 0.6; }
+.refine-chart .candle-wick { stroke-width: 1; }
+.refine-chart .candle-wick.up { stroke: var(--good); }
+.refine-chart .candle-wick.down { stroke: var(--critical); }
+.refine-chart .candle-body.up { fill: var(--good); }
+.refine-chart .candle-body.down { fill: var(--critical); }
+.refine-chart .trade-span { fill: var(--accent); fill-opacity: 0.07; }
+.refine-chart .position-box.profit { fill: var(--good); fill-opacity: 0.14; }
+.refine-chart .position-box.risk { fill: var(--critical); fill-opacity: 0.14; }
+.refine-chart .entry-line { stroke: var(--text-1); stroke-width: 1.5; stroke-dasharray: 2 2; opacity: 0.85; }
+.refine-chart .sl-line { stroke: var(--critical); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.9; }
+.refine-chart .tp-line { stroke: var(--good); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.9; }
+.refine-chart .level-label { font-size: 9.5px; }
+.refine-chart .direction-label { font-size: 10px; font-weight: 700; fill: var(--text-1); }
+.refine-chart .entry-marker { fill: var(--text-1); stroke: var(--surface-1); stroke-width: 1.5; }
+.refine-chart .exit-marker.win { fill: var(--good); stroke: var(--surface-1); stroke-width: 1.5; }
+.refine-chart .exit-marker.loss { fill: var(--critical); stroke: var(--surface-1); stroke-width: 1.5; }
+.refine-chart .entry-marker-halo { fill: var(--text-1); fill-opacity: 0.18; }
+.refine-chart .exit-marker-halo.win { fill: var(--good); fill-opacity: 0.18; }
+.refine-chart .exit-marker-halo.loss { fill: var(--critical); fill-opacity: 0.18; }
+.refine-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--text-2); align-items: center; }
+.refine-legend .swatch { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.refine-legend .swatch.win { background: var(--good); opacity: 0.7; }
+.refine-legend .swatch.loss { background: var(--critical); opacity: 0.7; }
+
+.trade-readout { margin-top: 10px; font-size: 12px; color: var(--text-2); white-space: pre-wrap; }
+.trade-readout strong { color: var(--text-1); }
+
+.judge-row { margin-top: 12px; }
+.non-note { display: none; margin-top: 10px; }
+.non-note.open { display: block; }
+.non-note p { margin: 0 0 6px; font-size: 11.5px; color: var(--text-2); }
+
+.prompt-details { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.prompt-details summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); }
+.prompt-box pre {
+  margin-top: 10px; max-height: 320px; overflow: auto; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  font-size: 11px; white-space: pre-wrap; word-break: break-word;
+}
+.prompt-gate { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <a class="back" href="/">← retour</a>
+  <h1 id="strategy-title">Perfectionner un filtre de stratégie</h1>
+  <p id="strategy-subtitle"></p>
+</header>
+
+<main>
+  <div class="panel">
+    <h2>Progression</h2>
+    <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-fill" style="width:0%"></div></div>
+    <p class="progress-line" id="progress-line">Chargement…</p>
+  </div>
+
+  <div class="panel" id="scan-panel">
+    <p class="empty" id="scan-status">Replay de la stratégie sur les données réelles collectées en cours (filtre désactivé)…</p>
+  </div>
+
+  <div class="panel" id="instance-panel" style="display:none">
+    <h2>Ce trade aurait-il dû être pris ?</h2>
+    <svg class="refine-chart" id="refine-chart" viewBox="0 0 760 220"></svg>
+    <div class="refine-legend">
+      <span><span class="swatch win"></span>Gain</span>
+      <span><span class="swatch loss"></span>Perte</span>
+    </div>
+    <div class="trade-readout" id="trade-readout"></div>
+    <div class="row judge-row">
+      <button type="button" class="good" id="yes-btn">✓ Oui</button>
+      <button type="button" class="critical secondary" id="no-btn">✗ Non</button>
+    </div>
+    <div class="non-note" id="non-note-box">
+      <p>Explique pourquoi ce trade n'aurait pas dû être pris -- ce texte sera repris tel quel dans le prompt de perfectionnement, avec le raisonnement d'exécution/gestion capturé ci-dessus.</p>
+      <textarea id="non-note-text" placeholder="Ex : le ratio risque/récompense est trop faible ici -- il faudrait un filtre qui refuse un trade sous un ratio de 1.5."></textarea>
+      <div class="row" style="margin-top:8px">
+        <button type="button" id="non-note-submit">Envoyer et continuer</button>
+        <button type="button" class="secondary" id="non-note-cancel">Annuler</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="empty-panel" style="display:none">
+    <p class="empty" id="empty-message"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Perfectionner ce filtre</h2>
+    <p class="prompt-gate" id="prompt-gate"></p>
+    <details class="prompt-details" id="prompt-details">
+      <summary>Prompt pour créer ou perfectionner ce filtre avec une IA</summary>
+      <div class="prompt-box">
+        <div class="row" style="justify-content:flex-end;margin-bottom:8px">
+          <button type="button" class="secondary" id="copy-prompt-btn">Copier</button>
+        </div>
+        <pre id="prompt-text">Chargement…</pre>
+      </div>
+    </details>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+function el(id) { return document.getElementById(id); }
+
+const params = new URLSearchParams(window.location.search);
+const strategyName = params.get("strategy");
+if (!strategyName) {
+  window.location.href = "/";
+}
+
+let currentInstance = null;
+
+// ============================================================
+// Chart -- a static single-image render of one already-resolved trade
+// (no play/pause/reveal, unlike strategy_builder.html's own animated
+// example player): the trade already happened in the replay, there's
+// nothing left to "reveal" here, so this borrows that page's trade-box
+// visual vocabulary (entry/exit markers, SL/TP boxes) without its
+// animation state. This app has no shared-JS-file mechanism, see
+// concept_refine.html's own note on why this is a near-duplicate of that
+// page's scaffolding, not an import.
+// ============================================================
+
+const CHART_W = 760, CHART_H = 220;
+const CHART_PAD = { top: 10, right: 46, bottom: 22, left: 10 };
+
+function timeScale(ts, minTs, maxTs) {
+  const span = maxTs - minTs || 1;
+  return CHART_PAD.left + ((ts - minTs) / span) * (CHART_W - CHART_PAD.left - CHART_PAD.right);
+}
+function priceScale(price, minPrice, maxPrice) {
+  const span = maxPrice - minPrice || 1;
+  return CHART_H - CHART_PAD.bottom - ((price - minPrice) / span) * (CHART_H - CHART_PAD.top - CHART_PAD.bottom);
+}
+
+function renderTradeBox(x, y, trade) {
+  let svg = "";
+  const x1 = x(trade.entry_time);
+  const x2 = x(trade.exit_time);
+  const entryY = y(trade.entry_price);
+
+  svg += `<rect class="trade-span" x="${x1.toFixed(1)}" y="${CHART_PAD.top}" `
+    + `width="${Math.max(1, x2 - x1).toFixed(1)}" height="${(CHART_H - CHART_PAD.top - CHART_PAD.bottom).toFixed(1)}"></rect>`;
+
+  if (typeof trade.take_profit === "number") {
+    const tpY = y(trade.take_profit);
+    const top = Math.min(entryY, tpY);
+    svg += `<rect class="position-box profit" x="${x1.toFixed(1)}" y="${top.toFixed(1)}" `
+      + `width="${Math.max(1, x2 - x1).toFixed(1)}" height="${Math.max(1, Math.abs(entryY - tpY)).toFixed(1)}"></rect>`;
+    svg += `<line class="tp-line" x1="${x1.toFixed(1)}" x2="${x2.toFixed(1)}" y1="${tpY.toFixed(1)}" y2="${tpY.toFixed(1)}"></line>`;
+    svg += `<text class="level-label" x="${x1.toFixed(1)}" y="${(tpY - 3).toFixed(1)}" fill="var(--good)">TP ${trade.take_profit.toFixed(2)}</text>`;
+  }
+  if (typeof trade.stop_loss === "number") {
+    const slY = y(trade.stop_loss);
+    const top = Math.min(entryY, slY);
+    svg += `<rect class="position-box risk" x="${x1.toFixed(1)}" y="${top.toFixed(1)}" `
+      + `width="${Math.max(1, x2 - x1).toFixed(1)}" height="${Math.max(1, Math.abs(entryY - slY)).toFixed(1)}"></rect>`;
+    svg += `<line class="sl-line" x1="${x1.toFixed(1)}" x2="${x2.toFixed(1)}" y1="${slY.toFixed(1)}" y2="${slY.toFixed(1)}"></line>`;
+    svg += `<text class="level-label" x="${x1.toFixed(1)}" y="${(slY + 10).toFixed(1)}" fill="var(--critical)">SL ${trade.stop_loss.toFixed(2)}</text>`;
+  }
+  svg += `<line class="entry-line" x1="${x1.toFixed(1)}" x2="${x2.toFixed(1)}" y1="${entryY.toFixed(1)}" y2="${entryY.toFixed(1)}"></line>`;
+  svg += `<text class="direction-label" x="${x1.toFixed(1)}" y="${(entryY - 3).toFixed(1)}">`
+    + `${trade.direction === "long" ? "LONG" : "SHORT"}</text>`;
+  svg += `<circle class="entry-marker-halo" cx="${x1.toFixed(1)}" cy="${entryY.toFixed(1)}" r="8"></circle>`;
+  svg += `<circle class="entry-marker" cx="${x1.toFixed(1)}" cy="${entryY.toFixed(1)}" r="5"></circle>`;
+  const exitY = y(trade.exit_price).toFixed(1);
+  svg += `<circle class="exit-marker-halo ${trade.outcome}" cx="${x2.toFixed(1)}" cy="${exitY}" r="8"></circle>`;
+  svg += `<circle class="exit-marker ${trade.outcome}" cx="${x2.toFixed(1)}" cy="${exitY}" r="5"></circle>`;
+  return svg;
+}
+
+function renderChart(instance) {
+  const candles = (instance.window && instance.window.candles) || [];
+  const trade = instance.node;
+  if (!candles.length) {
+    return `<text x="20" y="40" fill="var(--muted)" font-size="12">Pas de données dans cette fenêtre.</text>`;
+  }
+  const minTs = candles[0].timestamp, maxTs = candles[candles.length - 1].timestamp;
+  const hasOHLC = candles.every((c) =>
+    typeof c.open === "number" && typeof c.high === "number"
+    && typeof c.low === "number" && typeof c.close === "number");
+  let prices = hasOHLC ? candles.flatMap((c) => [c.high, c.low]) : candles.map((c) => c.close).filter((p) => typeof p === "number");
+  [trade.entry_price, trade.exit_price, trade.stop_loss, trade.take_profit].forEach((v) => {
+    if (typeof v === "number") prices = [...prices, v];
+  });
+  let minPrice = Math.min(...prices), maxPrice = Math.max(...prices);
+  const pad = (maxPrice - minPrice || 1) * 0.1;
+  minPrice -= pad; maxPrice += pad;
+
+  const x = (ts) => timeScale(ts, minTs, maxTs);
+  const y = (p) => priceScale(p, minPrice, maxPrice);
+
+  let svg = "";
+  [minPrice, (minPrice + maxPrice) / 2, maxPrice].forEach((p) => {
+    const py = y(p);
+    svg += `<line class="grid-line" x1="${CHART_PAD.left}" x2="${CHART_W - CHART_PAD.right}" y1="${py.toFixed(1)}" y2="${py.toFixed(1)}"></line>`;
+    svg += `<text class="axis-label" x="${CHART_W - CHART_PAD.right + 4}" y="${(py + 3).toFixed(1)}">${p.toFixed(2)}</text>`;
+  });
+
+  // The trade box drawn *before* the candles so it reads as a background
+  // wash rather than covering the price action, same ordering as
+  // concept_refine.html/microsystem_refine.html's own annotations.
+  svg += renderTradeBox(x, y, trade);
+
+  if (hasOHLC) {
+    const slotSeconds = candles.length > 1 ? (maxTs - minTs) / (candles.length - 1) : 60;
+    const slotWidth = Math.max(1, x(minTs + slotSeconds) - x(minTs));
+    const bodyWidth = Math.max(1, slotWidth * 0.7);
+    candles.forEach((c) => {
+      const cx = x(c.timestamp);
+      const cls = c.close >= c.open ? "up" : "down";
+      svg += `<line class="candle-wick ${cls}" x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" `
+        + `y1="${y(c.high).toFixed(1)}" y2="${y(c.low).toFixed(1)}"></line>`;
+      const bodyTop = y(Math.max(c.open, c.close));
+      const bodyHeight = Math.max(1, Math.abs(y(c.open) - y(c.close)));
+      svg += `<rect class="candle-body ${cls}" x="${(cx - bodyWidth / 2).toFixed(1)}" y="${bodyTop.toFixed(1)}" `
+        + `width="${bodyWidth.toFixed(1)}" height="${bodyHeight.toFixed(1)}"></rect>`;
+    });
+  }
+  return svg;
+}
+
+function formatDuration(seconds) {
+  const totalMinutes = Math.round(seconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours} h${minutes ? ` ${minutes} min` : ""}`;
+}
+
+function renderReadout(trade) {
+  const dirLabel = trade.direction === "long" ? "Long" : "Short";
+  const outcomeLabel = trade.outcome === "win" ? "gain" : "perte";
+  const lines = [
+    `<strong>${dirLabel} -- entrée ${trade.entry_price.toFixed(2)} → sortie ${trade.exit_price.toFixed(2)} (${outcomeLabel})</strong>`,
+    `Durée en position : ${formatDuration(trade.exit_time - trade.entry_time)}`,
+  ];
+  if (trade.execution_log) lines.push(`Entrée : ${trade.execution_log}`);
+  if (trade.management_log) lines.push(`Gestion : ${trade.management_log}`);
+  return lines.join("\n");
+}
+
+// ============================================================
+// Progress + gating
+// ============================================================
+
+function renderProgress(progress) {
+  const pct = Math.min(100, Math.round((progress.total / progress.min_total) * 100));
+  el("progress-fill").style.width = pct + "%";
+  el("progress-line").innerHTML =
+    `<strong>${progress.total}</strong> exemple(s) annoté(s) (minimum ${progress.min_total}) -- `
+    + `<strong>${progress.no_count}</strong> désaccord(s) "non" (minimum ${progress.min_no})`;
+  el("prompt-details").style.display = progress.eligible_for_prompt ? "block" : "none";
+  el("prompt-gate").style.display = progress.eligible_for_prompt ? "none" : "block";
+  el("prompt-gate").textContent = progress.eligible_for_prompt
+    ? ""
+    : `Encore ${Math.max(0, progress.min_total - progress.total)} exemple(s) et `
+      + `${Math.max(0, progress.min_no - progress.no_count)} désaccord "non" avant de pouvoir générer un prompt.`;
+}
+
+const promptBox = {
+  loaded: false,
+  async load() {
+    el("prompt-text").textContent = "Chargement…";
+    try {
+      const res = await fetch("/api/strategy-filter-refine/prompt", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy_name: strategyName }),
+      });
+      const data = await res.json();
+      el("prompt-text").textContent = res.ok ? data.content : "Prompt indisponible : " + data.error;
+    } catch (error) {
+      el("prompt-text").textContent = "Prompt indisponible (erreur réseau).";
+    }
+  },
+};
+el("prompt-details").addEventListener("toggle", () => { if (el("prompt-details").open) promptBox.load(); });
+el("copy-prompt-btn").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(el("prompt-text").textContent);
+    const original = el("copy-prompt-btn").textContent;
+    el("copy-prompt-btn").textContent = "Copié !";
+    setTimeout(() => { el("copy-prompt-btn").textContent = original; }, 1500);
+  } catch (error) {
+    alert("Copie automatique impossible -- sélectionne le texte manuellement.");
+  }
+});
+
+// ============================================================
+// Instance flow: scan (background job, polled) -> next -> judge -> repeat.
+// ============================================================
+
+async function pollScan(jobId) {
+  while (true) {
+    const res = await fetch(`/api/strategy-filter-refine/scan-status?job_id=${encodeURIComponent(jobId)}`);
+    const status = await res.json();
+    if (!res.ok) throw new Error(status.error || "échec de l'analyse");
+    const pct = Math.round((status.progress || 0) * 100);
+    el("scan-status").textContent = `Replay de la stratégie sur les données réelles collectées en cours (filtre désactivé)… ${pct}%`;
+    if (status.done) {
+      if (status.error) throw new Error(status.error);
+      return status.result;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 700));
+  }
+}
+
+async function startScanThenNext() {
+  el("scan-panel").style.display = "block";
+  el("instance-panel").style.display = "none";
+  el("empty-panel").style.display = "none";
+  try {
+    const scanRes = await fetch("/api/strategy-filter-refine/scan", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ strategy_name: strategyName }),
+    });
+    const scanData = await scanRes.json();
+    if (!scanRes.ok) throw new Error(scanData.error || "échec du lancement de l'analyse");
+    await pollScan(scanData.job_id);
+  } catch (error) {
+    el("scan-status").textContent = "Échec de l'analyse : " + error.message;
+    return;
+  }
+  el("scan-panel").style.display = "none";
+  await loadNext();
+}
+
+async function loadNext() {
+  const res = await fetch("/api/strategy-filter-refine/next", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ strategy_name: strategyName }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    el("empty-panel").style.display = "block";
+    el("empty-message").textContent = "Erreur : " + (data.error || "inconnue");
+    el("instance-panel").style.display = "none";
+    return;
+  }
+  renderProgress(data.progress);
+  if (data.no_candidates) {
+    el("instance-panel").style.display = "none";
+    el("empty-panel").style.display = "block";
+    el("empty-message").textContent =
+      "Cette stratégie n'a pris aucun trade dans les données réelles actuellement collectées -- "
+      + "collecte davantage de données, puis relance la page.";
+    return;
+  }
+  if (data.exhausted) {
+    el("instance-panel").style.display = "none";
+    el("empty-panel").style.display = "block";
+    el("empty-message").textContent =
+      "Tu as annoté tous les trades disponibles pour cette stratégie sur les données actuelles. "
+      + "Collecte plus de données, ou reviens plus tard, pour continuer.";
+    return;
+  }
+  currentInstance = data.instance;
+  el("empty-panel").style.display = "none";
+  el("instance-panel").style.display = "block";
+  el("non-note-box").classList.remove("open");
+  el("non-note-text").value = "";
+  el("refine-chart").innerHTML = renderChart(currentInstance);
+  el("trade-readout").innerHTML = renderReadout(currentInstance.node);
+}
+
+async function submitLabel(labelValue, note) {
+  const body = {
+    strategy_name: strategyName, shape: currentInstance.shape, node: currentInstance.node,
+    trigger_ts: currentInstance.trigger_ts, label: labelValue, note: note || "",
+  };
+  const res = await fetch("/api/strategy-filter-refine/label", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert("Échec de l'enregistrement : " + (data.error || "inconnue"));
+    return;
+  }
+  await loadNext();
+}
+
+el("yes-btn").addEventListener("click", () => submitLabel("oui", ""));
+el("no-btn").addEventListener("click", () => {
+  el("non-note-box").classList.add("open");
+  el("non-note-text").focus();
+});
+el("non-note-cancel").addEventListener("click", () => {
+  el("non-note-box").classList.remove("open");
+  el("non-note-text").value = "";
+});
+el("non-note-submit").addEventListener("click", () => {
+  const note = el("non-note-text").value.trim();
+  if (!note) {
+    el("non-note-text").focus();
+    return;
+  }
+  submitLabel("non", note);
+});
+
+async function init() {
+  try {
+    const res = await fetch(`/api/strategy?name=${encodeURIComponent(strategyName)}`);
+    if (res.ok) {
+      el("strategy-title").textContent = `Perfectionner le filtre : ${strategyName}`;
+      el("strategy-subtitle").textContent =
+        "Chaque trade réel que la stratégie aurait pris (filtre désactivé pendant l'analyse) -- "
+        + "dis si oui ou non il aurait dû être pris.";
+    } else {
+      el("strategy-title").textContent = `Stratégie introuvable : ${strategyName}`;
+    }
+  } catch (error) {
+    el("strategy-title").textContent = `Perfectionner le filtre : ${strategyName}`;
+  }
+  await startScanThenNext();
+}
+
+init();
+</script>
+</body>
+</html>

@@ -23,18 +23,20 @@ from pathlib import Path
 import re
 
 from .backtest_data import backtest_coverage, key_coverage
-from .backtest_engine import required_concrete_keys
+from .backtest_engine import required_concrete_keys, run_example_scenario
 from .concepts import discover_concepts
 from .config_schema import resolve_config
 from .execution import discover_execution_profiles
 from .management import discover_management_profiles
 from .microsystems import discover_microsystems
 from .runs import CollectionRunManager
+from .strategy_filter import discover_filter_profiles
 
 _LOGGER = logging.getLogger(__name__)
 
 STRATEGY_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 INSTANCE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_EXAMPLE_WIN_SEARCH_ATTEMPTS = 30
 
 
 @dataclass(slots=True)
@@ -66,6 +68,7 @@ class StrategyManager:
                 "microsystem_count": len(microsystems),
                 "has_execution": payload.get("execution") is not None,
                 "has_management": payload.get("management") is not None,
+                "has_filter": payload.get("filter") is not None,
                 "updated_at_utc": payload.get("updated_at_utc"),
             })
         return found
@@ -183,30 +186,27 @@ class StrategyManager:
             bindings[req_type] = key
         return bindings
 
-    def save_strategy(
+    def _resolve_definition(
         self,
         *,
-        name: str,
         concepts: list[dict],
         microsystems: list[dict],
         execution: dict | None,
         management: dict | None,
-        overwrite: bool = False,
+        filter: dict | None = None,
     ) -> dict[str, object]:
-        if not STRATEGY_NAME_RE.match(name):
-            raise ValueError(
-                "name must be a simple identifier (letters, digits, underscores, "
-                "starting with a letter)"
-            )
-        self.strategies_dir.mkdir(parents=True, exist_ok=True)
-        target = self.strategies_dir / f"{name}.json"
-        if target.exists() and not overwrite:
-            raise FileExistsError(f"a strategy named {name!r} already exists")
-
+        """The validate-and-fill-in-defaults core of save_strategy, minus
+        the naming/persistence around it -- shared with preview_example so
+        a builder-in-progress preview is checked against *exactly* the same
+        rules a real save would enforce (an unknown concept_id or a bad
+        data binding fails the preview too, catching it before the user
+        even tries to save), instead of a second, drifting copy of this
+        logic living in the backtest engine."""
         concept_infos = {info.id: info for info in discover_concepts(self.runs.concepts_dir)}
         microsystem_infos = {info.id: info for info in discover_microsystems(self.runs.microsystems_dir)}
         execution_infos = {info.id: info for info in discover_execution_profiles(self.runs.execution_dir)}
         management_infos = {info.id: info for info in discover_management_profiles(self.runs.management_dir)}
+        filter_infos = {info.id: info for info in discover_filter_profiles(self.runs.filter_dir)}
         known_data_keys = {row["key"] for row in self.runs.available_sources()}
         known_data_keys.update(row["id"] for row in self.runs.available_plugins())
 
@@ -293,6 +293,51 @@ class StrategyManager:
             resolved = resolve_config(info.config_schema, management.get("config") or {})
             resolved_management = {"management_id": management_id, "config": resolved}
 
+        resolved_filter: dict[str, object] | None = None
+        if filter is not None:
+            if not isinstance(filter, dict):
+                raise ValueError("filter must be an object or null")
+            filter_id = filter.get("filter_id")
+            info = filter_infos.get(filter_id)
+            if info is None:
+                raise ValueError(f"unknown filter_id: {filter_id!r}")
+            resolved = resolve_config(info.config_schema, filter.get("config") or {})
+            resolved_filter = {"filter_id": filter_id, "config": resolved}
+
+        return {
+            "concepts": resolved_concepts,
+            "microsystems": resolved_microsystems,
+            "execution": resolved_execution,
+            "management": resolved_management,
+            "filter": resolved_filter,
+        }
+
+    def save_strategy(
+        self,
+        *,
+        name: str,
+        concepts: list[dict],
+        microsystems: list[dict],
+        execution: dict | None,
+        management: dict | None,
+        filter: dict | None = None,
+        overwrite: bool = False,
+    ) -> dict[str, object]:
+        if not STRATEGY_NAME_RE.match(name):
+            raise ValueError(
+                "name must be a simple identifier (letters, digits, underscores, "
+                "starting with a letter)"
+            )
+        self.strategies_dir.mkdir(parents=True, exist_ok=True)
+        target = self.strategies_dir / f"{name}.json"
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"a strategy named {name!r} already exists")
+
+        definition = self._resolve_definition(
+            concepts=concepts, microsystems=microsystems, execution=execution, management=management,
+            filter=filter,
+        )
+
         now = datetime.now(UTC).isoformat()
         existing_created_at = now
         if target.exists():
@@ -302,15 +347,65 @@ class StrategyManager:
                 pass
         payload = {
             "name": name,
-            "concepts": resolved_concepts,
-            "microsystems": resolved_microsystems,
-            "execution": resolved_execution,
-            "management": resolved_management,
+            **definition,
             "created_at_utc": existing_created_at,
             "updated_at_utc": now,
         }
         target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         return payload
+
+    def preview_example(
+        self,
+        *,
+        concepts: list[dict],
+        microsystems: list[dict],
+        execution: dict | None,
+        management: dict | None,
+        filter: dict | None = None,
+        cadence_seconds: float = 60.0,
+        seed: int = 42,
+    ) -> dict[str, object]:
+        """Runs a strategy under construction -- whole, or any subset of it
+        (e.g. a single concept instance, for the builder's own per-item "i"
+        preview) -- against an invented scenario instead of real collected
+        data, so the user can see what their concept/microsystem/strategy
+        actually does before any data exists for it, or before it's even
+        saved. Validated through the same _resolve_definition save_strategy
+        itself uses, so a broken wiring (unknown concept_id, a dangling
+        concept_instance_ids reference, an invalid data binding) surfaces
+        here exactly as it would on save, not as some other, less legible
+        failure deeper in the engine."""
+        definition = self._resolve_definition(
+            concepts=concepts, microsystems=microsystems, execution=execution, management=management,
+            filter=filter,
+        )
+        kwargs = dict(
+            strategy=definition,
+            concepts_dir=self.runs.concepts_dir,
+            microsystems_dir=self.runs.microsystems_dir,
+            execution_dir=self.runs.execution_dir,
+            management_dir=self.runs.management_dir,
+            filter_dir=self.runs.filter_dir,
+            data_requirements_for=self.runs._data_requirements_for,
+            cadence_seconds=cadence_seconds,
+        )
+        if execution is None:
+            return run_example_scenario(seed=seed, **kwargs)
+
+        # An "example" is meant to show the strategy working, not illustrate
+        # a coin flip -- whichever synthetic seed happens to produce a loss
+        # isn't representative of what's being demonstrated. Try a bounded
+        # run of seeds starting from the requested one, deterministically
+        # (same starting seed always searches the same sequence, so this
+        # stays reproducible), and take the first one with a winning trade;
+        # fall back to the last attempt if none of them found one (a real
+        # scenario, just not a flattering one -- still better than an error).
+        result = None
+        for attempt in range(_EXAMPLE_WIN_SEARCH_ATTEMPTS):
+            result = run_example_scenario(seed=seed + attempt, **kwargs)
+            if any(trade["outcome"] == "win" for trade in result["trades"]):
+                return result
+        return result
 
 
 __all__ = ["INSTANCE_ID_RE", "STRATEGY_NAME_RE", "StrategyManager"]
