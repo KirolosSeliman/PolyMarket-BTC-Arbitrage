@@ -32,7 +32,21 @@
       }
     }
   ],
-  "microsystems": [],
+  "microsystems": [
+    {
+      "instance_id": "micro_1",
+      "microsystem_id": "fvg_sweep_reversal",
+      "concept_instance_ids": [
+        "concept_1",
+        "concept_2"
+      ],
+      "data_bindings": {},
+      "config": {
+        "max_candles_before_sweep": 50,
+        "alignment_tolerance_candles": 0
+      }
+    }
+  ],
   "execution": {
     "execution_id": "fvg_rebound_entry",
     "config": {
@@ -55,5 +69,5 @@
     }
   },
   "created_at_utc": "2026-08-23T16:44:59.828845+00:00",
-  "updated_at_utc": "2026-08-23T16:44:59.828845+00:00"
+  "updated_at_utc": "2026-08-23T21:22:53.857567+00:00"
 }
