@@ -547,16 +547,18 @@ function renderEligibility() {
     return;
   }
   if (eligibility.missing_data_keys.length) {
+    const missingParam = encodeURIComponent(eligibility.missing_data_keys.join(","));
     content.innerHTML = `<div class="blocking">Aucune collecte ne couvre encore : `
       + `<strong>${eligibility.missing_data_keys.map(escapeAttr).join(", ")}</strong>. `
-      + `<a href="/collect">Lance une collecte</a> pour cette stratégie avant de backtester.</div>`;
+      + `<a href="/collect?missing=${missingParam}">Lance une collecte</a> pour cette stratégie avant de backtester.</div>`;
     return;
   }
   if (!eligibility.coverage.length) {
+    const missingParam = encodeURIComponent(eligibility.narrowest_key || "");
     content.innerHTML = `<div class="blocking">Chaque donnée requise a été collectée séparément, mais leurs périodes ne `
       + `se recoupent jamais -- il n'y a donc aucune date testable. La donnée la moins couverte est `
       + `<strong>${escapeAttr(eligibility.narrowest_key || "")}</strong> : `
-      + `<a href="/collect">collecte-la</a> sur la même période que le reste avant de backtester.</div>`;
+      + `<a href="/collect?missing=${missingParam}">collecte-la</a> sur la même période que le reste avant de backtester.</div>`;
     return;
   }
   content.innerHTML = `<div style="color:var(--good)">Données disponibles pour cette stratégie.</div>`;

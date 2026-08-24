@@ -56,6 +56,7 @@ button.secondary:hover { border-color: var(--accent); filter: none; }
   cursor: pointer; transition: border-color 0.15s, transform 0.15s;
 }
 .option-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.option-card.danger:hover { border-color: var(--critical); }
 
 label.check { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; font-size: 12.5px; cursor: pointer; }
 label.check input { margin-top: 2px; }
@@ -145,7 +146,7 @@ label.check input { margin-top: 2px; }
 
     <div class="panel" id="create-concept-panel" style="display:none">
       <h2>Créer un nouveau concept</h2>
-      <p>Choisis les données que ce concept va utiliser -- un actif à la fois, comme dans Collecte de données.</p>
+      <p>Choisis les types de données que ce concept va utiliser.</p>
       <div id="concept-data-picker"></div>
       <details class="prompt-details" id="concept-prompt-details">
         <summary>Prompt pour créer ce concept avec une IA</summary>
@@ -265,7 +266,9 @@ label.check input { margin-top: 2px; }
       <div class="option-grid">
         <button type="button" class="option-card" id="modify-mode-global-btn">Modifier globalement</button>
         <button type="button" class="option-card" id="modify-mode-duplicate-btn">Dupliquer pour une stratégie</button>
+        <button type="button" class="option-card danger" id="modify-mode-delete-btn">Supprimer</button>
       </div>
+      <p id="modify-mode-delete-status" class="import-status" style="margin-top:10px"></p>
     </div>
   </section>
 
@@ -492,15 +495,14 @@ function createFilterableChecklist({ searchInputEl, listEl, getItems, selectedSe
   return { render };
 }
 
-function createAssetDataPicker({ container, selectedSet, onChange }) {
+// A concept/microsystem's own logic doesn't depend on which asset its
+// authoring prompt was drafted against (BTC candles and ETH candles have
+// the same shape) -- so this only ever shows BTC's own entries, grouped by
+// market, with no asset picker at all. Which literal asset a strategy
+// instance actually runs against is decided once, at backtest launch (see
+// the "actif simulé" field there), never here.
+function createDataTypePicker({ container, selectedSet, onChange }) {
   container.innerHTML = `
-    <div class="row" style="margin-bottom:8px;align-items:center">
-      <div class="combobox" style="max-width:220px">
-        <input type="text" class="adp-asset-search" placeholder="Rechercher un actif…" autocomplete="off">
-        <div class="combobox-listbox adp-asset-listbox" style="display:none"></div>
-      </div>
-      <span class="adp-current-asset" style="color:var(--text-2);font-size:12px"></span>
-    </div>
     <div class="asset-columns">
       <div><h3>Spot</h3><div class="check-list adp-spot-list"></div></div>
       <div><h3>Futures</h3><div class="check-list adp-futures-list"></div></div>
@@ -510,13 +512,9 @@ function createAssetDataPicker({ container, selectedSet, onChange }) {
       <div class="check-list adp-other-list"></div>
     </div>
   `;
-  const searchInput = container.querySelector(".adp-asset-search");
-  const listbox = container.querySelector(".adp-asset-listbox");
-  const currentAssetLabel = container.querySelector(".adp-current-asset");
   const spotList = container.querySelector(".adp-spot-list");
   const futuresList = container.querySelector(".adp-futures-list");
   const otherList = container.querySelector(".adp-other-list");
-  let currentAsset = null;
 
   function renderCheckList(listEl, items) {
     listEl.innerHTML = items.length ? items.map((item) => {
@@ -525,28 +523,6 @@ function createAssetDataPicker({ container, selectedSet, onChange }) {
         + `<span>${item.label}${infoIconHtml(item.detail)}</span></label>`;
     }).join("") : '<div class="empty">Aucune donnée.</div>';
   }
-
-  function renderAsset() {
-    if (!currentAsset) { spotList.innerHTML = ""; futuresList.innerHTML = ""; currentAssetLabel.textContent = ""; return; }
-    currentAssetLabel.textContent = `Actif : ${currentAsset}`;
-    renderCheckList(spotList, allDataSources.filter((s) => s.asset === currentAsset && s.market === "spot"));
-    renderCheckList(futuresList, allDataSources.filter((s) => s.asset === currentAsset && s.market === "futures"));
-  }
-
-  function renderOther() {
-    const items = [
-      ...allDataSources.filter((s) => !s.asset).map((s) => ({ key: s.key, label: s.label, detail: s.detail })),
-      ...allPlugins.map((p) => ({ key: p.id, label: p.label, detail: p.detail })),
-    ];
-    renderCheckList(otherList, items);
-  }
-
-  createCombobox({
-    inputEl: searchInput, listboxEl: listbox, containerEl: container,
-    getItems: () => [...new Set(allDataSources.filter((s) => s.asset).map((s) => s.asset))].sort().map((asset) => ({ key: asset, label: asset })),
-    placeholder: "Aucun actif trouvé.",
-    onSelect: (asset) => { currentAsset = asset; searchInput.value = asset; renderAsset(); },
-  });
 
   [spotList, futuresList, otherList].forEach((listEl) => {
     listEl.addEventListener("change", (event) => {
@@ -558,12 +534,13 @@ function createAssetDataPicker({ container, selectedSet, onChange }) {
   });
 
   function refresh() {
-    if (currentAsset === null) {
-      const defaultAsset = allDataSources.find((s) => s.asset === "BTC") ? "BTC" : null;
-      if (defaultAsset) { currentAsset = defaultAsset; searchInput.value = defaultAsset; }
-    }
-    renderAsset();
-    renderOther();
+    renderCheckList(spotList, allDataSources.filter((s) => s.asset === "BTC" && s.market === "spot"));
+    renderCheckList(futuresList, allDataSources.filter((s) => s.asset === "BTC" && s.market === "futures"));
+    const otherItems = [
+      ...allDataSources.filter((s) => !s.asset).map((s) => ({ key: s.key, label: s.label, detail: s.detail })),
+      ...allPlugins.map((p) => ({ key: p.id, label: p.label, detail: p.detail })),
+    ];
+    renderCheckList(otherList, otherItems);
   }
   refresh();
   return { render: refresh };
@@ -637,6 +614,11 @@ function showCreatePanel() {
   ["concept", "microsystem", "execution", "management"].forEach((section) => {
     el(`create-${section}-panel`).style.display = section === currentSection ? "block" : "none";
   });
+  // The pickers are constructed once, at module-eval time, before
+  // loadCatalogs()'s initial fetch resolves -- refreshing here (not just
+  // after an import) is what makes the very first visit show real data
+  // instead of "Aucune donnée" until something gets imported.
+  refreshCreatePickers();
 }
 el("create-back-btn").addEventListener("click", () => showScreen("screen-action"));
 el("perfectionner-back-btn").addEventListener("click", () => showScreen("screen-action"));
@@ -654,7 +636,7 @@ function refreshCreatePickers() {
 }
 
 const conceptDataSelection = new Set();
-const conceptDataPicker = createAssetDataPicker({ container: el("concept-data-picker"), selectedSet: conceptDataSelection });
+const conceptDataPicker = createDataTypePicker({ container: el("concept-data-picker"), selectedSet: conceptDataSelection });
 const conceptPromptBox = createPromptBox({
   detailsEl: el("concept-prompt-details"), preEl: el("concept-prompt-text"), copyBtnEl: el("concept-copy-prompt-btn"),
   fetchContent: async () => {
@@ -687,7 +669,7 @@ const microsystemConceptPicker = createFilterableChecklist({
   selectedSet: microsystemConceptSelection,
 });
 const microsystemDataSelection = new Set();
-const microsystemDataPicker = createAssetDataPicker({ container: el("microsystem-data-picker"), selectedSet: microsystemDataSelection });
+const microsystemDataPicker = createDataTypePicker({ container: el("microsystem-data-picker"), selectedSet: microsystemDataSelection });
 const microsystemPromptBox = createPromptBox({
   detailsEl: el("microsystem-prompt-details"), preEl: el("microsystem-prompt-text"), copyBtnEl: el("microsystem-copy-prompt-btn"),
   fetchContent: async () => {
@@ -766,6 +748,28 @@ createCombobox({
   placeholder: "Aucun élément trouvé.",
 });
 el("modify-mode-back-btn").addEventListener("click", () => showScreen("screen-modify-pick"));
+
+// Refused server-side (delete_source) if any saved strategy still
+// references currentModifyId -- the error message names them, shown here
+// rather than silently failing so the user knows to detach it first.
+el("modify-mode-delete-btn").addEventListener("click", async () => {
+  const statusEl = el("modify-mode-delete-status");
+  statusEl.className = "import-status";
+  statusEl.textContent = "";
+  if (!confirm(`Supprimer définitivement ${currentModifyId} ? Cette action est irréversible.`)) return;
+  const res = await fetch("/api/builder/delete", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ category: currentSection, source_id: currentModifyId }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = data.error || "échec de la suppression";
+    return;
+  }
+  await loadCatalogs();
+  showScreen("screen-action");
+});
 
 el("modify-mode-global-btn").addEventListener("click", () => {
   el("modify-global-title").textContent = `Modifier ${currentModifyId} globalement`;

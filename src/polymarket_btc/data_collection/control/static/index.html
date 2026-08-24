@@ -50,7 +50,7 @@ a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
 <header>
   <a class="back" href="/">← changer de stratégie</a>
   <h1>PolyMarket BTC — Centre de contrôle</h1>
-  <p>Le collecteur alimente trois destinations. Choisis-en une.</p>
+  <p>Choisis une destination.</p>
   <p class="strategy" id="strategy-line" style="display:none"></p>
   <a class="back" id="edit-strategy-link" href="#" style="display:none">Modifier cette stratégie</a>
 </header>
@@ -66,12 +66,6 @@ a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
     <h2>Backtest</h2>
     <p>Teste ta stratégie sur les données déjà collectées, sur la période de ton choix.</p>
     <span class="status" id="backtest-card-status">Fonctionnel</span>
-  </a>
-  <a class="card" href="/collect">
-    <span class="icon">●</span>
-    <h2>Collecte de données</h2>
-    <p>Choisis quelles données récolter (spot, futures, Polymarket…), lance la collecte en arrière-plan, et exporte un fichier pour le backtest.</p>
-    <span class="status">Fonctionnel</span>
   </a>
 </div>
 <script>

@@ -73,8 +73,6 @@ button.danger { background: var(--critical); }
   display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 12px;
 }
 .requirement-row .req-type { min-width: 90px; }
-.requirement-row .req-ok { color: var(--accent); }
-.requirement-row .req-missing { color: var(--critical); }
 .requirement-row .req-fixed { color: var(--muted); font-size: 11px; }
 
 .info-icon {
@@ -516,70 +514,28 @@ function managementById(id) { return allManagementProfiles.find((m) => m.id === 
 function filterById(id) { return allFilterProfiles.find((f) => f.id === id); }
 
 // --- Reusable: shows a concept's/microsystem's data_requirements (see
-// CollectionRunManager._data_requirements_for) and lets the user bind each
-// *swappable* one to a concrete asset -- this is what actually decides
-// which asset a concept/microsystem instance runs against; locked
-// (multi-asset or non-asset-scoped) requirements are read-only, they're
-// exactly what the script itself declared. `bindings` is mutated in place
-// (an instance's own data_bindings object). ---
+// CollectionRunManager._data_requirements_for) as plain read-only rows --
+// type name plus whichever concrete source it resolves to. Which asset a
+// strategy actually runs against is decided once, at backtest launch (the
+// "actif simulé" field there), not per requirement here -- so this never
+// offers a picker, just shows the resolved default (bindings[type], falling
+// back to the requirement's own keys[0], same default addConceptInstance/
+// the microsystem-add flow already seed data_bindings with). ---
 
-function renderRequirementsPanel(container, requirements, bindings, onChange) {
+function renderRequirementsPanel(container, requirements, bindings) {
   if (!requirements.length) {
     container.innerHTML = '<div class="empty">Aucune donnée requise.</div>';
     return;
   }
   container.innerHTML = requirements.map((requirement) => {
-    if (!requirement.swappable) {
-      const named = requirement.keys.map((key) => {
-        const source = allDataSources.find((s) => s.key === key);
-        return source ? (source.asset || source.label) : key;
-      }).join(", ");
-      return `<div class="requirement-row"><span class="req-type">${requirement.type}</span>`
-        + `<span class="req-fixed">fixé : ${named}</span></div>`;
-    }
-    const boundKey = bindings[requirement.type];
-    const boundSource = boundKey ? allDataSources.find((s) => s.key === boundKey) : null;
-    const status = boundSource
-      ? `<span class="req-ok">✓ ${boundSource.asset}</span>`
-      : `<span class="req-missing">✗ non résolu</span>`;
-    return `<div class="requirement-row" data-type="${escapeAttr(requirement.type)}">`
-      + `<span class="req-type">${requirement.type}</span>${status}`
-      + `<button type="button" class="secondary change-asset-btn" data-type="${escapeAttr(requirement.type)}" `
-      + `style="padding:3px 10px;font-size:11px">Changer d'actif</button>`
-      + `<span class="asset-picker-slot" data-type="${escapeAttr(requirement.type)}"></span>`
-      + `</div>`;
+    const keys = requirement.swappable ? [bindings[requirement.type] || requirement.keys[0]] : requirement.keys;
+    const named = keys.map((key) => {
+      const source = allDataSources.find((s) => s.key === key);
+      return source ? (source.asset || source.label) : key;
+    }).join(", ");
+    return `<div class="requirement-row"><span class="req-type">${requirement.type}</span>`
+      + `<span class="req-fixed">${named}</span></div>`;
   }).join("");
-
-  container.querySelectorAll(".change-asset-btn").forEach((button) => {
-    button.addEventListener("click", () => {
-      const type = button.dataset.type;
-      const slot = container.querySelector(`.asset-picker-slot[data-type="${CSS.escape(type)}"]`);
-      if (slot.dataset.open === "1") {
-        slot.innerHTML = "";
-        slot.dataset.open = "0";
-        return;
-      }
-      slot.dataset.open = "1";
-      slot.innerHTML = `<span class="combobox" style="display:inline-block;margin-left:8px;max-width:140px">
-        <input type="text" class="req-asset-search" placeholder="Actif…" autocomplete="off">
-        <span class="combobox-listbox" style="display:none"></span>
-      </span>`;
-      createCombobox({
-        inputEl: slot.querySelector(".req-asset-search"),
-        listboxEl: slot.querySelector(".combobox-listbox"),
-        containerEl: slot,
-        getItems: () => allDataSources
-          .filter((s) => s.tag === type)
-          .map((s) => ({ key: s.key, label: s.asset })),
-        placeholder: "Aucun actif trouvé.",
-        onSelect: (key) => {
-          bindings[type] = key;
-          if (onChange) onChange();
-          renderRequirementsPanel(container, requirements, bindings, onChange);
-        },
-      });
-    });
-  });
 }
 
 // --- Config-schema-driven form (used at step 2 and step 4). ---
@@ -1669,7 +1625,7 @@ function renderConceptInstancesList() {
   strategyConcepts.forEach((instance) => {
     const info = conceptById(instance.concept_id);
     const panelEl = container.querySelector(`.requirements-panel[data-instance-id="${CSS.escape(instance.instance_id)}"]`);
-    if (panelEl && info) renderRequirementsPanel(panelEl, info.data_requirements, instance.data_bindings, () => {});
+    if (panelEl && info) renderRequirementsPanel(panelEl, info.data_requirements, instance.data_bindings);
   });
 }
 
@@ -1728,7 +1684,7 @@ function renderConceptConfigForms() {
     const formEl = container.querySelector(`.concept-config-form[data-instance-id="${CSS.escape(instance.instance_id)}"]`);
     if (formEl && info) renderConfigForm(formEl, info.config_schema, instance.config);
     const reqEl = container.querySelector(`.concept-config-requirements[data-instance-id="${CSS.escape(instance.instance_id)}"]`);
-    if (reqEl && info) renderRequirementsPanel(reqEl, info.data_requirements, instance.data_bindings, () => {});
+    if (reqEl && info) renderRequirementsPanel(reqEl, info.data_requirements, instance.data_bindings);
   });
 }
 
@@ -1791,7 +1747,7 @@ function renderMicrosystemInstancesList() {
   strategyMicrosystems.forEach((instance) => {
     const info = microsystemById(instance.microsystem_id);
     const panelEl = container.querySelector(`.requirements-panel[data-instance-id="${CSS.escape(instance.instance_id)}"]`);
-    if (panelEl && info) renderRequirementsPanel(panelEl, info.data_requirements, instance.data_bindings, () => {});
+    if (panelEl && info) renderRequirementsPanel(panelEl, info.data_requirements, instance.data_bindings);
   });
 }
 
@@ -1889,8 +1845,7 @@ function renderPendingMicrosystemPanel() {
     : "";
 
   renderRequirementsPanel(
-    el("microsystem-wiring-requirements"), info ? info.data_requirements : [],
-    pendingMicrosystemBindings, () => {},
+    el("microsystem-wiring-requirements"), info ? info.data_requirements : [], pendingMicrosystemBindings,
   );
 }
 

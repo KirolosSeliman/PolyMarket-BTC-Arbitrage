@@ -486,13 +486,20 @@ function estimateRemainingSeconds(run) {
   return Math.max(0, estimatedTotalSeconds - run.elapsed_seconds);
 }
 
+// Arriving here from backtest.html's "data missing" link
+// (?missing=key1,key2, literal catalog keys) -- pre-checks those sources
+// so the redirect actually sets up the right collection instead of
+// dropping the user on an empty page. See applyMissingPrefill below.
+const prefillKeys = (new URLSearchParams(window.location.search).get("missing") || "")
+  .split(",").map((k) => k.trim()).filter(Boolean);
+
 // Checked state lives here, not in the DOM -- sources/plugins get filtered
 // in and out of existence entirely when the mode toggle flips (see
 // visibleSources/visiblePlugins below), so a checkbox can't be trusted to
 // still exist after a re-render. Every row-building function reads its
 // initial .checked from these Sets; every change handler writes back to
 // them first, then syncs whatever DOM copies of that box currently exist.
-let selectedSourceKeys = new Set();
+let selectedSourceKeys = new Set(prefillKeys);
 let selectedPluginIds = new Set();
 
 // The two catalogs fetched once from the API; everything rendered is a
@@ -760,11 +767,35 @@ function renderSourcesUI() {
   updateSelectionSummary();
 }
 
+// showAsset() only ever lazily builds whichever asset panel is currently
+// shown (default BTC) -- so a prefilled key for a different asset would
+// have no checkbox in the DOM at all, and start() reads checked state
+// straight from .source-box elements, not from selectedSourceKeys. Force-
+// build every distinct asset a prefill touches, ending on the first one
+// (showAsset marks whichever call happens last as active/visible) so the
+// user actually sees what got pre-checked rather than landing on BTC with
+// a hidden pre-checked panel elsewhere.
+function applyMissingPrefill() {
+  if (!prefillKeys.length) return;
+  const assets = [...new Set(
+    prefillKeys.map((key) => allSources.find((s) => s.key === key)).filter(Boolean).map((s) => s.asset).filter(Boolean),
+  )];
+  [...assets].reverse().forEach((asset) => showAsset(asset));
+  if (assets.length) el("asset-search").value = assets[0];
+  updateSelectionSummary();
+}
+
 async function loadSources() {
   const res = await fetch("/api/sources");
   const data = await res.json();
   allSources = data.sources;
-  renderSourcesUI();
+  // setCollectionMode (not a bare renderSourcesUI) when prefilled: its
+  // pruneSelectionForMode call needs allSources actually populated to
+  // check prefillKeys against -- calling it any earlier (before this
+  // fetch resolves) would prune every prefilled key against an empty
+  // catalog and silently wipe the selection.
+  if (prefillKeys.length) setCollectionMode("access"); else renderSourcesUI();
+  applyMissingPrefill();
 }
 
 // Scoped "select all": one per asset, one per tag, plus one for "Autre",
@@ -1329,6 +1360,12 @@ el("plugin-reset-btn").addEventListener("click", () => {
 
 initAssetCombobox();
 initRangeDefaults();
+// Starts in "collect" regardless of a ?missing= prefill -- pruneSelection
+// ForMode no-ops in "collect" mode, so this is safe to call before
+// allSources is loaded. loadSources() switches to "access" once real data
+// exists (see its own comment) -- backtest only ever needs already-
+// collected historical data, so landing in live "collect" mode would show
+// the wrong controls (no date range) for what a prefill is actually here to do.
 setCollectionMode("collect");
 loadSources();
 loadPlugins();
