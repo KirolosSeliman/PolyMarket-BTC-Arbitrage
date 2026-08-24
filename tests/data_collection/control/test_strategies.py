@@ -453,5 +453,189 @@ class StrategyManagerTests(unittest.TestCase):
             self.assertEqual([s["name"] for s in listed], ["good"])
 
 
+class DuplicateAndRebindTests(unittest.TestCase):
+    def _setup(self, root: Path) -> StrategyManager:
+        (root / "concepts").mkdir(parents=True, exist_ok=True)
+        (root / "concepts" / "zscore.py").write_text(_CONCEPT, encoding="utf-8")
+        (root / "microsystems").mkdir(parents=True, exist_ok=True)
+        (root / "microsystems" / "trend.py").write_text(_MICROSYSTEM, encoding="utf-8")
+        (root / "execution_profiles").mkdir(parents=True, exist_ok=True)
+        (root / "execution_profiles" / "conservative.py").write_text(_EXECUTION, encoding="utf-8")
+        (root / "management_profiles").mkdir(parents=True, exist_ok=True)
+        (root / "management_profiles" / "fixed_sltp.py").write_text(_MANAGEMENT, encoding="utf-8")
+        (root / "filter_profiles").mkdir(parents=True, exist_ok=True)
+        manager = CollectionRunManager(
+            config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
+            collections_dir=root / "collections",
+            symbol_cache_path=_seeded_symbol_cache(root),
+            plugins_dir=root / "plugins",
+            concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems",
+            execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+        )
+        return StrategyManager(strategies_dir=root / "strategies", runs=manager)
+
+    def test_unknown_category_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            with self.assertRaises(ValueError):
+                strategies.duplicate_and_rebind(
+                    category="nope", source_id="zscore", new_filename="x.py", strategy_name="whatever",
+                )
+
+    def test_unknown_source_id_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.save_strategy(name="s1", concepts=[], microsystems=[], execution=None, management=None)
+            with self.assertRaises(FileNotFoundError):
+                strategies.duplicate_and_rebind(
+                    category="concept", source_id="nope", new_filename="x.py", strategy_name="s1",
+                )
+
+    def test_unknown_strategy_name_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            with self.assertRaises(FileNotFoundError):
+                strategies.duplicate_and_rebind(
+                    category="concept", source_id="zscore", new_filename="zscore_copy.py",
+                    strategy_name="no_such_strategy",
+                )
+
+    def test_strategy_not_referencing_source_id_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.save_strategy(name="empty_strategy", concepts=[], microsystems=[], execution=None, management=None)
+            with self.assertRaises(ValueError):
+                strategies.duplicate_and_rebind(
+                    category="concept", source_id="zscore", new_filename="zscore_copy.py",
+                    strategy_name="empty_strategy",
+                )
+            # Accepted limitation (see duplicate_and_rebind's own docstring):
+            # the duplicate is already imported by the time the "nothing to
+            # rebind" check runs, so it's left on disk even though the call
+            # raised -- no write path in this codebase rolls back either.
+            self.assertTrue((root / "concepts" / "zscore_copy.py").exists())
+
+    def test_filename_collision_raises_and_leaves_everything_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            (root / "concepts" / "existing.py").write_text("# already here", encoding="utf-8")
+            strategies.save_strategy(
+                name="s1", concepts=[{"instance_id": "c1", "concept_id": "zscore", "config": {}}],
+                microsystems=[], execution=None, management=None,
+            )
+            with self.assertRaises(FileExistsError):
+                strategies.duplicate_and_rebind(
+                    category="concept", source_id="zscore", new_filename="existing.py", strategy_name="s1",
+                )
+            self.assertEqual((root / "concepts" / "existing.py").read_text(encoding="utf-8"), "# already here")
+            saved = strategies.load_strategy("s1")
+            self.assertEqual(saved["concepts"][0]["concept_id"], "zscore")
+
+    def test_concept_duplicate_and_rebind_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.save_strategy(
+                name="my_strategy",
+                concepts=[{"instance_id": "concept_1", "concept_id": "zscore", "config": {"window": 20}}],
+                microsystems=[], execution=None, management=None,
+            )
+            result = strategies.duplicate_and_rebind(
+                category="concept", source_id="zscore", new_filename="zscore_my_strategy.py",
+                strategy_name="my_strategy",
+            )
+            self.assertEqual(result["new_id"], "zscore_my_strategy")
+            self.assertEqual(result["rebound_count"], 1)
+            self.assertTrue(result["recognized"])
+            saved = strategies.load_strategy("my_strategy")
+            self.assertEqual(saved["concepts"][0]["concept_id"], "zscore_my_strategy")
+            # Original script byte-identical and unmoved.
+            self.assertEqual((root / "concepts" / "zscore.py").read_text(encoding="utf-8"), _CONCEPT)
+            self.assertEqual((root / "concepts" / "zscore_my_strategy.py").read_text(encoding="utf-8"), _CONCEPT)
+
+    def test_multiple_instances_of_same_concept_all_rebound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.save_strategy(
+                name="dual_strategy",
+                concepts=[
+                    {"instance_id": "concept_1", "concept_id": "zscore", "config": {"window": 20}},
+                    {"instance_id": "concept_2", "concept_id": "zscore", "config": {"window": 50}},
+                ],
+                microsystems=[], execution=None, management=None,
+            )
+            result = strategies.duplicate_and_rebind(
+                category="concept", source_id="zscore", new_filename="zscore_dual.py", strategy_name="dual_strategy",
+            )
+            self.assertEqual(result["rebound_count"], 2)
+            saved = strategies.load_strategy("dual_strategy")
+            self.assertEqual(saved["concepts"][0]["concept_id"], "zscore_dual")
+            self.assertEqual(saved["concepts"][1]["concept_id"], "zscore_dual")
+            # Each instance's own config is untouched by the rebind.
+            self.assertEqual(saved["concepts"][0]["config"], {"window": 20})
+            self.assertEqual(saved["concepts"][1]["config"], {"window": 50})
+
+    def test_microsystem_duplicate_and_rebind_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.save_strategy(
+                name="micro_strategy",
+                concepts=[{"instance_id": "concept_1", "concept_id": "zscore", "config": {}}],
+                microsystems=[{
+                    "instance_id": "micro_1", "microsystem_id": "trend",
+                    "concept_instance_ids": ["concept_1"], "config": {},
+                }],
+                execution=None, management=None,
+            )
+            result = strategies.duplicate_and_rebind(
+                category="microsystem", source_id="trend", new_filename="trend_micro_strategy.py",
+                strategy_name="micro_strategy",
+            )
+            self.assertEqual(result["rebound_count"], 1)
+            saved = strategies.load_strategy("micro_strategy")
+            self.assertEqual(saved["microsystems"][0]["microsystem_id"], "trend_micro_strategy")
+            self.assertEqual(saved["microsystems"][0]["concept_instance_ids"], ["concept_1"])
+
+    def test_execution_duplicate_and_rebind_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.save_strategy(
+                name="exec_strategy", concepts=[], microsystems=[],
+                execution={"execution_id": "conservative", "config": {}}, management=None,
+            )
+            result = strategies.duplicate_and_rebind(
+                category="execution", source_id="conservative", new_filename="conservative_exec_strategy.py",
+                strategy_name="exec_strategy",
+            )
+            self.assertEqual(result["rebound_count"], 1)
+            saved = strategies.load_strategy("exec_strategy")
+            self.assertEqual(saved["execution"]["execution_id"], "conservative_exec_strategy")
+            self.assertEqual((root / "execution_profiles" / "conservative.py").read_text(encoding="utf-8"), _EXECUTION)
+
+    def test_management_duplicate_and_rebind_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.save_strategy(
+                name="mgmt_strategy", concepts=[], microsystems=[],
+                execution=None, management={"management_id": "fixed_sltp", "config": {}},
+            )
+            result = strategies.duplicate_and_rebind(
+                category="management", source_id="fixed_sltp", new_filename="fixed_sltp_mgmt_strategy.py",
+                strategy_name="mgmt_strategy",
+            )
+            self.assertEqual(result["rebound_count"], 1)
+            saved = strategies.load_strategy("mgmt_strategy")
+            self.assertEqual(saved["management"]["management_id"], "fixed_sltp_mgmt_strategy")
+
+
 if __name__ == "__main__":
     unittest.main()

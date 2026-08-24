@@ -11,94 +11,88 @@
      read as one continuous space rather than a visible seam. */
   --surface-0: #000000; --surface-1: #111111; --surface-2: #1c1c1c;
   --text-1: #f2f2f0; --text-2: #b7b6b0; --muted: #7a7972;
-  --border: rgba(255,255,255,0.12); --accent: #3987e5; --critical: #d0554d;
+  --border: rgba(255,255,255,0.12); --accent: #3987e5; --good: #3f9142; --critical: #d0554d;
 }
 * { box-sizing: border-box; }
+html, body { height: 100%; }
 body {
-  margin: 0; min-height: 100vh; background: var(--surface-0); color: var(--text-1);
+  margin: 0; background: var(--surface-0); color: var(--text-1);
   font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 32px; padding: 40px 20px;
+  display: flex; flex-direction: column;
 }
-header { text-align: center; }
-h1 { font-size: 20px; margin: 10px 0 6px; letter-spacing: 0.01em; }
-header p { color: var(--muted); margin: 0; font-size: 13px; }
+header { padding: 20px 24px 4px; flex: none; }
+h1 { font-size: 18px; margin: 0 0 4px; letter-spacing: 0.01em; }
+header p { color: var(--muted); margin: 0; font-size: 12.5px; }
 
-.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 760px; width: 100%; }
-@media (max-width: 640px) { .choices { grid-template-columns: 1fr; } }
-.choice {
-  background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
-  padding: 22px 20px; display: flex; flex-direction: column; gap: 12px;
-}
-.choice h2 { font-size: 14.5px; margin: 0; }
-.choice p { margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.5; }
-
-.combobox { position: relative; }
-.combobox input[type="text"] {
+/* Toolbar -- pinned, never scrolls with the grid below it. */
+.toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 16px 24px; flex: none; }
+.toolbar .search-wrap { position: relative; flex: 1; min-width: 200px; }
+.toolbar input[type="text"] {
   font: inherit; font-size: 13px; color: var(--text-1); background: var(--surface-2);
   border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; width: 100%;
 }
-.combobox input[type="text"]:focus { outline: none; border-color: var(--accent); }
-.combobox-listbox {
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20; max-height: 220px;
-  overflow-y: auto; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5); padding: 4px;
-}
-.combobox-option {
-  padding: 8px 10px; border-radius: 5px; cursor: pointer; font-size: 12.5px;
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-}
-.combobox-option:hover, .combobox-option.active { background: var(--surface-2); }
-.combobox-empty { padding: 8px 10px; color: var(--muted); font-size: 11.5px; }
-.option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.option-delete, .option-edit {
-  flex-shrink: 0; color: var(--muted); font-size: 15px; line-height: 1;
-  padding: 2px 7px; border-radius: 4px;
-}
-.option-delete:hover { color: #fff; background: var(--critical); }
-.option-edit { font-size: 13px; }
-.option-edit:hover { color: #fff; background: var(--accent); }
-
-.new-strategy-row { display: flex; gap: 8px; }
-input[type="text"].name-input {
-  font: inherit; font-size: 13px; color: var(--text-1); background: var(--surface-2);
-  border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; flex: 1; min-width: 0;
-}
-input[type="text"].name-input:focus { outline: none; border-color: var(--accent); }
+.toolbar input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.toolbar .new-strategy { display: flex; gap: 8px; align-items: center; }
+.toolbar .new-strategy input[type="text"] { width: 180px; }
 button {
   font: inherit; font-size: 12.5px; color: #fff; background: var(--accent);
   border: none; border-radius: 6px; padding: 9px 16px; cursor: pointer; white-space: nowrap;
 }
 button:hover { filter: brightness(1.1); }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
-.hint { font-size: 11px; color: var(--muted); margin: 0; }
+button.secondary { color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border); }
+button.secondary:hover { border-color: var(--accent); filter: none; }
+.hint { font-size: 11px; color: var(--muted); margin: 4px 0 0; padding: 0 24px; flex: none; }
+
+/* The scrollable region -- everything else on the page is pinned chrome
+   around it, this is what "en déroulant" actually means mechanically. */
+.grid-region { flex: 1; overflow-y: auto; padding: 4px 24px 24px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.strategy-card {
+  position: relative; background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px 16px 14px; cursor: pointer; transition: border-color 0.15s, transform 0.15s;
+}
+.strategy-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.strategy-card .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.strategy-card h2 { font-size: 14.5px; margin: 0; word-break: break-word; }
+.strategy-card .card-actions { display: flex; gap: 2px; flex-shrink: 0; }
+.strategy-card .card-actions span {
+  color: var(--muted); font-size: 14px; line-height: 1; padding: 3px 6px; border-radius: 4px; cursor: pointer;
+}
+.strategy-card .card-actions .edit:hover { color: #fff; background: var(--accent); }
+.strategy-card .card-actions .delete:hover { color: #fff; background: var(--critical); }
+.strategy-card .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.strategy-card .badge {
+  font-size: 10.5px; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 7px;
+}
+.strategy-card .chips { display: flex; gap: 10px; margin-top: 10px; font-size: 10.5px; color: var(--muted); }
+.strategy-card .chip.on { color: var(--good); }
+.strategy-card .updated { margin-top: 10px; font-size: 10.5px; color: var(--muted); }
+.empty-state { color: var(--muted); font-size: 12.5px; padding: 40px 0; text-align: center; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Choisir une stratégie</h1>
-  <p>Sélectionne une stratégie existante ou pars d'une nouvelle.</p>
+  <h1>Stratégies</h1>
+  <p>Sélectionne une stratégie existante, pars d'une nouvelle, ou ouvre le Builder.</p>
 </header>
 
-<div class="choices">
-  <div class="choice">
-    <h2>Stratégie existante</h2>
-    <p>Recherche parmi les stratégies déjà enregistrées.</p>
-    <div class="combobox" id="strategy-combobox">
-      <input type="text" id="strategy-search" placeholder="Rechercher une stratégie…" autocomplete="off">
-      <div class="combobox-listbox" id="strategy-listbox" role="listbox" style="display:none"></div>
-    </div>
+<div class="toolbar">
+  <div class="search-wrap">
+    <input type="text" id="strategy-search" placeholder="Rechercher une stratégie…" autocomplete="off">
   </div>
+  <div class="new-strategy">
+    <input type="text" class="name-input" id="new-strategy-name" placeholder="Nom de la stratégie" autocomplete="off">
+    <button type="button" id="create-strategy-btn">+ Nouvelle stratégie</button>
+  </div>
+  <button type="button" class="secondary" id="builder-btn">Builder</button>
+</div>
+<p class="hint" id="create-hint" style="display:none">Donne un nom à la stratégie avant de la construire.</p>
 
-  <div class="choice">
-    <h2>Nouvelle stratégie</h2>
-    <p>Donne-lui un nom pour commencer sa construction (concepts, microsystèmes, exécution).</p>
-    <div class="new-strategy-row">
-      <input type="text" class="name-input" id="new-strategy-name" placeholder="Nom de la stratégie" autocomplete="off">
-      <button type="button" id="create-strategy-btn">Construire</button>
-    </div>
-    <p class="hint" id="create-hint" style="display:none">Donne un nom à la stratégie avant de la construire.</p>
-  </div>
+<div class="grid-region">
+  <div class="cards" id="strategy-cards"></div>
+  <div class="empty-state" id="empty-state" style="display:none"></div>
 </div>
 
 <script>
@@ -106,17 +100,25 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 function el(id) { return document.getElementById(id); }
 
-// Populated from /api/strategies on load -- see loadStrategies() below.
-let existingStrategyNames = [];
+function escapeAttr(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Populated from /api/strategies on load -- each entry carries the rich
+// metadata list_strategies() already returns (counts, has_execution/
+// has_management/has_filter, updated_at_utc), no extra requests needed to
+// drive the card grid below.
+let allStrategies = [];
 
 async function loadStrategies() {
   try {
     const res = await fetch("/api/strategies");
     const data = await res.json();
-    existingStrategyNames = (data.strategies || []).map((s) => s.name);
+    allStrategies = data.strategies || [];
   } catch (error) {
-    existingStrategyNames = [];
+    allStrategies = [];
   }
+  renderCards(el("strategy-search").value);
 }
 
 function goToStrategy(name, { isNew = false } = {}) {
@@ -128,28 +130,52 @@ function goToStrategy(name, { isNew = false } = {}) {
   window.location.href = `/menu?${params.toString()}`;
 }
 
-// --- "Stratégie existante" combobox -- same search-as-you-type + listbox
-// pattern as the asset picker on the Collecte de données page. ---
+function formatUpdatedAt(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch (error) {
+    return iso;
+  }
+}
 
-let listboxActiveIndex = -1;
-
-function renderListbox(query) {
-  const listbox = el("strategy-listbox");
+function renderCards(query) {
   const normalized = query.trim().toLowerCase();
   const filtered = normalized
-    ? existingStrategyNames.filter((name) => name.toLowerCase().includes(normalized))
-    : existingStrategyNames;
-  listboxActiveIndex = -1;
-  listbox.innerHTML = filtered.length
-    ? filtered.map((name) => `
-        <div class="combobox-option" data-name="${name}" role="option">
-          <span class="option-label">${name}</span>
-          <span class="option-edit" data-edit="${name}" role="button" tabindex="0" aria-label="Modifier">✎</span>
-          <span class="option-delete" data-delete="${name}" role="button" tabindex="0" aria-label="Supprimer">×</span>
+    ? allStrategies.filter((s) => s.name.toLowerCase().includes(normalized))
+    : allStrategies;
+  const container = el("strategy-cards");
+  const emptyState = el("empty-state");
+  if (!filtered.length) {
+    container.innerHTML = "";
+    emptyState.style.display = "block";
+    emptyState.textContent = allStrategies.length
+      ? "Aucune stratégie trouvée."
+      : "Aucune stratégie enregistrée -- crée-en une pour commencer.";
+    return;
+  }
+  emptyState.style.display = "none";
+  container.innerHTML = filtered.map((s) => `
+    <div class="strategy-card" data-name="${escapeAttr(s.name)}">
+      <div class="card-top">
+        <h2>${escapeAttr(s.name)}</h2>
+        <div class="card-actions">
+          <span class="edit" data-edit="${escapeAttr(s.name)}" role="button" tabindex="0" aria-label="Modifier">✎</span>
+          <span class="delete" data-delete="${escapeAttr(s.name)}" role="button" tabindex="0" aria-label="Supprimer">×</span>
         </div>
-      `).join("")
-    : '<div class="combobox-empty">Aucune stratégie trouvée.</div>';
-  listbox.style.display = "block";
+      </div>
+      <div class="badges">
+        <span class="badge">${s.concept_count} concept(s)</span>
+        <span class="badge">${s.microsystem_count} microsystème(s)</span>
+      </div>
+      <div class="chips">
+        <span class="chip ${s.has_execution ? "on" : ""}">${s.has_execution ? "✓" : "–"} exécution</span>
+        <span class="chip ${s.has_management ? "on" : ""}">${s.has_management ? "✓" : "–"} gestion</span>
+        <span class="chip ${s.has_filter ? "on" : ""}">${s.has_filter ? "✓" : "–"} filtre</span>
+      </div>
+      <div class="updated">Modifiée le ${escapeAttr(formatUpdatedAt(s.updated_at_utc))}</div>
+    </div>
+  `).join("");
 }
 
 async function deleteStrategy(name) {
@@ -172,66 +198,20 @@ async function deleteStrategy(name) {
     alert(`Échec de la suppression : ${data.error || res.status}`);
     return;
   }
-  existingStrategyNames = existingStrategyNames.filter((n) => n !== name);
-  renderListbox(el("strategy-search").value);
+  allStrategies = allStrategies.filter((s) => s.name !== name);
+  renderCards(el("strategy-search").value);
 }
 
-function closeListbox() {
-  el("strategy-listbox").style.display = "none";
-}
+el("strategy-search").addEventListener("input", () => renderCards(el("strategy-search").value));
 
-function selectFromListbox(name) {
-  el("strategy-search").value = name;
-  closeListbox();
-  goToStrategy(name);
-}
-
-function initStrategyCombobox() {
-  const input = el("strategy-search");
-  const listbox = el("strategy-listbox");
-  input.addEventListener("focus", () => renderListbox(input.value));
-  input.addEventListener("input", () => renderListbox(input.value));
-  input.addEventListener("keydown", (event) => {
-    const options = Array.from(listbox.querySelectorAll(".combobox-option"));
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      if (listbox.style.display === "none") { renderListbox(input.value); return; }
-      listboxActiveIndex = Math.min(listboxActiveIndex + 1, options.length - 1);
-      options.forEach((o, i) => o.classList.toggle("active", i === listboxActiveIndex));
-      options[listboxActiveIndex]?.scrollIntoView({ block: "nearest" });
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      listboxActiveIndex = Math.max(listboxActiveIndex - 1, 0);
-      options.forEach((o, i) => o.classList.toggle("active", i === listboxActiveIndex));
-      options[listboxActiveIndex]?.scrollIntoView({ block: "nearest" });
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      const target = options[listboxActiveIndex] || options[0];
-      if (target) selectFromListbox(target.dataset.name);
-    } else if (event.key === "Escape") {
-      closeListbox();
-    }
-  });
-  listbox.addEventListener("mousedown", (event) => {
-    const deleteBtn = event.target.closest(".option-delete");
-    if (deleteBtn) {
-      event.preventDefault(); // keep the listbox open through the confirm() dialog
-      deleteStrategy(deleteBtn.dataset.delete);
-      return;
-    }
-    const editBtn = event.target.closest(".option-edit");
-    if (editBtn) {
-      event.preventDefault();
-      window.location.href = `/strategy/build?name=${encodeURIComponent(editBtn.dataset.edit)}`;
-      return;
-    }
-    const option = event.target.closest(".combobox-option");
-    if (option) selectFromListbox(option.dataset.name);
-  });
-  document.addEventListener("click", (event) => {
-    if (!el("strategy-combobox").contains(event.target)) closeListbox();
-  });
-}
+el("strategy-cards").addEventListener("click", (event) => {
+  const deleteTarget = event.target.closest(".delete");
+  if (deleteTarget) { deleteStrategy(deleteTarget.dataset.delete); return; }
+  const editTarget = event.target.closest(".edit");
+  if (editTarget) { window.location.href = `/strategy/build?name=${encodeURIComponent(editTarget.dataset.edit)}`; return; }
+  const card = event.target.closest(".strategy-card");
+  if (card) goToStrategy(card.dataset.name);
+});
 
 // --- "Nouvelle stratégie" ---
 
@@ -254,7 +234,12 @@ el("new-strategy-name").addEventListener("keydown", (event) => {
 });
 el("new-strategy-name").addEventListener("input", () => { el("create-hint").style.display = "none"; });
 
-initStrategyCombobox();
+// --- "Builder" -- creating/modifying/perfectionner-ing concepts,
+// microsystèmes, profils d'exécution/de gestion, entirely separate from
+// assembling one particular strategy, so it carries no query string. ---
+
+el("builder-btn").addEventListener("click", () => { window.location.href = "/builder"; });
+
 loadStrategies();
 </script>
 </body>

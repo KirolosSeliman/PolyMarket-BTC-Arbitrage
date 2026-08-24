@@ -59,10 +59,6 @@ button.secondary { color: var(--text-1); background: var(--surface-2); border: 1
 button.secondary:hover { border-color: var(--accent); filter: none; }
 button.danger { background: var(--critical); }
 
-label.check { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; font-size: 12.5px; cursor: pointer; }
-label.check input { margin-top: 2px; }
-.check-list { max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-top: 8px; }
-
 .instance-row {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px;
@@ -80,8 +76,6 @@ label.check input { margin-top: 2px; }
 .requirement-row .req-ok { color: var(--accent); }
 .requirement-row .req-missing { color: var(--critical); }
 .requirement-row .req-fixed { color: var(--muted); font-size: 11px; }
-.asset-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; margin-top: 8px; }
-.asset-columns h3 { font-size: 11px; color: var(--muted); text-transform: uppercase; margin: 0 0 4px; }
 
 .info-icon {
   display: inline-flex; align-items: center; justify-content: center;
@@ -230,13 +224,6 @@ label.check input { margin-top: 2px; }
 .config-field { display: grid; gap: 4px; margin-bottom: 10px; }
 .config-field label { font-size: 12px; color: var(--text-2); }
 .config-field input, .config-field select { width: 100%; }
-
-.source-viewer { display: none; margin-top: 12px; }
-.source-viewer.open { display: block; }
-.source-viewer pre {
-  max-height: 300px; overflow: auto; background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: 8px; padding: 10px 12px; font-size: 11px; white-space: pre-wrap; word-break: break-word;
-}
 </style>
 </head>
 <body>
@@ -275,45 +262,6 @@ label.check input { margin-top: 2px; }
       </div>
     </div>
 
-    <div class="panel">
-      <h2>Perfectionner un concept existant</h2>
-      <p>
-        Montre des exemples réels détectés par un concept et dis si oui ou non c'en est un --
-        les nuances que tu expliques servent à générer un prompt pour l'améliorer avec une IA.
-      </p>
-      <div class="combobox" id="concept-refine-combobox">
-        <input type="text" id="concept-refine-search" placeholder="Rechercher un concept à perfectionner…" autocomplete="off">
-        <div class="combobox-listbox" id="concept-refine-listbox" role="listbox" style="display:none"></div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h2>Créer un nouveau concept</h2>
-      <p>Choisis les données que ce concept va utiliser -- un actif à la fois, comme dans Collecte de données.</p>
-      <div id="concept-data-picker"></div>
-
-      <div class="source-viewer" id="source-viewer">
-        <strong id="source-viewer-title"></strong>
-        <pre id="source-viewer-content"></pre>
-      </div>
-
-      <details class="prompt-details" id="concept-prompt-details">
-        <summary>Prompt pour créer ce concept avec une IA</summary>
-        <div class="prompt-box">
-          <div class="row" style="justify-content:flex-end;margin-bottom:8px">
-            <button type="button" class="secondary" id="concept-copy-prompt-btn">Copier</button>
-          </div>
-          <pre id="concept-prompt-text">Chargement…</pre>
-        </div>
-      </details>
-
-      <div class="row" style="margin-top:12px">
-        <button type="button" class="secondary" id="concept-import-btn">+ Importer le script du concept</button>
-        <input type="file" id="concept-import-input" accept=".py" style="display:none">
-        <span id="concept-import-status" class="import-status"></span>
-      </div>
-    </div>
-
     <div class="row" style="justify-content:flex-end">
       <button type="button" id="step1-next-btn">Suivant : Configuration →</button>
     </div>
@@ -341,19 +289,6 @@ label.check input { margin-top: 2px; }
     </div>
 
     <div class="panel">
-      <h2>Perfectionner un microsystème existant</h2>
-      <p>
-        Montre des exemples réels de setups détectés par un microsystème et dis si oui ou non
-        c'en est un bon -- les nuances que tu expliques servent à générer un prompt pour
-        l'améliorer avec une IA.
-      </p>
-      <div class="combobox" id="microsystem-refine-combobox">
-        <input type="text" id="microsystem-refine-search" placeholder="Rechercher un microsystème à perfectionner…" autocomplete="off">
-        <div class="combobox-listbox" id="microsystem-refine-listbox" role="listbox" style="display:none"></div>
-      </div>
-    </div>
-
-    <div class="panel">
       <h2>Ajouter un microsystème existant</h2>
       <div class="combobox" id="microsystem-combobox">
         <input type="text" id="microsystem-search" placeholder="Rechercher un microsystème…" autocomplete="off">
@@ -368,31 +303,6 @@ label.check input { margin-top: 2px; }
         <div class="row" style="justify-content:flex-end;margin-top:12px">
           <button type="button" id="microsystem-confirm-add-btn">Ajouter le microsystème</button>
         </div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h2>Créer un nouveau microsystème</h2>
-      <p>Choisis les concepts et/ou les données que ce microsystème va utiliser.</p>
-      <strong style="font-size:12px">Concepts</strong>
-      <div class="check-list" id="microsystem-concept-list"></div>
-      <strong style="font-size:12px;margin-top:8px;display:block">Données</strong>
-      <div id="microsystem-data-picker"></div>
-
-      <details class="prompt-details" id="microsystem-prompt-details">
-        <summary>Prompt pour créer ce microsystème avec une IA</summary>
-        <div class="prompt-box">
-          <div class="row" style="justify-content:flex-end;margin-bottom:8px">
-            <button type="button" class="secondary" id="microsystem-copy-prompt-btn">Copier</button>
-          </div>
-          <pre id="microsystem-prompt-text">Chargement…</pre>
-        </div>
-      </details>
-
-      <div class="row" style="margin-top:12px">
-        <button type="button" class="secondary" id="microsystem-import-btn">+ Importer le script du microsystème</button>
-        <input type="file" id="microsystem-import-input" accept=".py" style="display:none">
-        <span id="microsystem-import-status" class="import-status"></span>
       </div>
     </div>
 
@@ -411,24 +321,6 @@ label.check input { margin-top: 2px; }
       <div id="execution-config-form" style="margin-top:12px"></div>
     </div>
 
-    <div class="panel">
-      <h2>Créer un nouveau profil d'exécution</h2>
-      <details class="prompt-details" id="execution-prompt-details">
-        <summary>Prompt pour créer un profil avec une IA</summary>
-        <div class="prompt-box">
-          <div class="row" style="justify-content:flex-end;margin-bottom:8px">
-            <button type="button" class="secondary" id="execution-copy-prompt-btn">Copier</button>
-          </div>
-          <pre id="execution-prompt-text">Chargement…</pre>
-        </div>
-      </details>
-      <div class="row" style="margin-top:12px">
-        <button type="button" class="secondary" id="execution-import-btn">+ Importer le script du profil</button>
-        <input type="file" id="execution-import-input" accept=".py" style="display:none">
-        <span id="execution-import-status" class="import-status"></span>
-      </div>
-    </div>
-
     <div class="row" style="justify-content:space-between">
       <button type="button" class="secondary" id="step4-back-btn">← Retour</button>
       <button type="button" id="step4-next-btn">Suivant : Gestion →</button>
@@ -442,24 +334,6 @@ label.check input { margin-top: 2px; }
       <p>Optionnel -- une stratégie peut être enregistrée sans profil de gestion pour l'instant.</p>
       <select id="management-select"><option value="">(aucun)</option></select>
       <div id="management-config-form" style="margin-top:12px"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Créer un nouveau profil de gestion</h2>
-      <details class="prompt-details" id="management-prompt-details">
-        <summary>Prompt pour créer un profil avec une IA</summary>
-        <div class="prompt-box">
-          <div class="row" style="justify-content:flex-end;margin-bottom:8px">
-            <button type="button" class="secondary" id="management-copy-prompt-btn">Copier</button>
-          </div>
-          <pre id="management-prompt-text">Chargement…</pre>
-        </div>
-      </details>
-      <div class="row" style="margin-top:12px">
-        <button type="button" class="secondary" id="management-import-btn">+ Importer le script du profil</button>
-        <input type="file" id="management-import-input" accept=".py" style="display:none">
-        <span id="management-import-status" class="import-status"></span>
-      </div>
     </div>
 
     <div class="row" style="justify-content:space-between">
@@ -641,130 +515,6 @@ function executionById(id) { return allExecutionProfiles.find((e) => e.id === id
 function managementById(id) { return allManagementProfiles.find((m) => m.id === id); }
 function filterById(id) { return allFilterProfiles.find((f) => f.id === id); }
 
-// --- Reusable: a filterable multi-select checkbox list. ---
-
-function createFilterableChecklist({ searchInputEl, listEl, getItems, selectedSet, onChange, viewButton }) {
-  function render() {
-    const query = (searchInputEl ? searchInputEl.value : "").trim().toLowerCase();
-    const items = getItems().filter((item) => !query || item.label.toLowerCase().includes(query));
-    listEl.innerHTML = items.length ? items.map((item) => {
-      const checked = selectedSet.has(item.key) ? "checked" : "";
-      const view = viewButton && item.kind === "plugin"
-        ? ` <button type="button" class="secondary view-source-btn" data-kind="plugin" data-id="${escapeAttr(item.key)}" style="padding:2px 8px;font-size:10.5px">voir le script</button>`
-        : (viewButton && item.kind === "concept"
-          ? ` <button type="button" class="secondary view-source-btn" data-kind="concept" data-id="${escapeAttr(item.key)}" style="padding:2px 8px;font-size:10.5px">voir le script</button>`
-          : "");
-      return `<label class="check"><input type="checkbox" value="${escapeAttr(item.key)}" ${checked}>`
-        + `<span>${item.label}${infoIconHtml(item.detail)}${view}</span></label>`;
-    }).join("") : '<div class="empty">Aucun élément trouvé.</div>';
-  }
-  if (searchInputEl) searchInputEl.addEventListener("input", render);
-  listEl.addEventListener("change", (event) => {
-    if (event.target.type !== "checkbox") return;
-    if (event.target.checked) selectedSet.add(event.target.value);
-    else selectedSet.delete(event.target.value);
-    if (onChange) onChange();
-  });
-  render();
-  return { render };
-}
-
-// --- Reusable: asset-aware data picker for *authoring* a concept/
-// microsystem (picking example data to write the script against and embed
-// in the AI prompt) -- same browsing shape as Collecte de données (an asset
-// search, then that asset's Spot/Futures sources), not a flat list of
-// thousands of near-duplicate rows. Chainlink/Polymarket/plugins (nothing
-// asset-scoped) live in a separate "Autre" list that doesn't depend on
-// which asset is currently shown. ---
-
-function createAssetDataPicker({ container, selectedSet, onChange }) {
-  container.innerHTML = `
-    <div class="row" style="margin-bottom:8px;align-items:center">
-      <div class="combobox" style="max-width:220px">
-        <input type="text" class="adp-asset-search" placeholder="Rechercher un actif…" autocomplete="off">
-        <div class="combobox-listbox adp-asset-listbox" style="display:none"></div>
-      </div>
-      <span class="adp-current-asset" style="color:var(--text-2);font-size:12px"></span>
-    </div>
-    <div class="asset-columns">
-      <div><h3>Spot</h3><div class="check-list adp-spot-list"></div></div>
-      <div><h3>Futures</h3><div class="check-list adp-futures-list"></div></div>
-    </div>
-    <div style="margin-top:10px">
-      <h3 style="font-size:11px;color:var(--muted);text-transform:uppercase;margin:0 0 4px">Autre</h3>
-      <div class="check-list adp-other-list"></div>
-    </div>
-  `;
-  const searchInput = container.querySelector(".adp-asset-search");
-  const listbox = container.querySelector(".adp-asset-listbox");
-  const currentAssetLabel = container.querySelector(".adp-current-asset");
-  const spotList = container.querySelector(".adp-spot-list");
-  const futuresList = container.querySelector(".adp-futures-list");
-  const otherList = container.querySelector(".adp-other-list");
-  let currentAsset = null;
-
-  function renderCheckList(listEl, items) {
-    listEl.innerHTML = items.length ? items.map((item) => {
-      const checked = selectedSet.has(item.key) ? "checked" : "";
-      return `<label class="check"><input type="checkbox" value="${escapeAttr(item.key)}" ${checked}>`
-        + `<span>${item.label}${infoIconHtml(item.detail)}</span></label>`;
-    }).join("") : '<div class="empty">Aucune donnée.</div>';
-  }
-
-  function renderAsset() {
-    if (!currentAsset) { spotList.innerHTML = ""; futuresList.innerHTML = ""; currentAssetLabel.textContent = ""; return; }
-    currentAssetLabel.textContent = `Actif : ${currentAsset}`;
-    renderCheckList(spotList, allDataSources.filter((s) => s.asset === currentAsset && s.market === "spot"));
-    renderCheckList(futuresList, allDataSources.filter((s) => s.asset === currentAsset && s.market === "futures"));
-  }
-
-  function renderOther() {
-    const items = [
-      ...allDataSources.filter((s) => !s.asset).map((s) => ({ key: s.key, label: s.label, detail: s.detail })),
-      ...allPlugins.map((p) => ({ key: p.id, label: p.label, detail: p.detail })),
-    ];
-    renderCheckList(otherList, items);
-  }
-
-  createCombobox({
-    inputEl: searchInput, listboxEl: listbox, containerEl: container,
-    getItems: () => [...new Set(allDataSources.filter((s) => s.asset).map((s) => s.asset))].sort().map((asset) => ({ key: asset, label: asset })),
-    placeholder: "Aucun actif trouvé.",
-    onSelect: (asset) => { currentAsset = asset; searchInput.value = asset; renderAsset(); },
-  });
-
-  [spotList, futuresList, otherList].forEach((listEl) => {
-    listEl.addEventListener("change", (event) => {
-      if (event.target.type !== "checkbox") return;
-      if (event.target.checked) selectedSet.add(event.target.value);
-      else selectedSet.delete(event.target.value);
-      if (onChange) onChange();
-    });
-  });
-
-  // Default to BTC (mirrors the data collector's own default) when it's
-  // available, so the panel isn't empty before the user searches anything.
-  // Pickers are constructed as top-level statements before loadCatalogs()
-  // has necessarily resolved, so this can't be a one-shot check at
-  // construction time -- refresh() re-attempts it on every render() call
-  // (a no-op once currentAsset is actually set) so the picker recovers
-  // once real data arrives instead of staying permanently empty.
-  function refresh() {
-    if (currentAsset === null) {
-      const defaultAsset = allDataSources.find((s) => s.asset === "BTC") ? "BTC" : null;
-      if (defaultAsset) {
-        currentAsset = defaultAsset;
-        searchInput.value = defaultAsset;
-      }
-    }
-    renderAsset();
-    renderOther();
-  }
-  refresh();
-
-  return { render: refresh };
-}
-
 // --- Reusable: shows a concept's/microsystem's data_requirements (see
 // CollectionRunManager._data_requirements_for) and lets the user bind each
 // *swappable* one to a concrete asset -- this is what actually decides
@@ -831,28 +581,6 @@ function renderRequirementsPanel(container, requirements, bindings, onChange) {
     });
   });
 }
-
-// --- "Voir le script" -- shared viewer panel, delegated globally. ---
-
-document.addEventListener("click", async (event) => {
-  const button = event.target.closest(".view-source-btn");
-  if (!button) return;
-  const endpoint = button.dataset.kind === "plugin" ? "/api/plugins/view" : "/api/concepts/view";
-  const res = await fetch(endpoint, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: button.dataset.id }),
-  });
-  const data = await res.json();
-  const viewer = el("source-viewer");
-  if (!res.ok) {
-    el("source-viewer-title").textContent = "Erreur";
-    el("source-viewer-content").textContent = data.error || "introuvable";
-  } else {
-    el("source-viewer-title").textContent = data.filename;
-    el("source-viewer-content").textContent = data.content;
-  }
-  viewer.classList.add("open");
-});
 
 // --- Config-schema-driven form (used at step 2 and step 4). ---
 
@@ -1973,48 +1701,6 @@ createCombobox({
   onSelect: addConceptInstance, placeholder: "Aucun concept trouvé.",
 });
 
-// The whole catalog, not just the concepts already wired into this
-// strategy (same allConcepts source as the picker above) -- perfecting a
-// concept is independent of any one strategy under construction.
-createCombobox({
-  inputEl: el("concept-refine-search"), listboxEl: el("concept-refine-listbox"), containerEl: el("concept-refine-combobox"),
-  getItems: () => allConcepts.map((c) => ({ key: c.id, label: c.label })),
-  onSelect: (id) => { window.location.href = "/concept/refine?id=" + encodeURIComponent(id); },
-  placeholder: "Aucun concept trouvé.",
-});
-
-const conceptDataSelection = new Set();
-const conceptDataPicker = createAssetDataPicker({
-  container: el("concept-data-picker"), selectedSet: conceptDataSelection,
-});
-
-const conceptPromptBox = createPromptBox({
-  detailsEl: el("concept-prompt-details"), preEl: el("concept-prompt-text"), copyBtnEl: el("concept-copy-prompt-btn"),
-  fetchContent: async () => {
-    const sources = [...conceptDataSelection].filter((k) => allDataSources.some((s) => s.key === k));
-    const plugins = [...conceptDataSelection].filter((k) => allPlugins.some((p) => p.id === k));
-    const res = await fetch("/api/concept-prompt", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sources, plugins }),
-    });
-    const data = await res.json();
-    return res.ok ? data.content : "Prompt indisponible : " + data.error;
-  },
-});
-
-createImportPicker({
-  buttonEl: el("concept-import-btn"), inputEl: el("concept-import-input"), statusEl: el("concept-import-status"),
-  endpoint: "/api/concepts/import",
-  onImported: async () => {
-    await loadCatalogs();
-    renderStep1Dependents();
-  },
-});
-
-function renderStep1Dependents() {
-  conceptDataPicker.render();
-}
-
 el("step1-next-btn").addEventListener("click", () => showStep(2));
 
 // ============================================================
@@ -2131,17 +1817,6 @@ el("microsystem-instances-list").addEventListener("click", (event) => {
   });
 });
 
-// The whole catalog, not just the microsystems already wired into this
-// strategy (same allMicrosystems source as the picker below) -- perfecting
-// a microsystem is independent of any one strategy under construction.
-createCombobox({
-  inputEl: el("microsystem-refine-search"), listboxEl: el("microsystem-refine-listbox"),
-  containerEl: el("microsystem-refine-combobox"),
-  getItems: () => allMicrosystems.map((m) => ({ key: m.id, label: m.label })),
-  onSelect: (id) => { window.location.href = "/microsystem/refine?id=" + encodeURIComponent(id); },
-  placeholder: "Aucun microsystème trouvé.",
-});
-
 // --- "Ajouter un microsystème existant" -- selecting one stages it (its
 // concept wiring and data bindings can be edited freely) until "Ajouter le
 // microsystème" is clicked, which is the only place a new instance is
@@ -2234,51 +1909,8 @@ el("microsystem-confirm-add-btn").addEventListener("click", () => {
   renderMicrosystemInstancesList();
 });
 
-const microsystemConceptSelection = new Set();
-const microsystemConceptPicker = createFilterableChecklist({
-  searchInputEl: null, listEl: el("microsystem-concept-list"),
-  getItems: () => strategyConcepts.map((c) => {
-    const info = conceptById(c.concept_id);
-    return { key: c.instance_id, label: `${c.instance_id} (${info ? info.label : c.concept_id})`, detail: null };
-  }),
-  selectedSet: microsystemConceptSelection, viewButton: false,
-});
-const microsystemDataSelection = new Set();
-const microsystemDataPicker = createAssetDataPicker({
-  container: el("microsystem-data-picker"), selectedSet: microsystemDataSelection,
-});
-
-const microsystemPromptBox = createPromptBox({
-  detailsEl: el("microsystem-prompt-details"), preEl: el("microsystem-prompt-text"), copyBtnEl: el("microsystem-copy-prompt-btn"),
-  fetchContent: async () => {
-    const sources = [...microsystemDataSelection].filter((k) => allDataSources.some((s) => s.key === k));
-    const plugins = [...microsystemDataSelection].filter((k) => allPlugins.some((p) => p.id === k));
-    const concepts = [...microsystemConceptSelection].map((instanceId) => {
-      const instance = strategyConcepts.find((c) => c.instance_id === instanceId);
-      return instance ? instance.concept_id : null;
-    }).filter(Boolean);
-    const res = await fetch("/api/microsystem-prompt", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ concepts, sources, plugins }),
-    });
-    const data = await res.json();
-    return res.ok ? data.content : "Prompt indisponible : " + data.error;
-  },
-});
-
-createImportPicker({
-  buttonEl: el("microsystem-import-btn"), inputEl: el("microsystem-import-input"), statusEl: el("microsystem-import-status"),
-  endpoint: "/api/microsystems/import",
-  onImported: async () => {
-    await loadCatalogs();
-    renderStep3Dependents();
-  },
-});
-
 function renderStep3Dependents() {
   renderPendingMicrosystemPanel();
-  microsystemConceptPicker.render();
-  microsystemDataPicker.render();
 }
 
 el("step3-back-btn").addEventListener("click", () => showStep(2));
@@ -2326,21 +1958,6 @@ function renderExecutionConfigForm() {
 
 el("execution-select").addEventListener("change", renderExecutionConfigForm);
 
-const executionPromptBox = createPromptBox({
-  detailsEl: el("execution-prompt-details"), preEl: el("execution-prompt-text"), copyBtnEl: el("execution-copy-prompt-btn"),
-  fetchContent: async () => {
-    const res = await fetch("/api/execution-prompt");
-    const data = await res.json();
-    return res.ok ? data.content : "Prompt indisponible : " + data.error;
-  },
-});
-
-createImportPicker({
-  buttonEl: el("execution-import-btn"), inputEl: el("execution-import-input"), statusEl: el("execution-import-status"),
-  endpoint: "/api/execution-profiles/import",
-  onImported: async () => { await loadCatalogs(); renderExecutionSelect(); },
-});
-
 el("step4-back-btn").addEventListener("click", () => showStep(3));
 el("step4-next-btn").addEventListener("click", () => showStep(5));
 
@@ -2376,21 +1993,6 @@ function renderManagementConfigForm() {
 }
 
 el("management-select").addEventListener("change", renderManagementConfigForm);
-
-const managementPromptBox = createPromptBox({
-  detailsEl: el("management-prompt-details"), preEl: el("management-prompt-text"), copyBtnEl: el("management-copy-prompt-btn"),
-  fetchContent: async () => {
-    const res = await fetch("/api/management-prompt");
-    const data = await res.json();
-    return res.ok ? data.content : "Prompt indisponible : " + data.error;
-  },
-});
-
-createImportPicker({
-  buttonEl: el("management-import-btn"), inputEl: el("management-import-input"), statusEl: el("management-import-status"),
-  endpoint: "/api/management-profiles/import",
-  onImported: async () => { await loadCatalogs(); renderManagementSelect(); },
-});
 
 el("step5-back-btn").addEventListener("click", () => showStep(4));
 el("step5-next-btn").addEventListener("click", () => showStep(6));
@@ -2598,7 +2200,6 @@ async function loadExistingStrategyIfAny() {
 async function init() {
   await loadCatalogs();
   await loadExistingStrategyIfAny();
-  renderStep1Dependents();
   renderConceptInstancesList();
   renderStep3Dependents();
   renderMicrosystemInstancesList();

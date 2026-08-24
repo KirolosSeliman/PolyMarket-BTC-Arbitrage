@@ -38,6 +38,19 @@ STRATEGY_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 INSTANCE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _EXAMPLE_WIN_SEARCH_ATTEMPTS = 30
 
+# category -> (read_source method name, import method name, the strategy
+# JSON field it lives under, the id field within that, whether that field
+# holds a *list* of instances (concept/microsystem, a strategy can wire the
+# same id multiple times) or a single nullable object (execution/
+# management, at most one per strategy) -- see duplicate_and_rebind, the
+# one place this drives real branching.
+_DUPLICATE_CATEGORIES: dict[str, tuple[str, str, str, str, bool]] = {
+    "concept": ("read_concept_source", "import_concept_file", "concepts", "concept_id", True),
+    "microsystem": ("read_microsystem_source", "import_microsystem_file", "microsystems", "microsystem_id", True),
+    "execution": ("read_execution_source", "import_execution_profile_file", "execution", "execution_id", False),
+    "management": ("read_management_source", "import_management_profile_file", "management", "management_id", False),
+}
+
 
 @dataclass(slots=True)
 class StrategyManager:
@@ -62,14 +75,31 @@ class StrategyManager:
             microsystems = payload.get("microsystems")
             if not isinstance(concepts, list) or not isinstance(microsystems, list):
                 continue
+            execution = payload.get("execution")
+            management = payload.get("management")
             found.append({
                 "name": payload["name"],
                 "concept_count": len(concepts),
                 "microsystem_count": len(microsystems),
-                "has_execution": payload.get("execution") is not None,
-                "has_management": payload.get("management") is not None,
+                "has_execution": execution is not None,
+                "has_management": management is not None,
                 "has_filter": payload.get("filter") is not None,
                 "updated_at_utc": payload.get("updated_at_utc"),
+                # Which global concept/microsystem/execution/management ids
+                # this strategy actually references -- powers the Builder's
+                # duplicate-for-a-strategy flow, which only ever needs to
+                # offer strategies that genuinely use the id being
+                # duplicated (see duplicate_and_rebind below).
+                "concept_ids": sorted({
+                    c["concept_id"] for c in concepts
+                    if isinstance(c, dict) and isinstance(c.get("concept_id"), str)
+                }),
+                "microsystem_ids": sorted({
+                    m["microsystem_id"] for m in microsystems
+                    if isinstance(m, dict) and isinstance(m.get("microsystem_id"), str)
+                }),
+                "execution_id": execution.get("execution_id") if isinstance(execution, dict) else None,
+                "management_id": management.get("management_id") if isinstance(management, dict) else None,
             })
         return found
 
@@ -353,6 +383,78 @@ class StrategyManager:
         }
         target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         return payload
+
+    def duplicate_and_rebind(
+        self, *, category: str, source_id: str, new_filename: str, strategy_name: str,
+    ) -> dict[str, object]:
+        """Forks category's source_id under new_filename -- a brand-new,
+        independent script; the global original and every *other* strategy
+        using it are left untouched -- and rebinds every one of
+        strategy_name's own references to source_id so it points at the
+        fork instead. Lets an edit meant for one strategy stop silently
+        affecting every other strategy that happens to share the same
+        concept/microsystem/execution/management script.
+
+        Whole-strategy rebind, not per-instance: a strategy that wires the
+        same concept twice (two distinct instance_ids) gets both rebound
+        together, matching "this concept, for this strategy" rather than
+        requiring instance-by-instance surgery.
+
+        Raises ValueError for an unknown category or a strategy that
+        doesn't actually reference source_id (nothing to rebind);
+        FileNotFoundError for an unknown source_id or strategy_name;
+        FileExistsError if new_filename collides with an existing script
+        (propagated from the underlying import, never silently
+        overwritten). If the strategy fails to re-validate on save for an
+        unrelated reason, the already-imported duplicate file is left on
+        disk -- no write path in this codebase does transactional
+        rollback (save_strategy itself doesn't either), so this is
+        consistent with the existing risk posture, not a regression."""
+        try:
+            read_attr, import_attr, list_key, id_field, is_list = _DUPLICATE_CATEGORIES[category]
+        except KeyError:
+            raise ValueError(f"category must be one of {sorted(_DUPLICATE_CATEGORIES)}, got {category!r}") from None
+        read_fn = getattr(self.runs, read_attr)
+        import_fn = getattr(self.runs, import_attr)
+
+        content = read_fn(source_id)["content"]  # FileNotFoundError propagates for an unknown source_id
+        import_result = import_fn(new_filename, content, overwrite=False)  # ValueError/FileExistsError propagate
+        new_id = Path(new_filename).stem
+
+        payload = self.load_strategy(strategy_name)
+        if payload is None:
+            raise FileNotFoundError(f"unknown strategy: {strategy_name!r}")
+
+        rebound_count = 0
+        if is_list:
+            for entry in payload.get(list_key) or []:
+                if isinstance(entry, dict) and entry.get(id_field) == source_id:
+                    entry[id_field] = new_id
+                    rebound_count += 1
+        else:
+            entry = payload.get(list_key)
+            if isinstance(entry, dict) and entry.get(id_field) == source_id:
+                entry[id_field] = new_id
+                rebound_count = 1
+
+        if rebound_count == 0:
+            raise ValueError(
+                f"la stratégie {strategy_name!r} ne référence pas {category} {source_id!r} -- rien à rebrancher"
+            )
+
+        saved = self.save_strategy(
+            name=strategy_name,
+            concepts=payload.get("concepts") or [],
+            microsystems=payload.get("microsystems") or [],
+            execution=payload.get("execution"),
+            management=payload.get("management"),
+            filter=payload.get("filter"),
+            overwrite=True,
+        )
+        return {
+            "filename": import_result["filename"], "new_id": new_id, "recognized": import_result["recognized"],
+            "rebound_count": rebound_count, "strategy": saved,
+        }
 
     def preview_example(
         self,

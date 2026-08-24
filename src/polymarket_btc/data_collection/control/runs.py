@@ -614,13 +614,30 @@ class CollectionRunManager:
 
     def read_strategy_filter_source(self, filter_id: str) -> dict[str, str]:
         """Same shape as read_concept_source, for a discovered strategy
-        filter -- unlike execution/management (which never need their own
-        source read back), a filter's own refinement prompt must embed its
-        current script, same reasoning as concept/microsystem refinement."""
+        filter -- a filter's own refinement prompt must embed its current
+        script, same reasoning as concept/microsystem refinement."""
         for info in discover_filter_profiles(self.filter_dir):
             if info.id == filter_id:
                 return {"id": info.id, "filename": info.path.name, "content": info.path.read_text(encoding="utf-8")}
         raise FileNotFoundError(f"no filter named {filter_id!r}")
+
+    def read_execution_source(self, execution_id: str) -> dict[str, str]:
+        """Same shape as read_concept_source, for a discovered execution
+        profile -- lets the Builder's duplicate-for-a-strategy flow read the
+        current script before re-importing it under a new id."""
+        for info in discover_execution_profiles(self.execution_dir):
+            if info.id == execution_id:
+                return {"id": info.id, "filename": info.path.name, "content": info.path.read_text(encoding="utf-8")}
+        raise FileNotFoundError(f"no execution profile named {execution_id!r}")
+
+    def read_management_source(self, management_id: str) -> dict[str, str]:
+        """Same shape as read_concept_source, for a discovered management
+        profile -- lets the Builder's duplicate-for-a-strategy flow read the
+        current script before re-importing it under a new id."""
+        for info in discover_management_profiles(self.management_dir):
+            if info.id == management_id:
+                return {"id": info.id, "filename": info.path.name, "content": info.path.read_text(encoding="utf-8")}
+        raise FileNotFoundError(f"no management profile named {management_id!r}")
 
     def _data_context_blocks(self, *, sources: list[str], plugins: list[str]) -> list[str]:
         """One markdown block per selected data-catalog entry: built-in

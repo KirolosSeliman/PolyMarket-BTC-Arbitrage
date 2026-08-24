@@ -44,6 +44,7 @@ _PAGES = {
     "/concept/refine": "concept_refine.html",
     "/microsystem/refine": "microsystem_refine.html",
     "/strategy-filter/refine": "strategy_filter_refine.html",
+    "/builder": "builder.html",
 }
 
 
@@ -581,6 +582,8 @@ class ControlPanelServer:
             return self._delete_strategy(body)
         if path == "/api/strategies/example":
             return self._preview_example(body)
+        if path == "/api/builder/duplicate":
+            return self._builder_duplicate(body)
         if path == "/api/symbols/refresh":
             return self._refresh_symbols()
         if path == "/api/concept-refine/scan":
@@ -655,6 +658,38 @@ class ControlPanelServer:
             result = importer(filename, content, overwrite=overwrite)
         except ValueError as exc:
             return self._error("400 Bad Request", str(exc))
+        except FileExistsError as exc:
+            return self._json({"error": str(exc), "exists": True}, status="409 Conflict")
+        return self._json(result)
+
+    def _builder_duplicate(self, body: bytes) -> bytes:
+        """Forks a concept/microsystem/execution/management script under a
+        new name and rebinds one strategy's own references to it -- see
+        StrategyManager.duplicate_and_rebind for the full contract."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        category = payload.get("category")
+        source_id = payload.get("source_id")
+        new_filename = payload.get("new_filename")
+        strategy_name = payload.get("strategy_name")
+        for field_name, value in (
+            ("category", category), ("source_id", source_id),
+            ("new_filename", new_filename), ("strategy_name", strategy_name),
+        ):
+            if not isinstance(value, str) or not value:
+                return self._error("400 Bad Request", f"{field_name} must be a non-empty string")
+        try:
+            result = self.strategies.duplicate_and_rebind(
+                category=category, source_id=source_id, new_filename=new_filename, strategy_name=strategy_name,
+            )
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        except FileNotFoundError as exc:
+            return self._error("404 Not Found", str(exc))
         except FileExistsError as exc:
             return self._json({"error": str(exc), "exists": True}, status="409 Conflict")
         return self._json(result)

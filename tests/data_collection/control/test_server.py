@@ -1527,6 +1527,78 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         head, _body = await self._request("POST", "/api/strategy-filter-refine/next", json_body={})
         self.assertIn("400 Bad Request", head)
 
+    async def test_builder_duplicate_success_round_trip(self) -> None:
+        self.concepts_dir.mkdir(parents=True, exist_ok=True)
+        (self.concepts_dir / "zscore_route_test.py").write_text(
+            'CONCEPT_INFO = {"label": "x", "description": "y", "data_sources": ["binance_futures_kline"]}\n'
+            "def compute(context):\n    return None\n",
+            encoding="utf-8",
+        )
+        self.strategies.save_strategy(
+            name="builder_route_test",
+            concepts=[{"instance_id": "concept_1", "concept_id": "zscore_route_test", "config": {}}],
+            microsystems=[], execution=None, management=None,
+        )
+        head, body = await self._request(
+            "POST", "/api/builder/duplicate",
+            json_body={
+                "category": "concept", "source_id": "zscore_route_test",
+                "new_filename": "zscore_route_test_builder_route_test.py", "strategy_name": "builder_route_test",
+            },
+        )
+        self.assertIn("200 OK", head)
+        self.assertEqual(body["new_id"], "zscore_route_test_builder_route_test")
+        self.assertEqual(body["rebound_count"], 1)
+        _head, strategy_body = await self._request("GET", "/api/strategy?name=builder_route_test")
+        self.assertEqual(strategy_body["concepts"][0]["concept_id"], "zscore_route_test_builder_route_test")
+
+    async def test_builder_duplicate_missing_fields_is_400(self) -> None:
+        head, _body = await self._request("POST", "/api/builder/duplicate", json_body={"category": "concept"})
+        self.assertIn("400 Bad Request", head)
+
+    async def test_builder_duplicate_unknown_strategy_is_404(self) -> None:
+        self.concepts_dir.mkdir(parents=True, exist_ok=True)
+        (self.concepts_dir / "zscore_route_test2.py").write_text(
+            'CONCEPT_INFO = {"label": "x", "description": "y", "data_sources": ["binance_futures_kline"]}\n'
+            "def compute(context):\n    return None\n",
+            encoding="utf-8",
+        )
+        head, _body = await self._request(
+            "POST", "/api/builder/duplicate",
+            json_body={
+                "category": "concept", "source_id": "zscore_route_test2",
+                "new_filename": "zscore_route_test2_copy.py", "strategy_name": "no_such_strategy",
+            },
+        )
+        self.assertIn("404 Not Found", head)
+
+    async def test_builder_duplicate_filename_collision_is_409(self) -> None:
+        self.concepts_dir.mkdir(parents=True, exist_ok=True)
+        (self.concepts_dir / "zscore_route_test3.py").write_text(
+            'CONCEPT_INFO = {"label": "x", "description": "y", "data_sources": ["binance_futures_kline"]}\n'
+            "def compute(context):\n    return None\n",
+            encoding="utf-8",
+        )
+        (self.concepts_dir / "already_exists.py").write_text("# taken", encoding="utf-8")
+        self.strategies.save_strategy(
+            name="builder_route_test2",
+            concepts=[{"instance_id": "concept_1", "concept_id": "zscore_route_test3", "config": {}}],
+            microsystems=[], execution=None, management=None,
+        )
+        head, body = await self._request(
+            "POST", "/api/builder/duplicate",
+            json_body={
+                "category": "concept", "source_id": "zscore_route_test3",
+                "new_filename": "already_exists.py", "strategy_name": "builder_route_test2",
+            },
+        )
+        self.assertIn("409 Conflict", head)
+        self.assertTrue(body["exists"])
+
+    async def test_builder_page_serves_200(self) -> None:
+        head, _body = await self._request("GET", "/builder")
+        self.assertIn("200 OK", head)
+
 
 if __name__ == "__main__":
     unittest.main()

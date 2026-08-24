@@ -1,0 +1,890 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Builder</title>
+<style>
+:root {
+  /* Same pure-black theme as strategy.html/strategy_builder.html -- kept
+     identical across pages, not re-picked per page. */
+  --surface-0: #000000; --surface-1: #111111; --surface-2: #1c1c1c;
+  --text-1: #f2f2f0; --text-2: #b7b6b0; --muted: #7a7972;
+  --border: rgba(255,255,255,0.12); --accent: #3987e5; --warning: #d99a2b; --critical: #d0554d;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; background: var(--surface-0); color: var(--text-1);
+  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header { padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--surface-1); }
+header a.back { color: var(--muted); text-decoration: none; font-size: 12px; }
+header a.back:hover { color: var(--text-2); }
+header h1 { font-size: 16px; margin: 8px 0 4px; }
+header p { color: var(--muted); margin: 0; font-size: 12.5px; }
+
+main { max-width: 900px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+.screen { display: grid; gap: 16px; }
+.panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.panel h2 { font-size: 13px; margin: 0 0 10px; }
+.panel > p:first-of-type { margin-top: 0; color: var(--text-2); font-size: 12px; }
+.empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+.hint { font-size: 11.5px; margin: 0 0 10px; }
+
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+input[type="text"], select {
+  font: inherit; font-size: 12.5px; color: var(--text-1); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+}
+input[type="text"]:focus, select:focus { outline: none; border-color: var(--accent); }
+button {
+  font: inherit; font-size: 12.5px; color: #fff; background: var(--accent);
+  border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; white-space: nowrap;
+}
+button:hover { filter: brightness(1.1); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.secondary { color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border); }
+button.secondary:hover { border-color: var(--accent); filter: none; }
+
+/* A decision-tree screen's own big clickable choices -- same "card" visual
+   language as index.html's .cards/a.card (border+radius+hover-lift), but
+   <button> elements since these drive JS state transitions, not links. */
+.option-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.option-card {
+  display: block; width: 100%; text-align: left; background: var(--surface-2); color: var(--text-1);
+  border: 1px solid var(--border); border-radius: 10px; padding: 18px 16px; font-size: 13px;
+  cursor: pointer; transition: border-color 0.15s, transform 0.15s;
+}
+.option-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+
+label.check { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; font-size: 12.5px; cursor: pointer; }
+label.check input { margin-top: 2px; }
+.check-list { max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-top: 8px; }
+.asset-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; margin-top: 8px; }
+.asset-columns h3 { font-size: 11px; color: var(--muted); text-transform: uppercase; margin: 0 0 4px; }
+
+.info-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 6px; border-radius: 50%;
+  border: 1px solid var(--muted); color: var(--muted); font-size: 10px; font-weight: 700;
+  font-style: italic; font-family: Georgia, "Times New Roman", serif; line-height: 1;
+  cursor: pointer; vertical-align: middle; user-select: none; flex: none;
+}
+.info-icon:hover, .info-icon:focus-visible { border-color: var(--text-1); color: var(--text-1); outline: none; }
+.info-bubble {
+  position: fixed; z-index: 80; max-width: 320px; padding: 10px 12px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 11.5px; line-height: 1.5; color: var(--text-2);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35); display: none;
+}
+.info-bubble.open { display: block; }
+
+.combobox { position: relative; }
+.combobox input[type="text"] { width: 100%; }
+.combobox-listbox {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20; max-height: 240px;
+  overflow-y: auto; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5); padding: 4px;
+}
+.combobox-option { padding: 6px 10px; border-radius: 5px; cursor: pointer; font-size: 12.5px; }
+.combobox-option:hover, .combobox-option.active { background: var(--surface-2); }
+.combobox-empty { padding: 8px 10px; color: var(--muted); font-size: 11.5px; }
+
+.prompt-details { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.prompt-details summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); }
+.prompt-box pre {
+  margin-top: 10px; max-height: 320px; overflow: auto; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  font-size: 11px; white-space: pre-wrap; word-break: break-word;
+}
+.import-status { font-size: 11.5px; color: var(--text-2); }
+.import-status.warn { color: var(--warning); }
+.import-status.error { color: var(--critical); }
+</style>
+</head>
+<body>
+<header>
+  <a class="back" href="/">← retour</a>
+  <h1>Builder</h1>
+  <p>Créer, modifier ou perfectionner un concept, microsystème, profil d'exécution ou de gestion.</p>
+</header>
+
+<div id="info-bubble" class="info-bubble" role="tooltip"></div>
+
+<main>
+
+  <!-- Section -->
+  <section class="screen" id="screen-section">
+    <div class="panel">
+      <h2>Que veux-tu construire ?</h2>
+      <div class="option-grid">
+        <button type="button" class="option-card" data-section="concept">Concepts</button>
+        <button type="button" class="option-card" data-section="microsystem">Microsystèmes</button>
+        <button type="button" class="option-card" data-section="execution">Exécution</button>
+        <button type="button" class="option-card" data-section="management">Gestion</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Action -->
+  <section class="screen" id="screen-action" style="display:none">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <button type="button" class="secondary" id="action-back-btn">← Retour</button>
+      <strong id="action-section-label"></strong>
+    </div>
+    <div class="panel">
+      <div class="option-grid" id="action-grid"></div>
+    </div>
+  </section>
+
+  <!-- Créer -->
+  <section class="screen" id="screen-create" style="display:none">
+    <div class="row" style="justify-content:flex-start">
+      <button type="button" class="secondary" id="create-back-btn">← Retour</button>
+    </div>
+
+    <div class="panel" id="create-concept-panel" style="display:none">
+      <h2>Créer un nouveau concept</h2>
+      <p>Choisis les données que ce concept va utiliser -- un actif à la fois, comme dans Collecte de données.</p>
+      <div id="concept-data-picker"></div>
+      <details class="prompt-details" id="concept-prompt-details">
+        <summary>Prompt pour créer ce concept avec une IA</summary>
+        <div class="prompt-box">
+          <div class="row" style="justify-content:flex-end;margin-bottom:8px">
+            <button type="button" class="secondary" id="concept-copy-prompt-btn">Copier</button>
+          </div>
+          <pre id="concept-prompt-text">Chargement…</pre>
+        </div>
+      </details>
+      <div class="row" style="margin-top:12px">
+        <button type="button" class="secondary" id="concept-import-btn">+ Importer le script du concept</button>
+        <input type="file" id="concept-import-input" accept=".py" style="display:none">
+        <span id="concept-import-status" class="import-status"></span>
+      </div>
+    </div>
+
+    <div class="panel" id="create-microsystem-panel" style="display:none">
+      <h2>Créer un nouveau microsystème</h2>
+      <p>Choisis les concepts et/ou les données que ce microsystème va utiliser.</p>
+      <strong style="font-size:12px">Concepts</strong>
+      <div class="check-list" id="microsystem-concept-list"></div>
+      <strong style="font-size:12px;margin-top:8px;display:block">Données</strong>
+      <div id="microsystem-data-picker"></div>
+      <details class="prompt-details" id="microsystem-prompt-details">
+        <summary>Prompt pour créer ce microsystème avec une IA</summary>
+        <div class="prompt-box">
+          <div class="row" style="justify-content:flex-end;margin-bottom:8px">
+            <button type="button" class="secondary" id="microsystem-copy-prompt-btn">Copier</button>
+          </div>
+          <pre id="microsystem-prompt-text">Chargement…</pre>
+        </div>
+      </details>
+      <div class="row" style="margin-top:12px">
+        <button type="button" class="secondary" id="microsystem-import-btn">+ Importer le script du microsystème</button>
+        <input type="file" id="microsystem-import-input" accept=".py" style="display:none">
+        <span id="microsystem-import-status" class="import-status"></span>
+      </div>
+    </div>
+
+    <div class="panel" id="create-execution-panel" style="display:none">
+      <h2>Créer un nouveau profil d'exécution</h2>
+      <details class="prompt-details" id="execution-prompt-details">
+        <summary>Prompt pour créer un profil avec une IA</summary>
+        <div class="prompt-box">
+          <div class="row" style="justify-content:flex-end;margin-bottom:8px">
+            <button type="button" class="secondary" id="execution-copy-prompt-btn">Copier</button>
+          </div>
+          <pre id="execution-prompt-text">Chargement…</pre>
+        </div>
+      </details>
+      <div class="row" style="margin-top:12px">
+        <button type="button" class="secondary" id="execution-import-btn">+ Importer le script du profil</button>
+        <input type="file" id="execution-import-input" accept=".py" style="display:none">
+        <span id="execution-import-status" class="import-status"></span>
+      </div>
+    </div>
+
+    <div class="panel" id="create-management-panel" style="display:none">
+      <h2>Créer un nouveau profil de gestion</h2>
+      <details class="prompt-details" id="management-prompt-details">
+        <summary>Prompt pour créer un profil avec une IA</summary>
+        <div class="prompt-box">
+          <div class="row" style="justify-content:flex-end;margin-bottom:8px">
+            <button type="button" class="secondary" id="management-copy-prompt-btn">Copier</button>
+          </div>
+          <pre id="management-prompt-text">Chargement…</pre>
+        </div>
+      </details>
+      <div class="row" style="margin-top:12px">
+        <button type="button" class="secondary" id="management-import-btn">+ Importer le script du profil</button>
+        <input type="file" id="management-import-input" accept=".py" style="display:none">
+        <span id="management-import-status" class="import-status"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Perfectionner (concept/microsystem only) -->
+  <section class="screen" id="screen-perfectionner" style="display:none">
+    <div class="row" style="justify-content:flex-start">
+      <button type="button" class="secondary" id="perfectionner-back-btn">← Retour</button>
+    </div>
+    <div class="panel">
+      <h2 id="perfectionner-title"></h2>
+      <p>
+        Montre des exemples réels détectés et dis si oui ou non c'en est un -- les nuances
+        que tu expliques servent à générer un prompt pour l'améliorer avec une IA.
+      </p>
+      <div class="combobox" id="perfectionner-combobox">
+        <input type="text" id="perfectionner-search" placeholder="Rechercher…" autocomplete="off">
+        <div class="combobox-listbox" id="perfectionner-listbox" role="listbox" style="display:none"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Modifier : choisir l'élément -->
+  <section class="screen" id="screen-modify-pick" style="display:none">
+    <div class="row" style="justify-content:flex-start">
+      <button type="button" class="secondary" id="modify-pick-back-btn">← Retour</button>
+    </div>
+    <div class="panel">
+      <h2 id="modify-pick-title"></h2>
+      <div class="combobox" id="modify-pick-combobox">
+        <input type="text" id="modify-pick-search" placeholder="Rechercher…" autocomplete="off">
+        <div class="combobox-listbox" id="modify-pick-listbox" role="listbox" style="display:none"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Modifier : globalement vs dupliquer -->
+  <section class="screen" id="screen-modify-mode" style="display:none">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <button type="button" class="secondary" id="modify-mode-back-btn">← Retour</button>
+      <strong id="modify-mode-label"></strong>
+    </div>
+    <div class="panel">
+      <div class="option-grid">
+        <button type="button" class="option-card" id="modify-mode-global-btn">Modifier globalement</button>
+        <button type="button" class="option-card" id="modify-mode-duplicate-btn">Dupliquer pour une stratégie</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Modifier globalement -->
+  <section class="screen" id="screen-modify-global" style="display:none">
+    <div class="row" style="justify-content:flex-start">
+      <button type="button" class="secondary" id="modify-global-back-btn">← Retour</button>
+    </div>
+    <div class="panel">
+      <h2 id="modify-global-title"></h2>
+      <p class="hint" style="color:var(--warning)">Cette modification affecte toutes les stratégies utilisant ce script.</p>
+      <div class="row">
+        <button type="button" class="secondary" id="modify-global-import-btn">+ Importer le script modifié</button>
+        <input type="file" id="modify-global-import-input" accept=".py" style="display:none">
+        <span id="modify-global-import-status" class="import-status"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Dupliquer pour une stratégie -->
+  <section class="screen" id="screen-duplicate" style="display:none">
+    <div class="row" style="justify-content:flex-start">
+      <button type="button" class="secondary" id="duplicate-back-btn">← Retour</button>
+    </div>
+    <div class="panel">
+      <h2 id="duplicate-title"></h2>
+      <div class="empty" id="duplicate-no-strategies" style="display:none">
+        Aucune stratégie n'utilise cet élément -- rien à dupliquer ni à rebrancher.
+      </div>
+      <div id="duplicate-form" style="display:none">
+        <strong style="font-size:12px">Stratégie</strong>
+        <select id="duplicate-strategy-select" style="width:100%;margin-top:6px"></select>
+        <strong style="font-size:12px;margin-top:10px;display:block">Nouveau nom</strong>
+        <input type="text" id="duplicate-name-input" style="width:100%;margin-top:6px" autocomplete="off">
+        <div class="row" style="margin-top:12px">
+          <button type="button" id="duplicate-confirm-btn">Dupliquer et rebrancher</button>
+        </div>
+        <p id="duplicate-status" class="import-status"></p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+"use strict";
+
+function el(id) { return document.getElementById(id); }
+
+// --- (i) info bubbles -- identical mechanism to strategy_builder.html. ---
+
+function escapeAttr(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function infoIconHtml(detail) {
+  if (!detail) return "";
+  return `<span class="info-icon" data-detail="${escapeAttr(detail)}" tabindex="0" role="button" aria-label="Plus d'infos">i</span>`;
+}
+let openInfoIcon = null;
+function closeInfoBubble() { el("info-bubble").classList.remove("open"); openInfoIcon = null; }
+function toggleInfoBubble(icon) {
+  if (openInfoIcon === icon) { closeInfoBubble(); return; }
+  const bubble = el("info-bubble");
+  bubble.textContent = icon.dataset.detail;
+  bubble.classList.add("open");
+  const rect = icon.getBoundingClientRect();
+  const top = Math.min(rect.bottom + 6, window.innerHeight - bubble.offsetHeight - 8);
+  const left = Math.min(rect.left, window.innerWidth - 336);
+  bubble.style.top = `${Math.max(8, top)}px`;
+  bubble.style.left = `${Math.max(8, left)}px`;
+  openInfoIcon = icon;
+}
+document.addEventListener("click", (event) => {
+  const icon = event.target.closest(".info-icon");
+  if (icon) { event.preventDefault(); toggleInfoBubble(icon); return; }
+  if (!event.target.closest("#info-bubble")) closeInfoBubble();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeInfoBubble();
+  if (event.key === "Enter" && document.activeElement && document.activeElement.classList.contains("info-icon")) {
+    toggleInfoBubble(document.activeElement);
+  }
+});
+
+// --- Catalog state, fetched once on load (same shape as strategy_builder.html,
+// minus filter-profiles/strategy-in-progress state -- Builder never touches
+// a filter, and it isn't assembling one particular strategy). ---
+
+let allDataSources = [];
+let allPlugins = [];
+let allConcepts = [];
+let allMicrosystems = [];
+let allExecutionProfiles = [];
+let allManagementProfiles = [];
+let allStrategies = [];
+
+async function loadCatalogs() {
+  const [sourcesRes, pluginsRes, conceptsRes, microsystemsRes, executionRes, managementRes, strategiesRes] = await Promise.all([
+    fetch("/api/sources"), fetch("/api/plugins"), fetch("/api/concepts"),
+    fetch("/api/microsystems"), fetch("/api/execution-profiles"), fetch("/api/management-profiles"),
+    fetch("/api/strategies"),
+  ]);
+  allDataSources = (await sourcesRes.json()).sources || [];
+  allPlugins = (await pluginsRes.json()).plugins || [];
+  allConcepts = (await conceptsRes.json()).concepts || [];
+  allMicrosystems = (await microsystemsRes.json()).microsystems || [];
+  allExecutionProfiles = (await executionRes.json()).execution_profiles || [];
+  allManagementProfiles = (await managementRes.json()).management_profiles || [];
+  allStrategies = (await strategiesRes.json()).strategies || [];
+}
+
+// ============================================================
+// Reusable widgets -- copy-pasted verbatim from strategy_builder.html
+// (this app has no shared-JS-file mechanism, every page duplicates its own
+// scaffolding, a deliberate precedent documented on that page too).
+// ============================================================
+
+function createCombobox({ inputEl, listboxEl, containerEl, getItems, onSelect, placeholder }) {
+  let activeIndex = -1;
+  function render(query) {
+    const normalized = (query || "").trim().toLowerCase();
+    const items = getItems().filter((item) => !normalized || item.label.toLowerCase().includes(normalized));
+    activeIndex = -1;
+    listboxEl.innerHTML = items.length
+      ? items.map((item) => `<div class="combobox-option" data-key="${escapeAttr(item.key)}" role="option">${item.label}</div>`).join("")
+      : `<div class="combobox-empty">${placeholder}</div>`;
+    listboxEl.style.display = "block";
+  }
+  inputEl.addEventListener("focus", () => render(inputEl.value));
+  inputEl.addEventListener("input", () => render(inputEl.value));
+  inputEl.addEventListener("keydown", (event) => {
+    const options = Array.from(listboxEl.querySelectorAll(".combobox-option"));
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (listboxEl.style.display === "none") { render(inputEl.value); return; }
+      activeIndex = Math.min(activeIndex + 1, options.length - 1);
+      options.forEach((o, i) => o.classList.toggle("active", i === activeIndex));
+      options[activeIndex]?.scrollIntoView({ block: "nearest" });
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, 0);
+      options.forEach((o, i) => o.classList.toggle("active", i === activeIndex));
+      options[activeIndex]?.scrollIntoView({ block: "nearest" });
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const target = options[activeIndex] || options[0];
+      if (target) { onSelect(target.dataset.key); listboxEl.style.display = "none"; }
+    } else if (event.key === "Escape") {
+      listboxEl.style.display = "none";
+    }
+  });
+  listboxEl.addEventListener("mousedown", (event) => {
+    const option = event.target.closest(".combobox-option");
+    if (option) { onSelect(option.dataset.key); listboxEl.style.display = "none"; }
+  });
+  document.addEventListener("click", (event) => {
+    if (!containerEl.contains(event.target)) listboxEl.style.display = "none";
+  });
+}
+
+function createImportPicker({ buttonEl, inputEl, statusEl, endpoint, onImported }) {
+  async function upload(filename, content, overwrite) {
+    const res = await fetch(endpoint, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename, content, overwrite }),
+    });
+    const data = await res.json();
+    if (res.status === 409) {
+      if (confirm(`${filename} existe déjà. L'écraser ?`)) { await upload(filename, content, true); }
+      return;
+    }
+    if (!res.ok) { statusEl.className = "import-status error"; statusEl.textContent = data.error || "échec de l'import"; return; }
+    statusEl.className = data.recognized ? "import-status" : "import-status warn";
+    statusEl.textContent = data.recognized ? `${filename} importé et reconnu.` : `${filename} copié, mais pas reconnu -- vérifie le contrat.`;
+    if (onImported) onImported();
+  }
+  buttonEl.addEventListener("click", () => inputEl.click());
+  inputEl.addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.name.endsWith(".py")) { statusEl.className = "import-status error"; statusEl.textContent = "Le fichier doit avoir l'extension .py"; return; }
+    const content = await file.text();
+    await upload(file.name, content, false);
+  });
+}
+
+function createPromptBox({ detailsEl, preEl, copyBtnEl, fetchContent }) {
+  async function load() {
+    preEl.textContent = "Chargement…";
+    try { preEl.textContent = await fetchContent(); }
+    catch (error) { preEl.textContent = "Prompt indisponible (erreur réseau)."; }
+  }
+  detailsEl.addEventListener("toggle", () => { if (detailsEl.open) load(); });
+  copyBtnEl.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(preEl.textContent);
+      const original = copyBtnEl.textContent;
+      copyBtnEl.textContent = "Copié !";
+      setTimeout(() => { copyBtnEl.textContent = original; }, 1500);
+    } catch (error) { alert("Copie automatique impossible -- sélectionne le texte manuellement."); }
+  });
+  return { reload: load };
+}
+
+function createFilterableChecklist({ searchInputEl, listEl, getItems, selectedSet, onChange }) {
+  function render() {
+    const query = (searchInputEl ? searchInputEl.value : "").trim().toLowerCase();
+    const items = getItems().filter((item) => !query || item.label.toLowerCase().includes(query));
+    listEl.innerHTML = items.length ? items.map((item) => {
+      const checked = selectedSet.has(item.key) ? "checked" : "";
+      return `<label class="check"><input type="checkbox" value="${escapeAttr(item.key)}" ${checked}>`
+        + `<span>${item.label}${infoIconHtml(item.detail)}</span></label>`;
+    }).join("") : '<div class="empty">Aucun élément trouvé.</div>';
+  }
+  if (searchInputEl) searchInputEl.addEventListener("input", render);
+  listEl.addEventListener("change", (event) => {
+    if (event.target.type !== "checkbox") return;
+    if (event.target.checked) selectedSet.add(event.target.value);
+    else selectedSet.delete(event.target.value);
+    if (onChange) onChange();
+  });
+  render();
+  return { render };
+}
+
+function createAssetDataPicker({ container, selectedSet, onChange }) {
+  container.innerHTML = `
+    <div class="row" style="margin-bottom:8px;align-items:center">
+      <div class="combobox" style="max-width:220px">
+        <input type="text" class="adp-asset-search" placeholder="Rechercher un actif…" autocomplete="off">
+        <div class="combobox-listbox adp-asset-listbox" style="display:none"></div>
+      </div>
+      <span class="adp-current-asset" style="color:var(--text-2);font-size:12px"></span>
+    </div>
+    <div class="asset-columns">
+      <div><h3>Spot</h3><div class="check-list adp-spot-list"></div></div>
+      <div><h3>Futures</h3><div class="check-list adp-futures-list"></div></div>
+    </div>
+    <div style="margin-top:10px">
+      <h3 style="font-size:11px;color:var(--muted);text-transform:uppercase;margin:0 0 4px">Autre</h3>
+      <div class="check-list adp-other-list"></div>
+    </div>
+  `;
+  const searchInput = container.querySelector(".adp-asset-search");
+  const listbox = container.querySelector(".adp-asset-listbox");
+  const currentAssetLabel = container.querySelector(".adp-current-asset");
+  const spotList = container.querySelector(".adp-spot-list");
+  const futuresList = container.querySelector(".adp-futures-list");
+  const otherList = container.querySelector(".adp-other-list");
+  let currentAsset = null;
+
+  function renderCheckList(listEl, items) {
+    listEl.innerHTML = items.length ? items.map((item) => {
+      const checked = selectedSet.has(item.key) ? "checked" : "";
+      return `<label class="check"><input type="checkbox" value="${escapeAttr(item.key)}" ${checked}>`
+        + `<span>${item.label}${infoIconHtml(item.detail)}</span></label>`;
+    }).join("") : '<div class="empty">Aucune donnée.</div>';
+  }
+
+  function renderAsset() {
+    if (!currentAsset) { spotList.innerHTML = ""; futuresList.innerHTML = ""; currentAssetLabel.textContent = ""; return; }
+    currentAssetLabel.textContent = `Actif : ${currentAsset}`;
+    renderCheckList(spotList, allDataSources.filter((s) => s.asset === currentAsset && s.market === "spot"));
+    renderCheckList(futuresList, allDataSources.filter((s) => s.asset === currentAsset && s.market === "futures"));
+  }
+
+  function renderOther() {
+    const items = [
+      ...allDataSources.filter((s) => !s.asset).map((s) => ({ key: s.key, label: s.label, detail: s.detail })),
+      ...allPlugins.map((p) => ({ key: p.id, label: p.label, detail: p.detail })),
+    ];
+    renderCheckList(otherList, items);
+  }
+
+  createCombobox({
+    inputEl: searchInput, listboxEl: listbox, containerEl: container,
+    getItems: () => [...new Set(allDataSources.filter((s) => s.asset).map((s) => s.asset))].sort().map((asset) => ({ key: asset, label: asset })),
+    placeholder: "Aucun actif trouvé.",
+    onSelect: (asset) => { currentAsset = asset; searchInput.value = asset; renderAsset(); },
+  });
+
+  [spotList, futuresList, otherList].forEach((listEl) => {
+    listEl.addEventListener("change", (event) => {
+      if (event.target.type !== "checkbox") return;
+      if (event.target.checked) selectedSet.add(event.target.value);
+      else selectedSet.delete(event.target.value);
+      if (onChange) onChange();
+    });
+  });
+
+  function refresh() {
+    if (currentAsset === null) {
+      const defaultAsset = allDataSources.find((s) => s.asset === "BTC") ? "BTC" : null;
+      if (defaultAsset) { currentAsset = defaultAsset; searchInput.value = defaultAsset; }
+    }
+    renderAsset();
+    renderOther();
+  }
+  refresh();
+  return { render: refresh };
+}
+
+// ============================================================
+// Screen navigation -- a strict decision tree (section -> action ->
+// create/perfectionner/modify-pick -> modify-mode -> global/duplicate),
+// same display:none-per-screen mechanism strategy_builder.html's own
+// steps already use.
+// ============================================================
+
+const SCREEN_IDS = [
+  "screen-section", "screen-action", "screen-create", "screen-perfectionner",
+  "screen-modify-pick", "screen-modify-mode", "screen-modify-global", "screen-duplicate",
+];
+function showScreen(id) {
+  SCREEN_IDS.forEach((screenId) => { el(screenId).style.display = screenId === id ? "grid" : "none"; });
+}
+
+const SECTION_LABELS = { concept: "Concepts", microsystem: "Microsystèmes", execution: "Exécution", management: "Gestion" };
+const SECTION_SINGULAR = { concept: "un concept", microsystem: "un microsystème", execution: "un profil d'exécution", management: "un profil de gestion" };
+const SECTION_IMPORT_ENDPOINT = {
+  concept: "/api/concepts/import", microsystem: "/api/microsystems/import",
+  execution: "/api/execution-profiles/import", management: "/api/management-profiles/import",
+};
+const SECTION_CATALOG = {
+  concept: () => allConcepts, microsystem: () => allMicrosystems,
+  execution: () => allExecutionProfiles, management: () => allManagementProfiles,
+};
+const SECTION_HAS_PERFECTIONNER = { concept: true, microsystem: true, execution: false, management: false };
+// Strategies' own concept_ids/microsystem_ids (lists) vs execution_id/
+// management_id (nullable singular) -- see strategies.py's list_strategies.
+const SECTION_STRATEGY_FIELD = {
+  concept: "concept_ids", microsystem: "microsystem_ids", execution: "execution_id", management: "management_id",
+};
+
+let currentSection = null;
+let currentModifyId = null;
+
+el("screen-section").querySelector(".option-grid").addEventListener("click", (event) => {
+  const button = event.target.closest(".option-card");
+  if (!button) return;
+  currentSection = button.dataset.section;
+  renderActionScreen();
+  showScreen("screen-action");
+});
+el("action-back-btn").addEventListener("click", () => showScreen("screen-section"));
+
+function renderActionScreen() {
+  el("action-section-label").textContent = SECTION_LABELS[currentSection];
+  const buttons = [
+    `<button type="button" class="option-card" data-action="create">Créer</button>`,
+    `<button type="button" class="option-card" data-action="modify">Modifier</button>`,
+  ];
+  if (SECTION_HAS_PERFECTIONNER[currentSection]) {
+    buttons.push(`<button type="button" class="option-card" data-action="perfectionner">Perfectionner</button>`);
+  }
+  el("action-grid").innerHTML = buttons.join("");
+}
+el("action-grid").addEventListener("click", (event) => {
+  const button = event.target.closest(".option-card");
+  if (!button) return;
+  const action = button.dataset.action;
+  if (action === "create") { showScreen("screen-create"); showCreatePanel(); }
+  else if (action === "modify") { el("modify-pick-search").value = ""; el("modify-pick-title").textContent = `Choisir ${SECTION_SINGULAR[currentSection]} à modifier`; showScreen("screen-modify-pick"); }
+  else if (action === "perfectionner") { el("perfectionner-search").value = ""; el("perfectionner-title").textContent = `Perfectionner ${SECTION_SINGULAR[currentSection]} existant`; showScreen("screen-perfectionner"); }
+});
+
+function showCreatePanel() {
+  ["concept", "microsystem", "execution", "management"].forEach((section) => {
+    el(`create-${section}-panel`).style.display = section === currentSection ? "block" : "none";
+  });
+}
+el("create-back-btn").addEventListener("click", () => showScreen("screen-action"));
+el("perfectionner-back-btn").addEventListener("click", () => showScreen("screen-action"));
+el("modify-pick-back-btn").addEventListener("click", () => showScreen("screen-action"));
+
+// ============================================================
+// Créer -- the 4 relocated create panels, ids kept verbatim from
+// strategy_builder.html (safe: the originals are removed from that page).
+// ============================================================
+
+function refreshCreatePickers() {
+  conceptDataPicker.render();
+  microsystemConceptPicker.render();
+  microsystemDataPicker.render();
+}
+
+const conceptDataSelection = new Set();
+const conceptDataPicker = createAssetDataPicker({ container: el("concept-data-picker"), selectedSet: conceptDataSelection });
+const conceptPromptBox = createPromptBox({
+  detailsEl: el("concept-prompt-details"), preEl: el("concept-prompt-text"), copyBtnEl: el("concept-copy-prompt-btn"),
+  fetchContent: async () => {
+    const sources = [...conceptDataSelection].filter((k) => allDataSources.some((s) => s.key === k));
+    const plugins = [...conceptDataSelection].filter((k) => allPlugins.some((p) => p.id === k));
+    const res = await fetch("/api/concept-prompt", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sources, plugins }),
+    });
+    const data = await res.json();
+    return res.ok ? data.content : "Prompt indisponible : " + data.error;
+  },
+});
+createImportPicker({
+  buttonEl: el("concept-import-btn"), inputEl: el("concept-import-input"), statusEl: el("concept-import-status"),
+  endpoint: "/api/concepts/import",
+  onImported: async () => { await loadCatalogs(); refreshCreatePickers(); },
+});
+
+// microsystemConceptPicker chooses from the *whole* concept catalog, not
+// one strategy's own wired instances -- unlike strategy_builder.html's
+// own version of this picker (which offered strategyConcepts, since it
+// was scoped to the strategy under construction), Builder has no strategy
+// context at all, so "which concepts might this microsystem read from"
+// is answered against everything available, keyed by concept_id directly
+// (not an instance_id -- there's no instance here to speak of).
+const microsystemConceptSelection = new Set();
+const microsystemConceptPicker = createFilterableChecklist({
+  searchInputEl: null, listEl: el("microsystem-concept-list"),
+  getItems: () => allConcepts.map((c) => ({ key: c.id, label: c.label, detail: c.detail || null })),
+  selectedSet: microsystemConceptSelection,
+});
+const microsystemDataSelection = new Set();
+const microsystemDataPicker = createAssetDataPicker({ container: el("microsystem-data-picker"), selectedSet: microsystemDataSelection });
+const microsystemPromptBox = createPromptBox({
+  detailsEl: el("microsystem-prompt-details"), preEl: el("microsystem-prompt-text"), copyBtnEl: el("microsystem-copy-prompt-btn"),
+  fetchContent: async () => {
+    const sources = [...microsystemDataSelection].filter((k) => allDataSources.some((s) => s.key === k));
+    const plugins = [...microsystemDataSelection].filter((k) => allPlugins.some((p) => p.id === k));
+    const concepts = [...microsystemConceptSelection];
+    const res = await fetch("/api/microsystem-prompt", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ concepts, sources, plugins }),
+    });
+    const data = await res.json();
+    return res.ok ? data.content : "Prompt indisponible : " + data.error;
+  },
+});
+createImportPicker({
+  buttonEl: el("microsystem-import-btn"), inputEl: el("microsystem-import-input"), statusEl: el("microsystem-import-status"),
+  endpoint: "/api/microsystems/import",
+  onImported: async () => { await loadCatalogs(); refreshCreatePickers(); },
+});
+
+const executionPromptBox = createPromptBox({
+  detailsEl: el("execution-prompt-details"), preEl: el("execution-prompt-text"), copyBtnEl: el("execution-copy-prompt-btn"),
+  fetchContent: async () => {
+    const res = await fetch("/api/execution-prompt");
+    const data = await res.json();
+    return res.ok ? data.content : "Prompt indisponible : " + data.error;
+  },
+});
+createImportPicker({
+  buttonEl: el("execution-import-btn"), inputEl: el("execution-import-input"), statusEl: el("execution-import-status"),
+  endpoint: "/api/execution-profiles/import",
+  onImported: async () => { await loadCatalogs(); },
+});
+
+const managementPromptBox = createPromptBox({
+  detailsEl: el("management-prompt-details"), preEl: el("management-prompt-text"), copyBtnEl: el("management-copy-prompt-btn"),
+  fetchContent: async () => {
+    const res = await fetch("/api/management-prompt");
+    const data = await res.json();
+    return res.ok ? data.content : "Prompt indisponible : " + data.error;
+  },
+});
+createImportPicker({
+  buttonEl: el("management-import-btn"), inputEl: el("management-import-input"), statusEl: el("management-import-status"),
+  endpoint: "/api/management-profiles/import",
+  onImported: async () => { await loadCatalogs(); },
+});
+
+// ============================================================
+// Perfectionner -- identical navigation to strategy_builder.html's own
+// former entry points, just relocated; getItems/onSelect read the live
+// currentSection instead of being fixed per-panel.
+// ============================================================
+
+createCombobox({
+  inputEl: el("perfectionner-search"), listboxEl: el("perfectionner-listbox"), containerEl: el("perfectionner-combobox"),
+  getItems: () => SECTION_CATALOG[currentSection]().map((item) => ({ key: item.id, label: item.label })),
+  onSelect: (id) => {
+    const path = currentSection === "concept" ? "/concept/refine" : "/microsystem/refine";
+    window.location.href = `${path}?id=${encodeURIComponent(id)}`;
+  },
+  placeholder: "Aucun élément trouvé.",
+});
+
+// ============================================================
+// Modifier -- pick an existing id, then choose globalement vs dupliquer.
+// ============================================================
+
+createCombobox({
+  inputEl: el("modify-pick-search"), listboxEl: el("modify-pick-listbox"), containerEl: el("modify-pick-combobox"),
+  getItems: () => SECTION_CATALOG[currentSection]().map((item) => ({ key: item.id, label: item.label })),
+  onSelect: (id) => {
+    currentModifyId = id;
+    el("modify-mode-label").textContent = id;
+    showScreen("screen-modify-mode");
+  },
+  placeholder: "Aucun élément trouvé.",
+});
+el("modify-mode-back-btn").addEventListener("click", () => showScreen("screen-modify-pick"));
+
+el("modify-mode-global-btn").addEventListener("click", () => {
+  el("modify-global-title").textContent = `Modifier ${currentModifyId} globalement`;
+  el("modify-global-import-status").textContent = "";
+  el("modify-global-import-status").className = "import-status";
+  showScreen("screen-modify-global");
+});
+el("modify-global-back-btn").addEventListener("click", () => showScreen("screen-modify-mode"));
+
+// Not built on createImportPicker (unlike every panel above) because this
+// one screen serves all 4 categories' import endpoints dynamically
+// (currentSection at click time), which createImportPicker's own
+// once-per-construction `endpoint` string can't express, and because it
+// needs one guard createImportPicker doesn't have: the picked file must be
+// named exactly `${currentModifyId}.py`, or this would silently create an
+// unrelated new script instead of truly editing the picked one in place.
+function uploadModifyGlobal(filename, content, overwrite) {
+  const statusEl = el("modify-global-import-status");
+  fetch(SECTION_IMPORT_ENDPOINT[currentSection], {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename, content, overwrite }),
+  }).then(async (res) => {
+    const data = await res.json();
+    if (res.status === 409) {
+      if (confirm(`${filename} existe déjà. L'écraser ?`)) uploadModifyGlobal(filename, content, true);
+      return;
+    }
+    if (!res.ok) { statusEl.className = "import-status error"; statusEl.textContent = data.error || "échec de l'import"; return; }
+    statusEl.className = "import-status";
+    statusEl.textContent = `${filename} modifié.`;
+    await loadCatalogs();
+  });
+}
+el("modify-global-import-btn").addEventListener("click", () => el("modify-global-import-input").click());
+el("modify-global-import-input").addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  const statusEl = el("modify-global-import-status");
+  if (!file.name.endsWith(".py")) {
+    statusEl.className = "import-status error"; statusEl.textContent = "Le fichier doit avoir l'extension .py";
+    return;
+  }
+  const expectedName = `${currentModifyId}.py`;
+  if (file.name !== expectedName) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = `Le fichier doit s'appeler "${expectedName}" pour modifier ce script en place. `
+      + `Renomme-le, ou utilise Dupliquer pour créer une variante indépendante.`;
+    return;
+  }
+  const content = await file.text();
+  uploadModifyGlobal(file.name, content, false);
+});
+
+// ============================================================
+// Dupliquer pour une stratégie.
+// ============================================================
+
+el("modify-mode-duplicate-btn").addEventListener("click", () => {
+  el("duplicate-title").textContent = `Dupliquer ${currentModifyId} pour une stratégie`;
+  el("duplicate-status").textContent = "";
+  el("duplicate-status").className = "import-status";
+  const field = SECTION_STRATEGY_FIELD[currentSection];
+  const matching = allStrategies.filter((s) => {
+    const value = s[field];
+    return Array.isArray(value) ? value.includes(currentModifyId) : value === currentModifyId;
+  });
+  if (!matching.length) {
+    el("duplicate-no-strategies").style.display = "block";
+    el("duplicate-form").style.display = "none";
+  } else {
+    el("duplicate-no-strategies").style.display = "none";
+    el("duplicate-form").style.display = "block";
+    el("duplicate-strategy-select").innerHTML = matching.map((s) => `<option value="${escapeAttr(s.name)}">${s.name}</option>`).join("");
+    updateDuplicateNameDefault();
+  }
+  showScreen("screen-duplicate");
+});
+el("duplicate-back-btn").addEventListener("click", () => showScreen("screen-modify-mode"));
+
+// {source_id}_{strategy_name}, never a hyphen -- SCRIPT_FILENAME_RE
+// (runs.py) only allows letters/digits/underscore, and both halves are
+// already-valid identifiers, so this is always a legal filename.
+function updateDuplicateNameDefault() {
+  el("duplicate-name-input").value = `${currentModifyId}_${el("duplicate-strategy-select").value}`;
+}
+el("duplicate-strategy-select").addEventListener("change", updateDuplicateNameDefault);
+
+el("duplicate-confirm-btn").addEventListener("click", async () => {
+  const strategyName = el("duplicate-strategy-select").value;
+  const rawName = el("duplicate-name-input").value.trim();
+  const statusEl = el("duplicate-status");
+  if (!strategyName || !rawName) return;
+  const newFilename = rawName.endsWith(".py") ? rawName : `${rawName}.py`;
+  const res = await fetch("/api/builder/duplicate", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ category: currentSection, source_id: currentModifyId, new_filename: newFilename, strategy_name: strategyName }),
+  });
+  const data = await res.json();
+  if (res.status === 409) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = `${data.error} -- choisis un autre nom.`;
+    return;
+  }
+  if (!res.ok) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = data.error || "échec de la duplication";
+    return;
+  }
+  statusEl.className = "import-status";
+  statusEl.textContent = `${data.new_id} créé, ${data.rebound_count} référence(s) rebranchée(s) dans ${strategyName}.`;
+  await loadCatalogs();
+});
+
+// ============================================================
+// Init
+// ============================================================
+
+loadCatalogs();
+</script>
+</body>
+</html>

@@ -976,6 +976,34 @@ class ReadSourceTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 manager.read_microsystem_source("nope")
 
+    def test_read_execution_source_found(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_execution_profile_file("mon_profil.py", _EXECUTION_SOURCE)
+            result = manager.read_execution_source("mon_profil")
+            self.assertEqual(result["filename"], "mon_profil.py")
+            self.assertIn("EXECUTION_INFO", result["content"])
+
+    def test_read_execution_source_not_found_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(FileNotFoundError):
+                manager.read_execution_source("nope")
+
+    def test_read_management_source_found(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            manager.import_management_profile_file("mon_profil_gestion.py", _MANAGEMENT_SOURCE)
+            result = manager.read_management_source("mon_profil_gestion")
+            self.assertEqual(result["filename"], "mon_profil_gestion.py")
+            self.assertIn("MANAGEMENT_INFO", result["content"])
+
+    def test_read_management_source_not_found_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            with self.assertRaises(FileNotFoundError):
+                manager.read_management_source("nope")
+
 
 class BuildPromptTests(unittest.TestCase):
     def _manager(self, root: Path) -> CollectionRunManager:
