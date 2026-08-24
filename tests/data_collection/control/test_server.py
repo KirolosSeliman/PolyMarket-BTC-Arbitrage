@@ -1595,6 +1595,49 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("409 Conflict", head)
         self.assertTrue(body["exists"])
 
+    async def test_builder_delete_success(self) -> None:
+        self.concepts_dir.mkdir(parents=True, exist_ok=True)
+        (self.concepts_dir / "zscore_delete_test.py").write_text(
+            'CONCEPT_INFO = {"label": "x", "description": "y", "data_sources": ["binance_futures_kline"]}\n'
+            "def compute(context):\n    return None\n",
+            encoding="utf-8",
+        )
+        head, body = await self._request(
+            "POST", "/api/builder/delete", json_body={"category": "concept", "source_id": "zscore_delete_test"},
+        )
+        self.assertIn("200 OK", head)
+        self.assertEqual(body, {"category": "concept", "id": "zscore_delete_test"})
+        self.assertFalse((self.concepts_dir / "zscore_delete_test.py").exists())
+
+    async def test_builder_delete_missing_fields_is_400(self) -> None:
+        head, _body = await self._request("POST", "/api/builder/delete", json_body={"category": "concept"})
+        self.assertIn("400 Bad Request", head)
+
+    async def test_builder_delete_unknown_source_is_404(self) -> None:
+        head, _body = await self._request(
+            "POST", "/api/builder/delete", json_body={"category": "concept", "source_id": "no_such_concept"},
+        )
+        self.assertIn("404 Not Found", head)
+
+    async def test_builder_delete_referenced_concept_is_400(self) -> None:
+        self.concepts_dir.mkdir(parents=True, exist_ok=True)
+        (self.concepts_dir / "zscore_delete_test2.py").write_text(
+            'CONCEPT_INFO = {"label": "x", "description": "y", "data_sources": ["binance_futures_kline"]}\n'
+            "def compute(context):\n    return None\n",
+            encoding="utf-8",
+        )
+        self.strategies.save_strategy(
+            name="delete_route_test",
+            concepts=[{"instance_id": "concept_1", "concept_id": "zscore_delete_test2", "config": {}}],
+            microsystems=[], execution=None, management=None,
+        )
+        head, body = await self._request(
+            "POST", "/api/builder/delete", json_body={"category": "concept", "source_id": "zscore_delete_test2"},
+        )
+        self.assertIn("400 Bad Request", head)
+        self.assertIn("delete_route_test", body["error"])
+        self.assertTrue((self.concepts_dir / "zscore_delete_test2.py").exists())
+
     async def test_builder_page_serves_200(self) -> None:
         head, _body = await self._request("GET", "/builder")
         self.assertIn("200 OK", head)

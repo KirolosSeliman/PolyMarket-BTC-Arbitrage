@@ -12,6 +12,7 @@
   --surface-0: #000000; --surface-1: #111111; --surface-2: #1c1c1c;
   --text-1: #f2f2f0; --text-2: #b7b6b0; --muted: #7a7972;
   --border: rgba(255,255,255,0.12); --accent: #3987e5; --good: #3f9142; --critical: #d0554d;
+  --builder: #a855f7;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -43,6 +44,16 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 button.secondary { color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border); }
 button.secondary:hover { border-color: var(--accent); filter: none; }
 .hint { font-size: 11px; color: var(--muted); margin: 4px 0 0; padding: 0 24px; flex: none; }
+
+/* Builder is a distinct tool, not another assembly action -- its own hue,
+   a bit more heft, and a divider ahead of it so it reads as its own zone
+   in the toolbar rather than a third button in the "new strategy" row. */
+.toolbar .divider { width: 1px; align-self: stretch; background: var(--border); margin: 2px 2px; }
+button.builder {
+  color: #fff; background: var(--builder); font-weight: 600; padding: 9px 18px;
+  display: inline-flex; align-items: center; gap: 7px;
+}
+button.builder:hover { filter: brightness(1.12); }
 
 /* The scrollable region -- everything else on the page is pinned chrome
    around it, this is what "en déroulant" actually means mechanically. */
@@ -86,7 +97,8 @@ button.secondary:hover { border-color: var(--accent); filter: none; }
     <input type="text" class="name-input" id="new-strategy-name" placeholder="Nom de la stratégie" autocomplete="off">
     <button type="button" id="create-strategy-btn">+ Nouvelle stratégie</button>
   </div>
-  <button type="button" class="secondary" id="builder-btn">Builder</button>
+  <div class="divider"></div>
+  <button type="button" class="builder" id="builder-btn">🛠 Builder</button>
 </div>
 <p class="hint" id="create-hint" style="display:none">Donne un nom à la stratégie avant de la construire.</p>
 

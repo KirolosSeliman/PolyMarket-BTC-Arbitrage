@@ -639,6 +639,42 @@ class CollectionRunManager:
                 return {"id": info.id, "filename": info.path.name, "content": info.path.read_text(encoding="utf-8")}
         raise FileNotFoundError(f"no management profile named {management_id!r}")
 
+    def delete_concept_source(self, concept_id: str) -> None:
+        """Permanently removes a discovered concept's .py file. Callers
+        (StrategyManager.delete_source) are responsible for refusing this
+        while any saved strategy still references concept_id -- this method
+        itself does no such check, same division of responsibility as
+        delete_strategy vs. the server route that confirms with the user."""
+        for info in discover_concepts(self.concepts_dir):
+            if info.id == concept_id:
+                info.path.unlink()
+                return
+        raise FileNotFoundError(f"no concept named {concept_id!r}")
+
+    def delete_microsystem_source(self, microsystem_id: str) -> None:
+        """Same contract as delete_concept_source, for a microsystem."""
+        for info in discover_microsystems(self.microsystems_dir):
+            if info.id == microsystem_id:
+                info.path.unlink()
+                return
+        raise FileNotFoundError(f"no microsystem named {microsystem_id!r}")
+
+    def delete_execution_source(self, execution_id: str) -> None:
+        """Same contract as delete_concept_source, for an execution profile."""
+        for info in discover_execution_profiles(self.execution_dir):
+            if info.id == execution_id:
+                info.path.unlink()
+                return
+        raise FileNotFoundError(f"no execution profile named {execution_id!r}")
+
+    def delete_management_source(self, management_id: str) -> None:
+        """Same contract as delete_concept_source, for a management profile."""
+        for info in discover_management_profiles(self.management_dir):
+            if info.id == management_id:
+                info.path.unlink()
+                return
+        raise FileNotFoundError(f"no management profile named {management_id!r}")
+
     def _data_context_blocks(self, *, sources: list[str], plugins: list[str]) -> list[str]:
         """One markdown block per selected data-catalog entry: built-in
         sources get their label/description/detail/mode (no code -- there

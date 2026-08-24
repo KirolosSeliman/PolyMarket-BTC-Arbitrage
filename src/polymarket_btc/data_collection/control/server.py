@@ -584,6 +584,8 @@ class ControlPanelServer:
             return self._preview_example(body)
         if path == "/api/builder/duplicate":
             return self._builder_duplicate(body)
+        if path == "/api/builder/delete":
+            return self._builder_delete(body)
         if path == "/api/symbols/refresh":
             return self._refresh_symbols()
         if path == "/api/concept-refine/scan":
@@ -692,6 +694,30 @@ class ControlPanelServer:
             return self._error("404 Not Found", str(exc))
         except FileExistsError as exc:
             return self._json({"error": str(exc), "exists": True}, status="409 Conflict")
+        return self._json(result)
+
+    def _builder_delete(self, body: bytes) -> bytes:
+        """Permanently deletes a concept/microsystem/execution/management
+        script -- see StrategyManager.delete_source for the full contract,
+        notably that it refuses while any saved strategy still references
+        it."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        category = payload.get("category")
+        source_id = payload.get("source_id")
+        for field_name, value in (("category", category), ("source_id", source_id)):
+            if not isinstance(value, str) or not value:
+                return self._error("400 Bad Request", f"{field_name} must be a non-empty string")
+        try:
+            result = self.strategies.delete_source(category=category, source_id=source_id)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        except FileNotFoundError as exc:
+            return self._error("404 Not Found", str(exc))
         return self._json(result)
 
     def _view_source(self, body: bytes, reader: Callable[[str], dict[str, str]]) -> bytes:

@@ -637,5 +637,87 @@ class DuplicateAndRebindTests(unittest.TestCase):
             self.assertEqual(saved["management"]["management_id"], "fixed_sltp_mgmt_strategy")
 
 
+class DeleteSourceTests(unittest.TestCase):
+    _setup = DuplicateAndRebindTests._setup
+
+    def test_unknown_category_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            with self.assertRaises(ValueError):
+                strategies.delete_source(category="nope", source_id="zscore")
+
+    def test_unknown_source_id_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            strategies = self._setup(Path(directory))
+            with self.assertRaises(FileNotFoundError):
+                strategies.delete_source(category="concept", source_id="nope")
+
+    def test_referenced_concept_blocks_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.save_strategy(
+                name="s1", concepts=[{"instance_id": "c1", "concept_id": "zscore", "config": {}}],
+                microsystems=[], execution=None, management=None,
+            )
+            with self.assertRaises(ValueError) as ctx:
+                strategies.delete_source(category="concept", source_id="zscore")
+            self.assertIn("s1", str(ctx.exception))
+            self.assertTrue((root / "concepts" / "zscore.py").exists())
+
+    def test_referenced_execution_blocks_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.save_strategy(
+                name="exec_strategy", concepts=[], microsystems=[],
+                execution={"execution_id": "conservative", "config": {}}, management=None,
+            )
+            with self.assertRaises(ValueError) as ctx:
+                strategies.delete_source(category="execution", source_id="conservative")
+            self.assertIn("exec_strategy", str(ctx.exception))
+            self.assertTrue((root / "execution_profiles" / "conservative.py").exists())
+
+    def test_unreferenced_concept_deletes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            result = strategies.delete_source(category="concept", source_id="zscore")
+            self.assertEqual(result, {"category": "concept", "id": "zscore"})
+            self.assertFalse((root / "concepts" / "zscore.py").exists())
+
+    def test_unreferenced_microsystem_deletes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.delete_source(category="microsystem", source_id="trend")
+            self.assertFalse((root / "microsystems" / "trend.py").exists())
+
+    def test_unreferenced_management_deletes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.delete_source(category="management", source_id="fixed_sltp")
+            self.assertFalse((root / "management_profiles" / "fixed_sltp.py").exists())
+
+    def test_deleting_after_rebind_leaves_original_strategy_deletable(self) -> None:
+        # Once duplicate_and_rebind has moved a strategy off the original
+        # id, the original should no longer be "referenced" by that
+        # strategy and become deletable if nothing else uses it.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strategies = self._setup(root)
+            strategies.save_strategy(
+                name="s1", concepts=[{"instance_id": "c1", "concept_id": "zscore", "config": {}}],
+                microsystems=[], execution=None, management=None,
+            )
+            strategies.duplicate_and_rebind(
+                category="concept", source_id="zscore", new_filename="zscore_s1.py", strategy_name="s1",
+            )
+            strategies.delete_source(category="concept", source_id="zscore")
+            self.assertFalse((root / "concepts" / "zscore.py").exists())
+            self.assertTrue((root / "concepts" / "zscore_s1.py").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

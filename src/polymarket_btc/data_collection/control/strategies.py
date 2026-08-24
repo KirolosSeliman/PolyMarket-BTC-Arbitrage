@@ -51,6 +51,18 @@ _DUPLICATE_CATEGORIES: dict[str, tuple[str, str, str, str, bool]] = {
     "management": ("read_management_source", "import_management_profile_file", "management", "management_id", False),
 }
 
+# category -> (delete method name on self.runs, the list_strategies() field
+# that names which ids of this category a strategy references, whether
+# that field is a *list* of ids (concept/microsystem) or a single nullable
+# id (execution/management)) -- see delete_source, which uses this to
+# refuse deleting anything still wired into a saved strategy.
+_DELETE_CATEGORIES: dict[str, tuple[str, str, bool]] = {
+    "concept": ("delete_concept_source", "concept_ids", True),
+    "microsystem": ("delete_microsystem_source", "microsystem_ids", True),
+    "execution": ("delete_execution_source", "execution_id", False),
+    "management": ("delete_management_source", "management_id", False),
+}
+
 
 @dataclass(slots=True)
 class StrategyManager:
@@ -455,6 +467,37 @@ class StrategyManager:
             "filename": import_result["filename"], "new_id": new_id, "recognized": import_result["recognized"],
             "rebound_count": rebound_count, "strategy": saved,
         }
+
+    def delete_source(self, *, category: str, source_id: str) -> dict[str, object]:
+        """Permanently deletes a concept/microsystem/execution/management
+        script, refusing if any saved strategy still references source_id --
+        deleting out from under a strategy would leave it pointing at a
+        script that no longer exists, the same failure mode duplicate_and_
+        rebind exists to avoid (except here there's no fork to fall back
+        to, so this has to block outright rather than offer a rebind).
+
+        Raises ValueError for an unknown category, or when one or more
+        strategies still reference source_id (message names them, so the
+        caller can point the user at Dupliquer or at removing the
+        reference first); FileNotFoundError for an unknown source_id."""
+        try:
+            delete_attr, list_field, is_list = _DELETE_CATEGORIES[category]
+        except KeyError:
+            raise ValueError(f"category must be one of {sorted(_DELETE_CATEGORIES)}, got {category!r}") from None
+
+        blocking = []
+        for entry in self.list_strategies():
+            referenced = entry[list_field] if is_list else ([entry[list_field]] if entry[list_field] else [])
+            if source_id in referenced:
+                blocking.append(entry["name"])
+        if blocking:
+            raise ValueError(
+                f"{source_id!r} est encore utilisé par : {', '.join(sorted(blocking))} -- "
+                "retire-le de ces stratégies (ou duplique-le pour t'en détacher) avant de le supprimer."
+            )
+
+        getattr(self.runs, delete_attr)(source_id)  # FileNotFoundError propagates for an unknown source_id
+        return {"category": category, "id": source_id}
 
     def preview_example(
         self,
