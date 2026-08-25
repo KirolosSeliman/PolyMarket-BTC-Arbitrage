@@ -98,6 +98,25 @@ def _to_float(value):
         return None
 
 
+def required_lookback_seconds(config, candle_seconds):
+    """Bounds the backtest engine's accumulated-history window to what
+    compute()'s own candles[-lookback_candles:] trimming ever keeps --
+    without this, compute() re-normalizes the entire history-so-far on
+    every single evaluation step just to discard all but the last
+    lookback_candles of it. candle_seconds is the engine's own detected
+    record spacing for this instance's bound data (None when there isn't
+    yet enough data to estimate) -- falls back to unbounded rather than
+    guessing an interval, since collection granularity isn't fixed."""
+    if candle_seconds is None:
+        return None
+    lookback_candles = int(_to_float(config.get("lookback_candles", 500)) or 500)
+    if lookback_candles <= 0:
+        return None
+    # 1.5x margin: covers a data gap or slightly irregular candle spacing
+    # so compute() is never left with fewer than lookback_candles candles.
+    return lookback_candles * candle_seconds * 1.5
+
+
 def _normalize_candles(records):
     """Binance klines arrive pre-built (open/high/low/close/open_time from
     read_records' own extractor -- see backtest_data.py) -- no reconstruction

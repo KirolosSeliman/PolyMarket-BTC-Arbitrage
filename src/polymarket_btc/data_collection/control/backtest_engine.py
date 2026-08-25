@@ -91,27 +91,49 @@ def _instance_key_bindings(
     return pairs
 
 
-def _resolve_lookback_seconds(info: object, config: dict) -> float | None:
+def _detect_candle_seconds(records: list[dict]) -> float | None:
+    """A robust, cheap-up-front estimate of a key's real record spacing --
+    the median gap over a sample of up to the first 500 consecutive pairs,
+    not just the first two (immune to one irregular gap, e.g. a data hole
+    right at the start). Collection intervals range from 1m to 1M (see
+    VALID_KLINE_INTERVALS in runs.py) and aren't known statically, so a
+    concept whose lookback is naturally candle-based (lookback_candles *
+    candle_seconds) needs this detected, not assumed -- guessing wrong
+    (e.g. always assuming 1m) would silently hand it too short a window
+    for any coarser interval, a correctness bug wearing a performance fix's
+    clothes. None if there's not enough data (fewer than 2 records) to
+    estimate from -- callers treat that as "can't bound yet"."""
+    if len(records) < 2:
+        return None
+    sample = records[: min(len(records), 501)]
+    diffs = sorted(sample[i + 1]["timestamp"] - sample[i]["timestamp"] for i in range(len(sample) - 1))
+    return diffs[len(diffs) // 2] if diffs else None
+
+
+def _resolve_lookback_seconds(info: object, config: dict, candle_seconds: float | None) -> float | None:
     """The trailing-history window (seconds) a concept/microsystem instance
-    actually needs, per its own optional required_lookback_seconds(config)
-    -- None (the default, for any script that doesn't define the function)
-    means unbounded: today's behavior, context.data[key] is every record
-    accumulated since the backtest's own start_ts. A script that opts in
-    gets, per instance, only its declared trailing window no matter how far
-    the walk has progressed -- the concrete fix for a concept like fvg.py
-    that reconstructs candles from scratch on every evaluation step: without
-    a bound, that rebuild re-scans the *entire* accumulated history so far
-    (confirmed the dominant cost in a slow backtest by reading
-    concepts/fvg.py's _build_candles), growing for the whole walk; with a
-    bound, it only ever sees its own declared window -- identical final
-    result, since anything older was always going to be discarded by the
-    concept's own lookback trimming anyway. An invalid/failing resolver
+    actually needs, per its own optional required_lookback_seconds(config,
+    candle_seconds) -- None (the default, for any script that doesn't
+    define the function) means unbounded: today's behavior, context.data
+    [key] is every record accumulated since the backtest's own start_ts. A
+    script that opts in gets, per instance, only its declared trailing
+    window no matter how far the walk has progressed -- the concrete fix
+    for a concept like fvg.py that reconstructs candles from scratch on
+    every evaluation step: without a bound, that rebuild re-scans the
+    *entire* accumulated history so far (confirmed the dominant cost in a
+    slow backtest by reading concepts/fvg.py's _normalize_candles), growing
+    for the whole walk; with a bound, it only ever sees its own declared
+    window -- identical final result, since anything older was always
+    going to be discarded by the concept's own lookback trimming anyway.
+    `candle_seconds` is this instance's own detected record spacing (see
+    _detect_candle_seconds), passed through so a resolver expressed in
+    candles doesn't have to guess an interval. An invalid/failing resolver
     degrades to unbounded (never a crash, never a silently wrong window)."""
     resolver = getattr(info, "required_lookback_seconds", None)
     if resolver is None:
         return None
     try:
-        value = resolver(config)
+        value = resolver(config, candle_seconds)
     except Exception:
         return None
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
@@ -278,13 +300,24 @@ def build_timeline(
         )
         for entry in microsystem_entries
     }
+    # candle_seconds is detected from an instance's own first binding --
+    # every concept/microsystem here has exactly one data type per
+    # requirement, so the first binding's spacing is the instance's own
+    # spacing. A multi-binding instance mixing different-cadence keys would
+    # need a more careful choice, but none exist today.
     concept_lookback = {
-        entry["instance_id"]: _resolve_lookback_seconds(concept_infos[entry["concept_id"]], entry.get("config") or {})
+        entry["instance_id"]: _resolve_lookback_seconds(
+            concept_infos[entry["concept_id"]], entry.get("config") or {},
+            _detect_candle_seconds(records_by_key.get(concept_bindings[entry["instance_id"]][0][1], []))
+            if concept_bindings[entry["instance_id"]] else None,
+        )
         for entry in concept_entries
     }
     microsystem_lookback = {
         entry["instance_id"]: _resolve_lookback_seconds(
             microsystem_infos[entry["microsystem_id"]], entry.get("config") or {},
+            _detect_candle_seconds(records_by_key.get(microsystem_bindings[entry["instance_id"]][0][1], []))
+            if microsystem_bindings[entry["instance_id"]] else None,
         )
         for entry in microsystem_entries
     }
@@ -303,6 +336,21 @@ def build_timeline(
     microsystem_cache: dict[str, tuple[tuple, object]] = {}
     concept_signature_by_instance: dict[str, tuple] = {}
 
+    # accumulated[key] is only ever read by _instance_step_data's unbounded
+    # (lookback is None) branch -- if every instance touching a key has a
+    # bounded lookback (every real concept/microsystem today does, once
+    # they declare required_lookback_seconds), nothing ever reads that
+    # key's accumulated list, so rebuilding it every step would be pure
+    # waste: still an O(records) reslice on every cursor advance, same cost
+    # this whole windowing mechanism exists to avoid.
+    unbounded_keys: set[str] = set()
+    for entry in concept_entries:
+        if concept_lookback[entry["instance_id"]] is None:
+            unbounded_keys.update(concrete for _literal, concrete in concept_bindings[entry["instance_id"]])
+    for entry in microsystem_entries:
+        if microsystem_lookback[entry["instance_id"]] is None:
+            unbounded_keys.update(concrete for _literal, concrete in microsystem_bindings[entry["instance_id"]])
+
     t = start_ts
     while t <= end_ts:
         for key, records in records_by_key.items():
@@ -310,7 +358,8 @@ def build_timeline(
             while cursor < len(records) and records[cursor]["timestamp"] <= t:
                 cursor += 1
             if cursor != cursors[key]:
-                accumulated[key] = records[:cursor]
+                if key in unbounded_keys:
+                    accumulated[key] = records[:cursor]
                 cursors[key] = cursor
 
         concept_outputs: dict[str, object] = {}

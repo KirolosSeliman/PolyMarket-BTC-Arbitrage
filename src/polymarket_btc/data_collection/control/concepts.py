@@ -44,26 +44,32 @@ that data (the future backtest module decides the exact handle shape);
 `context.config` maps each config_schema field's name to its resolved value;
 `context.log` is a short-status callback, same spirit as PluginContext.log.
 
-    def required_lookback_seconds(config: dict) -> float | None:
+    def required_lookback_seconds(config: dict, candle_seconds: float | None) -> float | None:
         ...
 
 Optional. Declares the longest trailing window of history (in seconds,
 counting back from "now" at any evaluation point) this concept could ever
 need from *any* of its data_sources, given a resolved config -- e.g. a
-concept that reconstructs `lookback_candles` candles of `candle_seconds`
-width from raw trades needs nothing older than
-`lookback_candles * candle_seconds` (times a safety margin for quiet
-periods with fewer trades than expected per candle). Not defining this
-function (the default for a concept that doesn't opt in) means "unbounded":
-`context.data[key]` is every record from the backtest's own start, which is
-always correct but can be slow for a concept that reprocesses all of it
-from scratch on every evaluation step -- the backtest engine hands a
-windowed instance only its declared trailing slice instead, which is
-strictly faster and, as long as the declared window is genuinely long
-enough, produces an identical result (anything older was already being
-discarded by the concept's own lookback trimming). Get the margin wrong
-(too short) and older-but-still-relevant data silently disappears instead
--- when unsure, don't define this function at all rather than guess low.
+concept that reconstructs `lookback_candles` candles needs nothing older
+than `lookback_candles * candle_seconds` (times a safety margin for a
+data gap or slightly irregular spacing). `candle_seconds` is the backtest
+engine's own detected record spacing for this instance's data (median gap
+over a sample, None if there isn't enough data yet to estimate) -- read
+it instead of assuming/hardcoding an interval: collection intervals range
+from 1m to 1M (see VALID_KLINE_INTERVALS in runs.py), so a fixed
+assumption would silently hand a coarser-interval backtest too short a
+window. If `candle_seconds` is None, return None too (can't safely bound
+yet). Not defining this function at all (the default for a concept that
+doesn't opt in) means "unbounded": `context.data[key]` is every record
+from the backtest's own start, which is always correct but can be slow
+for a concept that reprocesses all of it from scratch on every evaluation
+step -- the backtest engine hands a windowed instance only its declared
+trailing slice instead, which is strictly faster and, as long as the
+declared window is genuinely long enough, produces an identical result
+(anything older was already being discarded by the concept's own lookback
+trimming). Get the margin wrong (too short) and older-but-still-relevant
+data silently disappears instead -- when unsure, don't define this
+function at all rather than guess low.
 """
 
 from __future__ import annotations
@@ -97,7 +103,7 @@ class ConceptInfo:
     path: Path
     compute: Callable[[ConceptContext], object]
     detail: str | None = None
-    required_lookback_seconds: Callable[[Mapping[str, object]], object] | None = None
+    required_lookback_seconds: Callable[[Mapping[str, object], float | None], object] | None = None
 
 
 def _load_concept(path: Path) -> ConceptInfo | None:

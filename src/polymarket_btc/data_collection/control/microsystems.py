@@ -37,7 +37,7 @@ maps each declared concept_inputs id to that concept instance's own compute()
 output; `context.data` maps each declared data_inputs key to that data;
 `context.config` maps each config_schema field's name to its resolved value.
 
-    def required_lookback_seconds(config: dict) -> float | None:
+    def required_lookback_seconds(config: dict, candle_seconds: float | None) -> float | None:
         ...
 
 Optional, same contract and reasoning as a concept's own
@@ -80,7 +80,7 @@ class MicrosystemInfo:
     path: Path
     compute: Callable[[MicrosystemContext], object]
     detail: str | None = None
-    required_lookback_seconds: Callable[[Mapping[str, object]], object] | None = None
+    required_lookback_seconds: Callable[[Mapping[str, object], float | None], object] | None = None
 
 
 def _string_list(raw: object) -> tuple[str, ...] | None:

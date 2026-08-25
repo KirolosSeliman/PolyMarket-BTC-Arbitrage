@@ -691,7 +691,7 @@ class BuildTimelineWindowingTests(unittest.TestCase):
 
         strategy = {"concepts": [{"instance_id": "c1", "concept_id": "c1", "config": {}, "data_bindings": {}}]}
         timeline = build_timeline(
-            strategy, {"c1": _concept_info("c1", compute, required_lookback_seconds=lambda cfg: 2.0)}, {},
+            strategy, {"c1": _concept_info("c1", compute, required_lookback_seconds=lambda cfg, candle_seconds: 2.0)}, {},
             {"key": records}, {"c1": _LOCKED_REQUIREMENT}, {}, start_ts=0, end_ts=9, cadence_seconds=3,
         )
         last_step = timeline[-1]
@@ -724,7 +724,7 @@ class BuildTimelineWindowingTests(unittest.TestCase):
             # 10s window vs 1 record/second -> comfortably covers the 5
             # most-recent records the concept itself trims to, while still
             # small enough to actually bind (not just never fire).
-            "windowed": _concept_info("windowed", make_compute(), required_lookback_seconds=lambda cfg: 10.0),
+            "windowed": _concept_info("windowed", make_compute(), required_lookback_seconds=lambda cfg, candle_seconds: 10.0),
         }
         timeline = build_timeline(
             strategy, concept_infos, {}, {"key": records},
