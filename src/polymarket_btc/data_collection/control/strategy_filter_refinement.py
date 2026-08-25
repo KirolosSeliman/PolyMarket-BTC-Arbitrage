@@ -52,7 +52,9 @@ import random
 
 from . import refinement
 from .backtest_data import read_records
-from .backtest_engine import run_backtest
+from .backtest_engine import estimate_warmup_seconds, run_backtest
+from .concepts import discover_concepts
+from .microsystems import discover_microsystems
 from .runs import CollectionRunManager
 from .strategies import StrategyManager
 
@@ -167,11 +169,25 @@ class StrategyFilterRefinementManager:
     def scan_job_status(self, job_id: str) -> dict[str, object] | None:
         return refinement.scan_job_status(self.jobs, job_id)
 
-    def _instance_window(self, trade: dict, instrument: str) -> dict[str, object]:
-        """A narrow, bounded real-candle window around one trade's own
-        entry/exit -- same intent as concept/microsystem refinement's own
-        _instance_window, sized around [entry_time, exit_time] instead of
-        a single node's own formed_at."""
+    def _instance_window(
+        self, trade: dict, instrument: str, strategy: dict, coverage_start_ts: float,
+    ) -> dict[str, object]:
+        """A bounded window around one trade's own entry/exit: the real
+        candles next_instance's chart already drew, plus (new) a bounded
+        replay -- each concept/microsystem's own output leading up to the
+        trade -- so a human labeling it can see *why* the strategy took it,
+        not just the price action around it. Same intent as concept/
+        microsystem refinement's own _instance_window, sized around
+        [entry_time, exit_time] instead of a single node's own formed_at.
+
+        The replay window starts far enough back for every instance's own
+        required_lookback_seconds to have "warmed up" to what the original
+        full scan (which is what actually found this trade) would have
+        seen at that same moment -- coverage_start_ts is the fallback for
+        any instance that never declared one (needs everything, same as
+        the original scan; see estimate_warmup_seconds). The replay is
+        best-effort: if it fails for any reason, the trade is still shown
+        with its candles, just without the reasoning panel."""
         manifests = self.runs.list_runs()
         entry_time = trade.get("entry_time")
         exit_time = trade.get("exit_time", entry_time)
@@ -185,7 +201,35 @@ class StrategyFilterRefinementManager:
         )
         if len(records) > refinement.NEXT_WINDOW_MAX_RECORDS:
             records = records[-refinement.NEXT_WINDOW_MAX_RECORDS:]
-        return {"key": display_key, "candles": records}
+
+        replay = None
+        try:
+            concept_infos = {info.id: info for info in discover_concepts(self.runs.concepts_dir)}
+            microsystem_infos = {info.id: info for info in discover_microsystems(self.runs.microsystems_dir)}
+            warmup_seconds = estimate_warmup_seconds(
+                strategy, concept_infos, microsystem_infos, self.runs._data_requirements_for,
+                {display_key: records},
+            )
+            replay_start_ts = (
+                coverage_start_ts if warmup_seconds is None
+                else max(coverage_start_ts, earliest - warmup_seconds)
+            )
+            unfiltered_strategy = {k: v for k, v in strategy.items() if k not in ("created_at_utc", "updated_at_utc")}
+            unfiltered_strategy["filter"] = None
+            result = run_backtest(
+                strategy=unfiltered_strategy,
+                concepts_dir=self.runs.concepts_dir, microsystems_dir=self.runs.microsystems_dir,
+                execution_dir=self.runs.execution_dir, management_dir=self.runs.management_dir,
+                filter_dir=self.runs.filter_dir,
+                data_requirements_for=self.runs._data_requirements_for,
+                manifests=manifests, instrument=instrument,
+                start_ts=replay_start_ts, end_ts=latest + refinement.NEXT_WINDOW_AFTER_SECONDS,
+                cadence_seconds=DEFAULT_CADENCE_SECONDS, execution_sweep={}, management_sweep={},
+            )
+            replay = result.get("replay")
+        except Exception:
+            replay = None
+        return {"key": display_key, "candles": records, "replay": replay}
 
     def next_instance(self, *, strategy_name: str) -> dict[str, object]:
         strategy = self.strategies.load_strategy(strategy_name)
@@ -205,7 +249,8 @@ class StrategyFilterRefinementManager:
             return {"instance": None, "exhausted": True, "no_candidates": False, "progress": progress}
         chosen = random.choice(remaining)
         eligibility = self.strategies.backtest_eligibility(strategy_name)
-        window = self._instance_window(chosen["node"], eligibility["default_instrument"])
+        coverage_start_ts = refinement.iso_to_ts(eligibility["coverage"][0][0])
+        window = self._instance_window(chosen["node"], eligibility["default_instrument"], strategy, coverage_start_ts)
         return {
             "instance": {
                 "shape": chosen["shape"], "node": chosen["node"], "trigger_ts": chosen["trigger_ts"],

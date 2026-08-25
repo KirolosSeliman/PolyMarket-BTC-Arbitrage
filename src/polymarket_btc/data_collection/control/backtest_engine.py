@@ -225,6 +225,40 @@ def required_concrete_keys(
     return keys
 
 
+def estimate_warmup_seconds(
+    strategy: dict, concept_infos: Mapping[str, ConceptInfo], microsystem_infos: Mapping[str, MicrosystemInfo],
+    data_requirements_for: Callable[[list[str]], list[dict[str, object]]],
+    records_by_key: Mapping[str, list[dict]],
+) -> float | None:
+    """The longest trailing warm-up window any of strategy's own concept/
+    microsystem instances needs before a narrow replay window (e.g.
+    strategy-filter-refine reviewing one specific real trade, rather than
+    a full-coverage backtest) can reproduce the exact same outputs a
+    full-coverage run would have produced at that same moment -- the bound
+    a caller must extend a narrow window backward by by. None means at
+    least one instance never declared required_lookback_seconds (needs
+    everything since the strategy's own start), so there's no shortcut:
+    the caller has to fall back to the strategy's full coverage start."""
+    max_seconds: float = 0.0
+    for entries, infos, data_key in (
+        (strategy.get("concepts", []), concept_infos, "concept_id"),
+        (strategy.get("microsystems", []), microsystem_infos, "microsystem_id"),
+    ):
+        for entry in entries:
+            info = infos.get(entry[data_key])
+            if info is None:
+                continue
+            data_sources = info.data_sources if data_key == "concept_id" else info.data_inputs
+            requirements = data_requirements_for(list(data_sources))
+            bindings = _instance_key_bindings(requirements, entry.get("data_bindings") or {})
+            candle_seconds = _detect_candle_seconds(records_by_key.get(bindings[0][1], [])) if bindings else None
+            lookback = _resolve_lookback_seconds(info, entry.get("config") or {}, candle_seconds)
+            if lookback is None:
+                return None
+            max_seconds = max(max_seconds, lookback)
+    return max_seconds
+
+
 def build_timeline(
     strategy: dict,
     concept_infos: Mapping[str, ConceptInfo],
@@ -1093,6 +1127,6 @@ def run_example_scenario(
 
 
 __all__ = [
-    "build_timeline", "expand_numeric_range", "expand_sweep", "normalize_direction",
+    "build_timeline", "estimate_warmup_seconds", "expand_numeric_range", "expand_sweep", "normalize_direction",
     "required_concrete_keys", "run_backtest", "run_example_scenario", "simulate_combo", "TimelineStep",
 ]

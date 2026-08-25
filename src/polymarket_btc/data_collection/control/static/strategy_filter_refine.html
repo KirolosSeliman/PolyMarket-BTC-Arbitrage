@@ -84,6 +84,22 @@ button.critical { background: var(--critical); }
 .trade-readout { margin-top: 10px; font-size: 12px; color: var(--text-2); white-space: pre-wrap; }
 .trade-readout strong { color: var(--text-1); }
 
+.reasoning-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.reasoning-panel summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); }
+.reasoning-list { margin-top: 10px; max-height: 340px; overflow-y: auto; display: grid; gap: 8px; }
+.reasoning-step {
+  border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 6px;
+  padding: 6px 10px; background: var(--surface-2);
+}
+.reasoning-step.reasoning-step-entry { border-left-color: var(--accent); }
+.reasoning-time { font-size: 10.5px; color: var(--muted); margin-bottom: 4px; }
+.reasoning-instance { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+.reasoning-instance strong { color: var(--text-1); }
+.reasoning-instance code {
+  color: var(--text-2); background: var(--surface-1); border-radius: 4px; padding: 1px 4px;
+  font-size: 10.5px; word-break: break-word;
+}
+
 .judge-row { margin-top: 12px; }
 .non-note { display: none; margin-top: 10px; }
 .non-note.open { display: block; }
@@ -125,6 +141,10 @@ button.critical { background: var(--critical); }
       <span><span class="swatch loss"></span>Perte</span>
     </div>
     <div class="trade-readout" id="trade-readout"></div>
+    <details class="reasoning-panel" id="reasoning-panel" open>
+      <summary>Raisonnement -- ce que les concepts/microsystèmes ont vu, étape par étape</summary>
+      <div class="reasoning-list" id="reasoning-list"></div>
+    </details>
     <div class="row judge-row">
       <button type="button" class="good" id="yes-btn">✓ Oui</button>
       <button type="button" class="critical secondary" id="no-btn">✗ Non</button>
@@ -162,6 +182,10 @@ button.critical { background: var(--critical); }
 "use strict";
 
 function el(id) { return document.getElementById(id); }
+
+function escapeHtml(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
 const params = new URLSearchParams(window.location.search);
 const strategyName = params.get("strategy");
@@ -302,6 +326,67 @@ function renderReadout(trade) {
 }
 
 // ============================================================
+// Raisonnement -- every concept/microsystem's own output over the replay
+// window around this trade, so a human labeling it can see *why* the
+// strategy took it (which concept fired, what the microsystem saw),
+// not just the price action. Collapsed to only the steps where some
+// instance's output actually changed since the previous step -- most
+// evaluation steps repeat the same output (a candle rolling forward with
+// nothing new to detect), so showing every single one would be a wall of
+// duplicate JSON rather than "the moments that mattered."
+// ============================================================
+
+function stepChanges(timeline, entryTime) {
+  const changes = [];
+  const lastJson = {};
+  let entryStep = null;
+  let entryDist = Infinity;
+  for (const step of timeline) {
+    const combined = { ...step.concepts, ...step.microsystems };
+    const changed = {};
+    for (const [name, value] of Object.entries(combined)) {
+      const json = JSON.stringify(value);
+      if (json !== lastJson[name]) {
+        changed[name] = value;
+        lastJson[name] = json;
+      }
+    }
+    if (Object.keys(changed).length) changes.push({ timestamp: step.timestamp, changed });
+    const dist = Math.abs(step.timestamp - entryTime);
+    if (dist < entryDist) { entryDist = dist; entryStep = { timestamp: step.timestamp, full: combined }; }
+  }
+  // The entry moment must always be inspectable -- it's the trade's own
+  // trigger -- even on the (common) step where nothing happened to change
+  // from the step just before it.
+  if (entryStep && !changes.some((c) => Math.abs(c.timestamp - entryStep.timestamp) < 30)) {
+    changes.push({ timestamp: entryStep.timestamp, changed: entryStep.full });
+    changes.sort((a, b) => a.timestamp - b.timestamp);
+  }
+  return changes;
+}
+
+function renderReasoning(instance) {
+  const replay = instance.window && instance.window.replay;
+  if (!replay || !replay.timeline || !replay.timeline.length) {
+    return '<p class="empty">Raisonnement indisponible pour ce trade (échec du replay borné).</p>';
+  }
+  const entryTime = instance.node.entry_time;
+  const changes = stepChanges(replay.timeline, entryTime);
+  if (!changes.length) {
+    return '<p class="empty">Aucun changement détecté dans les concepts/microsystèmes sur cette fenêtre.</p>';
+  }
+  return changes.map(({ timestamp, changed }) => {
+    const isEntry = Math.abs(timestamp - entryTime) < 30;
+    const time = new Date(timestamp * 1000).toLocaleString("fr-FR");
+    const rows = Object.entries(changed).map(([name, value]) =>
+      `<div class="reasoning-instance"><strong>${escapeHtml(name)}</strong> : <code>${escapeHtml(JSON.stringify(value))}</code></div>`
+    ).join("");
+    return `<div class="reasoning-step${isEntry ? " reasoning-step-entry" : ""}">`
+      + `<div class="reasoning-time">${time}${isEntry ? " -- entrée du trade" : ""}</div>${rows}</div>`;
+  }).join("");
+}
+
+// ============================================================
 // Progress + gating
 // ============================================================
 
@@ -422,6 +507,7 @@ async function loadNext() {
   el("non-note-text").value = "";
   el("refine-chart").innerHTML = renderChart(currentInstance);
   el("trade-readout").innerHTML = renderReadout(currentInstance.node);
+  el("reasoning-list").innerHTML = renderReasoning(currentInstance);
 }
 
 async function submitLabel(labelValue, note) {

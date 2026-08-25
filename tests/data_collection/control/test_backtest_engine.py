@@ -8,6 +8,7 @@ import unittest
 
 from polymarket_btc.data_collection.control.backtest_engine import (
     build_timeline,
+    estimate_warmup_seconds,
     expand_numeric_range,
     expand_sweep,
     normalize_direction,
@@ -1058,6 +1059,81 @@ class RunExampleScenarioTests(unittest.TestCase):
             )
             self.assertIn("micro_1", result["timeline"][-1]["microsystems"])
             self.assertEqual(result["trades"], [])
+
+
+class EstimateWarmupSecondsTests(unittest.TestCase):
+    """Coverage for the strategy-filter-refine "reasoning" feature's own
+    window-sizing bound: how far back a narrow replay must start to
+    reproduce what a full-coverage run would have seen at some later
+    moment."""
+
+    def test_unbounded_instance_returns_none(self) -> None:
+        strategy = {"concepts": [{"instance_id": "c1", "concept_id": "c1", "config": {}, "data_bindings": {}}]}
+        result = estimate_warmup_seconds(
+            strategy, {"c1": _concept_info("c1", lambda ctx: None)}, {},
+            lambda _sources: [_LOCKED_REQUIREMENT[0]], {"key": [{"timestamp": 0.0}, {"timestamp": 60.0}]},
+        )
+        self.assertIsNone(result)
+
+    def test_bounded_instance_returns_its_own_lookback(self) -> None:
+        strategy = {"concepts": [{"instance_id": "c1", "concept_id": "c1", "config": {}, "data_bindings": {}}]}
+        records = [{"timestamp": float(i * 60)} for i in range(10)]
+        result = estimate_warmup_seconds(
+            strategy,
+            {"c1": _concept_info("c1", lambda ctx: None, required_lookback_seconds=lambda cfg, cs: 500.0)}, {},
+            lambda _sources: [_LOCKED_REQUIREMENT[0]], {"key": records},
+        )
+        self.assertEqual(result, 500.0)
+
+    def test_returns_the_max_across_multiple_instances(self) -> None:
+        strategy = {
+            "concepts": [
+                {"instance_id": "c1", "concept_id": "c1", "config": {}, "data_bindings": {}},
+                {"instance_id": "c2", "concept_id": "c2", "config": {}, "data_bindings": {}},
+            ],
+        }
+        records = [{"timestamp": float(i * 60)} for i in range(10)]
+        result = estimate_warmup_seconds(
+            strategy,
+            {
+                "c1": _concept_info("c1", lambda ctx: None, required_lookback_seconds=lambda cfg, cs: 100.0),
+                "c2": _concept_info("c2", lambda ctx: None, required_lookback_seconds=lambda cfg, cs: 900.0),
+            },
+            {}, lambda _sources: [_LOCKED_REQUIREMENT[0]], {"key": records},
+        )
+        self.assertEqual(result, 900.0)
+
+    def test_any_unbounded_instance_forces_none_even_if_another_is_bounded(self) -> None:
+        strategy = {
+            "concepts": [
+                {"instance_id": "c1", "concept_id": "c1", "config": {}, "data_bindings": {}},
+                {"instance_id": "c2", "concept_id": "c2", "config": {}, "data_bindings": {}},
+            ],
+        }
+        records = [{"timestamp": float(i * 60)} for i in range(10)]
+        result = estimate_warmup_seconds(
+            strategy,
+            {
+                "c1": _concept_info("c1", lambda ctx: None, required_lookback_seconds=lambda cfg, cs: 100.0),
+                "c2": _concept_info("c2", lambda ctx: None),
+            },
+            {}, lambda _sources: [_LOCKED_REQUIREMENT[0]], {"key": records},
+        )
+        self.assertIsNone(result)
+
+    def test_microsystem_instances_are_included_too(self) -> None:
+        strategy = {
+            "concepts": [], "microsystems": [
+                {"instance_id": "m1", "microsystem_id": "m1", "config": {}, "data_bindings": {}},
+            ],
+        }
+        records = [{"timestamp": float(i * 60)} for i in range(10)]
+        result = estimate_warmup_seconds(
+            strategy, {},
+            {"m1": _microsystem_info("m1", lambda ctx: None, required_lookback_seconds=lambda cfg, cs: 300.0)},
+            lambda _sources: [_LOCKED_REQUIREMENT[0]], {"key": records},
+        )
+        self.assertEqual(result, 300.0)
 
 
 if __name__ == "__main__":

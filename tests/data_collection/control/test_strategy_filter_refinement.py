@@ -186,6 +186,43 @@ class ScanFindsRealTradesTests(_RefinementTestBase):
             manager.scan("no_execution_strategy")
 
 
+class NextInstanceReplayTests(_RefinementTestBase):
+    """Coverage for next_instance's window["replay"] -- the bounded replay
+    (concept/microsystem outputs leading up to the trade) the review
+    screen's "Raisonnement" panel renders."""
+
+    def test_next_instance_includes_a_replay_with_the_reviewing_concept(self) -> None:
+        manager, root = self._setup()
+        self._write_candles(root, 10)
+        manager.scan("test_strategy")
+        result = manager.next_instance(strategy_name="test_strategy")
+        self.assertFalse(result["exhausted"])
+        self.assertFalse(result["no_candidates"])
+        window = result["instance"]["window"]
+        self.assertIsNotNone(window["replay"])
+        self.assertGreater(len(window["replay"]["timeline"]), 0)
+        # kline_reader never declares required_lookback_seconds (unbounded)
+        # -- estimate_warmup_seconds must fall back to the strategy's full
+        # coverage start, so the replay's own first step is no later than
+        # the earliest collected candle.
+        self.assertEqual(window["replay"]["timeline"][0]["timestamp"], -60.0)
+        self.assertIn("concept_1", window["replay"]["timeline"][-1]["concepts"])
+
+    def test_replay_is_none_rather_than_raising_when_it_fails(self) -> None:
+        # A strategy whose execution profile is no longer discoverable
+        # (deleted since the candidate was found) can't replay -- run_
+        # backtest raises for a genuinely unknown execution_id, but next_
+        # instance must still return the trade with its candles, just
+        # without a reasoning panel, not blow up the whole review flow.
+        manager, root = self._setup()
+        self._write_candles(root, 10)
+        manager.scan("test_strategy")
+        (root / "execution_profiles" / "enter_once.py").unlink()
+        result = manager.next_instance(strategy_name="test_strategy")
+        self.assertIsNone(result["instance"]["window"]["replay"])
+        self.assertGreater(len(result["instance"]["window"]["candles"]), 0)
+
+
 class RescanCachingTests(_RefinementTestBase):
     def _resave(self, manager: StrategyFilterRefinementManager, **overrides: object) -> None:
         base = dict(
