@@ -26,12 +26,18 @@ strategy in practice" usage pattern, and avoids inventing cross-strategy
 pool merging nobody asked for. A candidate's identity is its own
 entry_time+direction (refinement.py's "trade" shape) -- already unique
 within one strategy's own deterministic real-data replay, no zone/level
-hashing needed. No incremental rescan (unlike concept/microsystem
-refinement's own scanned_through tracking) -- a full-strategy backtest is
-already the more expensive operation of the two, but re-running it in full
-each scan is simple and correct (candidates already seen are deduplicated
-by instance_key regardless), and this still runs as a background job like
-every other real-data scan in this app.
+hashing needed. No incremental *partial* rescan (unlike concept/
+microsystem refinement's own scanned_through tracking) -- re-running the
+full-strategy backtest in full each scan is simple and correct (candidates
+already seen are deduplicated by instance_key regardless), and this still
+runs as a background job like every other real-data scan in this app. It
+*does* skip the backtest entirely, though, when the strategy definition
+and data coverage are both byte-identical to the last scan (see
+_scan_is_stale below) -- a full-strategy replay is deterministic, so two
+scans of the exact same inputs would always produce the exact same
+candidates; without this, re-clicking "Perfectionner" during a review
+session (nothing about the strategy or the data changed) paid the full
+replay cost again for zero new information.
 """
 
 from __future__ import annotations
@@ -101,7 +107,17 @@ class StrategyFilterRefinementManager:
         script_hash = hashlib.sha256(
             json.dumps(unfiltered_strategy, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
+        # Canonical string, not the raw list/tuple value: coverage round-
+        # trips through JSON in the cache file, which turns its tuples into
+        # lists -- comparing the freshly computed value (still tuples)
+        # against that with `==` would spuriously see a change every time.
+        coverage_key = json.dumps(coverage, sort_keys=True, default=str)
         cache = refinement.load_pool_cache(self.feedback_dir, strategy_name)
+        if cache.get("script_sha256") == script_hash and cache.get("coverage_key") == coverage_key:
+            # Same strategy definition, same available data as last scan --
+            # a full-strategy replay is deterministic, so re-running it
+            # would find exactly the same trades already in the pool.
+            return {"candidate_count": len(cache["candidates"]), "added": 0, "coverage": coverage}
         if cache.get("script_sha256") != script_hash:
             cache = refinement.empty_pool_cache()
         cache["script_sha256"] = script_hash
@@ -135,6 +151,7 @@ class StrategyFilterRefinementManager:
             })
 
         cache["candidates"] = cache["candidates"] + new_candidates
+        cache["coverage_key"] = coverage_key
         cache["scanned_at_utc"] = datetime.now(UTC).isoformat()
         refinement.write_pool_cache(self.feedback_dir, strategy_name, cache)
         if on_progress is not None:
