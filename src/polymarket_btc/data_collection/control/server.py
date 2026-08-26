@@ -141,7 +141,7 @@ class ControlPanelServer:
         if method == "GET":
             await self._write(writer, self._get(path, query))
         elif method == "POST":
-            await self._write(writer, self._post(path, body))
+            await self._write(writer, await self._post(path, body))
         else:
             await self._write(writer, build_response("405 Method Not Allowed", b"", "text/plain"))
 
@@ -547,7 +547,25 @@ class ControlPanelServer:
         )
         return self._json({"job_id": job.job_id})
 
-    def _post(self, path: str, body: bytes) -> bytes:
+    async def _post(self, path: str, body: bytes) -> bytes:
+        # This whole server is single-threaded/single-connection-at-a-time
+        # under the hood: every route below except this one is a plain
+        # synchronous call that runs to completion without yielding, which
+        # is fine for routes that only ever touch a JSON file or a small
+        # in-memory structure. /next is the one exception -- it now runs a
+        # bounded real-data replay (a few seconds, see
+        # StrategyFilterRefinementManager._instance_window) to surface each
+        # reviewed trade's own reasoning, and a multi-second synchronous
+        # call here would freeze every other connection to this server --
+        # every open tab, every other page load -- for that whole
+        # duration. run_in_executor moves just this one call off the event
+        # loop thread, same mechanism refinement.run_scan_job already uses
+        # for the genuinely slower scan jobs, just awaited inline here
+        # instead of polled, since a few seconds doesn't need a background
+        # job's own status-polling machinery.
+        if path == "/api/strategy-filter-refine/next":
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self._filter_refine_next, body)
         if path == "/api/backtest/run":
             return self._start_backtest(body)
         if path == "/api/collect/start":
@@ -606,8 +624,6 @@ class ControlPanelServer:
             return self._microsystem_refine_prompt(body)
         if path == "/api/strategy-filter-refine/scan":
             return self._filter_refine_scan(body)
-        if path == "/api/strategy-filter-refine/next":
-            return self._filter_refine_next(body)
         if path == "/api/strategy-filter-refine/label":
             return self._filter_refine_label(body)
         if path == "/api/strategy-filter-refine/prompt":
