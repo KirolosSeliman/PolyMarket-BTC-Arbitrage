@@ -658,16 +658,27 @@ async function startScanThenNext() {
     el("scan-status").textContent = "Échec de l'analyse : " + error.message;
     return;
   }
-  el("scan-panel").style.display = "none";
   await loadNext();
 }
 
+// Fetching the next trade now also computes its bounded reasoning replay
+// (a few seconds, see StrategyFilterRefinementManager._instance_window)
+// -- keep the scan-panel visible with its own loading message through
+// this call too, instead of hiding it right before a request that can
+// itself take a few seconds. Without this there's a real gap with zero
+// feedback: the percentage disappears (the scan panel that showed it
+// hides) while the app is still working on fetching the next trade.
 async function loadNext() {
+  el("scan-panel").style.display = "block";
+  el("instance-panel").style.display = "none";
+  el("empty-panel").style.display = "none";
+  el("scan-status").textContent = "Chargement du prochain trade à examiner…";
   const res = await fetch("/api/strategy-filter-refine/next", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ strategy_name: strategyName }),
   });
   const data = await res.json();
+  el("scan-panel").style.display = "none";
   if (!res.ok) {
     el("empty-panel").style.display = "block";
     el("empty-message").textContent = "Erreur : " + (data.error || "inconnue");
