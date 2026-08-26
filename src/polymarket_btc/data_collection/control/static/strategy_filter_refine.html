@@ -76,6 +76,18 @@ button.critical { background: var(--critical); }
 .refine-chart .entry-marker-halo { fill: var(--text-1); fill-opacity: 0.18; }
 .refine-chart .exit-marker-halo.win { fill: var(--good); fill-opacity: 0.18; }
 .refine-chart .exit-marker-halo.loss { fill: var(--critical); fill-opacity: 0.18; }
+.refine-chart .zone-rect.bullish { fill: var(--good); fill-opacity: 0.16; stroke: var(--good); stroke-opacity: 0.55; stroke-width: 1; }
+.refine-chart .zone-rect.bearish { fill: var(--critical); fill-opacity: 0.16; stroke: var(--critical); stroke-opacity: 0.55; stroke-width: 1; }
+.refine-chart .zone-label { font-size: 9px; opacity: 0.9; }
+.refine-chart .zone-label.bullish { fill: var(--good); }
+.refine-chart .zone-label.bearish { fill: var(--critical); }
+.refine-chart .level-line-annotation { stroke-width: 1.5; stroke-dasharray: 3 3; opacity: 0.8; }
+.refine-chart .level-line-annotation.bullish { stroke: var(--good); }
+.refine-chart .level-line-annotation.bearish { stroke: var(--critical); }
+.refine-chart .level-line-annotation.neutral { stroke: var(--text-2); }
+.refine-chart .sweep-marker { stroke-width: 1.5; }
+.refine-chart .sweep-marker.bullish { stroke: var(--good); fill: var(--good); }
+.refine-chart .sweep-marker.bearish { stroke: var(--critical); fill: var(--critical); }
 .refine-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--text-2); align-items: center; }
 .refine-legend .swatch { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 .refine-legend .swatch.win { background: var(--good); opacity: 0.7; }
@@ -84,21 +96,11 @@ button.critical { background: var(--critical); }
 .trade-readout { margin-top: 10px; font-size: 12px; color: var(--text-2); white-space: pre-wrap; }
 .trade-readout strong { color: var(--text-1); }
 
-.reasoning-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
-.reasoning-panel summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); }
-.reasoning-list { margin-top: 10px; max-height: 340px; overflow-y: auto; display: grid; gap: 8px; }
-.reasoning-step {
-  border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 6px;
-  padding: 6px 10px; background: var(--surface-2);
-}
-.reasoning-step.reasoning-step-entry { border-left-color: var(--accent); }
-.reasoning-time { font-size: 10.5px; color: var(--muted); margin-bottom: 4px; }
-.reasoning-instance { font-size: 11px; color: var(--text-2); margin-top: 2px; }
-.reasoning-instance strong { color: var(--text-1); }
-.reasoning-instance code {
-  color: var(--text-2); background: var(--surface-1); border-radius: 4px; padding: 1px 4px;
-  font-size: 10.5px; word-break: break-word;
-}
+.stage-controls { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.stage-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.stage-blurb { font-size: 13px; color: var(--text-1); margin-top: 4px; min-height: 18px; }
+.stage-nav { margin-top: 10px; }
+.stage-nav button.secondary { min-width: 90px; }
 
 .judge-row { margin-top: 12px; }
 .non-note { display: none; margin-top: 10px; }
@@ -141,10 +143,14 @@ button.critical { background: var(--critical); }
       <span><span class="swatch loss"></span>Perte</span>
     </div>
     <div class="trade-readout" id="trade-readout"></div>
-    <details class="reasoning-panel" id="reasoning-panel" open>
-      <summary>Raisonnement -- ce que les concepts/microsystèmes ont vu, étape par étape</summary>
-      <div class="reasoning-list" id="reasoning-list"></div>
-    </details>
+    <div class="stage-controls">
+      <div class="stage-label" id="stage-label"></div>
+      <div class="stage-blurb" id="stage-blurb"></div>
+      <div class="row stage-nav">
+        <button type="button" class="secondary" id="stage-prev-btn">← Précédent</button>
+        <button type="button" class="secondary" id="stage-next-btn">Suivant →</button>
+      </div>
+    </div>
     <div class="row judge-row">
       <button type="button" class="good" id="yes-btn">✓ Oui</button>
       <button type="button" class="critical secondary" id="no-btn">✗ Non</button>
@@ -183,10 +189,6 @@ button.critical { background: var(--critical); }
 
 function el(id) { return document.getElementById(id); }
 
-function escapeHtml(text) {
-  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 const params = new URLSearchParams(window.location.search);
 const strategyName = params.get("strategy");
 if (!strategyName) {
@@ -196,14 +198,16 @@ if (!strategyName) {
 let currentInstance = null;
 
 // ============================================================
-// Chart -- a static single-image render of one already-resolved trade
-// (no play/pause/reveal, unlike strategy_builder.html's own animated
-// example player): the trade already happened in the replay, there's
-// nothing left to "reveal" here, so this borrows that page's trade-box
-// visual vocabulary (entry/exit markers, SL/TP boxes) without its
-// animation state. This app has no shared-JS-file mechanism, see
-// concept_refine.html's own note on why this is a near-duplicate of that
-// page's scaffolding, not an import.
+// Chart -- one shared SVG, driven by a "stage" (which concept/
+// microsystem/execution/management this is) and a "moment" within it
+// (advanced by the single Suivant/Précédent pair below). Candle drawing
+// and trade-box vocabulary (entry/exit markers, SL/TP boxes) ported from
+// backtest.html's own trade-replay player; zone/level/sweep annotation
+// drawing (looksLikeZone/looksLikeLevel/walkForAnnotations) is the exact
+// same duck-typed detection backtest.html's renderAnnotations uses, just
+// applied to one stage's own resolved node list instead of walking a
+// live scrub position -- this app has no shared-JS-file mechanism, so
+// this is a near-duplicate of that code, not an import.
 // ============================================================
 
 const CHART_W = 760, CHART_H = 220;
@@ -254,20 +258,232 @@ function renderTradeBox(x, y, trade) {
   return svg;
 }
 
-function renderChart(instance) {
-  const candles = (instance.window && instance.window.candles) || [];
+// A candle-drawing helper shared by every stage -- always the same
+// underlying window (or a growing prefix of it, for the execution
+// stage's own candle-by-candle reveal), so the chart's own axes/context
+// stay stable while only the annotations on top change per moment.
+function renderCandles(x, y, candles) {
+  if (candles.length < 2) return "";
+  const minTs = candles[0].timestamp, maxTs = candles[candles.length - 1].timestamp;
+  const slotSeconds = (maxTs - minTs) / (candles.length - 1);
+  const slotWidth = Math.max(1, x(minTs + slotSeconds) - x(minTs));
+  const bodyWidth = Math.max(1, slotWidth * 0.7);
+  return candles.map((c) => {
+    const cx = x(c.timestamp);
+    const cls = c.close >= c.open ? "up" : "down";
+    const bodyTop = y(Math.max(c.open, c.close));
+    const bodyHeight = Math.max(1, Math.abs(y(c.open) - y(c.close)));
+    return `<line class="candle-wick ${cls}" x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" `
+      + `y1="${y(c.high).toFixed(1)}" y2="${y(c.low).toFixed(1)}"></line>`
+      + `<rect class="candle-body ${cls}" x="${(cx - bodyWidth / 2).toFixed(1)}" y="${bodyTop.toFixed(1)}" `
+      + `width="${bodyWidth.toFixed(1)}" height="${bodyHeight.toFixed(1)}"></rect>`;
+  }).join("");
+}
+
+// ============================================================
+// Duck-typed shape detection -- identical to backtest.html's own
+// looksLikeZone/looksLikeLevel/walkForAnnotations: a "zone" is an FVG-
+// shaped dict (direction/high/low/formed_at), a "level" is a liquidity-
+// pool/sweep-shaped dict (level + formed_at or swept_at). Concept-
+// agnostic by construction -- any future concept whose output happens to
+// carry these fields gets drawn here too, no per-concept-id code needed.
+// ============================================================
+
+function looksLikeZone(node) {
+  return !!node && typeof node === "object"
+    && (node.direction === "bullish" || node.direction === "bearish")
+    && typeof node.high === "number" && typeof node.low === "number" && node.high > node.low
+    && typeof node.formed_at === "number";
+}
+function looksLikeLevel(node) {
+  return !!node && typeof node === "object"
+    && typeof node.level === "number"
+    && (typeof node.formed_at === "number" || typeof node.swept_at === "number");
+}
+function walkForAnnotations(value, depth = 0, found = []) {
+  if (depth > 6 || value === null || typeof value !== "object") return found;
+  if (Array.isArray(value)) {
+    value.forEach((item) => walkForAnnotations(item, depth + 1, found));
+  } else {
+    if (looksLikeZone(value)) found.push({ shape: "zone", node: value });
+    else if (looksLikeLevel(value)) found.push({ shape: "level", node: value });
+    Object.values(value).forEach((item) => walkForAnnotations(item, depth + 1, found));
+  }
+  return found;
+}
+
+// Draws an explicit, already-resolved node list (not a live scrub walk)
+// -- each zone/level is shown exactly as of `cutoffTs`, so a "scan" moment
+// (cutoff = when the concept last ran) and a "relevant to this trade"
+// moment (same cutoff, a filtered node list) reuse this one function.
+function renderAnnotationNodes(x, y, nodes, cutoffTs) {
+  let svg = "";
+  nodes.forEach(({ shape, node }) => {
+    if (shape === "zone") {
+      if (node.formed_at > cutoffTs) return;
+      const x1 = x(node.formed_at), x2 = x(cutoffTs);
+      if (x2 <= x1) return;
+      const yTop = y(node.high), yBottom = y(node.low);
+      svg += `<rect class="zone-rect ${node.direction}" x="${x1.toFixed(1)}" y="${yTop.toFixed(1)}" `
+        + `width="${(x2 - x1).toFixed(1)}" height="${Math.max(1, yBottom - yTop).toFixed(1)}"></rect>`;
+      svg += `<text class="zone-label ${node.direction}" x="${(x1 + 3).toFixed(1)}" y="${(yTop - 3).toFixed(1)}">`
+        + `FVG ${node.direction === "bullish" ? "▲" : "▼"}</text>`;
+    } else {
+      const formedAt = typeof node.formed_at === "number" ? node.formed_at : node.swept_at;
+      if (formedAt > cutoffTs) return;
+      const sweptVisible = typeof node.swept_at === "number" && node.swept_at <= cutoffTs;
+      const endTs = sweptVisible ? node.swept_at : cutoffTs;
+      const x1 = x(formedAt), x2 = x(endTs);
+      if (x2 < x1) return;
+      const ly = y(node.level);
+      const directionClass = node.direction === "bullish" || node.direction === "bearish" ? node.direction : "neutral";
+      svg += `<line class="level-line-annotation ${directionClass}" x1="${x1.toFixed(1)}" x2="${x2.toFixed(1)}" `
+        + `y1="${ly.toFixed(1)}" y2="${ly.toFixed(1)}"></line>`;
+      if (sweptVisible) {
+        const mx = x2;
+        svg += `<path class="sweep-marker ${directionClass}" `
+          + `d="M${(mx - 3).toFixed(1)},${(ly - 3).toFixed(1)} L${(mx + 3).toFixed(1)},${(ly + 3).toFixed(1)} `
+          + `M${(mx - 3).toFixed(1)},${(ly + 3).toFixed(1)} L${(mx + 3).toFixed(1)},${(ly - 3).toFixed(1)}"></path>`;
+      }
+    }
+  });
+  return svg;
+}
+
+// ============================================================
+// Stages -- one per concept instance, then one per microsystem instance
+// (in the order their ids first appear in the replay timeline, which
+// matches strategy-declaration order since JS preserves object key
+// insertion order and the backend builds concept_outputs/microsystem_
+// outputs by iterating the strategy's own concepts/microsystems lists),
+// then one "execution" stage, then one "management" stage. Each stage is
+// a list of "moments" the Suivant/Précédent pair steps through.
+// ============================================================
+
+// Every distinct value a picker function returns across the timeline,
+// each becoming one moment -- an instance's own output only actually
+// changes at a handful of points (a new pool, a confirmed sweep), so this
+// is "the moments that mattered," not one per evaluation step.
+function dedupedMoments(timeline, pick) {
+  const moments = [];
+  let lastJson;
+  for (const step of timeline) {
+    const value = pick(step);
+    const json = JSON.stringify(value);
+    if (json !== lastJson) {
+      moments.push({ timestamp: step.timestamp, value });
+      lastJson = json;
+    }
+  }
+  return moments;
+}
+
+function buildStages(instance) {
+  const replay = instance.window && instance.window.replay;
+  if (!replay || !replay.timeline || !replay.timeline.length) return [];
+  const timeline = replay.timeline;
+  const conceptIds = Object.keys(timeline[0].concepts || {});
+  const microsystemIds = Object.keys(timeline[0].microsystems || {});
+
+  const conceptMoments = {};
+  conceptIds.forEach((cid) => { conceptMoments[cid] = dedupedMoments(timeline, (s) => s.concepts[cid]); });
+  const microsystemMoments = {};
+  microsystemIds.forEach((mid) => { microsystemMoments[mid] = dedupedMoments(timeline, (s) => s.microsystems[mid]); });
+
+  // Every node embedded, by value, in any microsystem's own final output
+  // -- fvg_sweep_reversal.py's setups embed the exact same fvg/sweep
+  // dicts under initial_fvg/sweep/reversal_fvg (confirmed by reading it),
+  // so a JSON-equality match is enough to find "what actually mattered,"
+  // no id/reference scheme needed.
+  const referencedJson = new Set();
+  microsystemIds.forEach((mid) => {
+    const moments = microsystemMoments[mid];
+    const finalValue = moments.length ? moments[moments.length - 1].value : null;
+    walkForAnnotations(finalValue).forEach(({ node }) => referencedJson.add(JSON.stringify(node)));
+  });
+
+  const stages = [];
+  conceptIds.forEach((cid) => {
+    const moments = conceptMoments[cid].map((m) => ({ timestamp: m.timestamp, nodes: walkForAnnotations(m.value) }));
+    if (!moments.length) return;
+    const lastMoment = moments[moments.length - 1];
+    const relevantNodes = lastMoment.nodes.filter((n) => referencedJson.has(JSON.stringify(n.node)));
+    if (relevantNodes.length && relevantNodes.length < lastMoment.nodes.length) {
+      moments.push({ timestamp: lastMoment.timestamp, nodes: relevantNodes, relevant: true });
+    }
+    stages.push({ type: "concept", id: cid, label: `Concept : ${cid}`, moments });
+  });
+  microsystemIds.forEach((mid) => {
+    const moments = microsystemMoments[mid].map((m) => ({
+      timestamp: m.timestamp, nodes: walkForAnnotations(m.value), value: m.value,
+    }));
+    if (moments.length) stages.push({ type: "microsystem", id: mid, label: `Microsystème : ${mid}`, moments });
+  });
+
+  // Execution: the chart's own visible candle range grows one candle per
+  // moment, up to and including the entry -- a literal candle-by-candle
+  // reveal, matching what execution_profiles actually evaluate one
+  // candle at a time.
+  const allCandles = (instance.window && instance.window.candles) || [];
+  const entryTime = instance.node.entry_time;
+  const upToEntry = allCandles.filter((c) => c.timestamp <= entryTime);
+  if (upToEntry.length) {
+    stages.push({
+      type: "execution", id: "execution", label: "Exécution",
+      moments: upToEntry.map((c, i) => ({
+        timestamp: c.timestamp, candleCount: i + 1, isEntry: i === upToEntry.length - 1,
+      })),
+    });
+  }
+
+  stages.push({
+    type: "management", id: "management", label: "Gestion",
+    moments: [{ timestamp: instance.node.exit_time }],
+  });
+
+  return stages;
+}
+
+function describeMoment(stage, moment) {
+  if (stage.type === "concept") {
+    if (moment.relevant) return `Retenu pour ce trade : ${moment.nodes.length} élément(s).`;
+    const zones = moment.nodes.filter((n) => n.shape === "zone").length;
+    const levels = moment.nodes.filter((n) => n.shape === "level").length;
+    const swept = moment.nodes.filter(
+      (n) => n.shape === "level" && typeof n.node.swept_at === "number" && n.node.swept_at <= moment.timestamp,
+    ).length;
+    const parts = [];
+    if (zones) parts.push(`${zones} FVG`);
+    if (levels) parts.push(`${levels} niveau(x) de liquidité${swept ? ` (${swept} balayé(s))` : ""}`);
+    return parts.length ? `${parts.join(", ")} détecté(s).` : "Rien de nouveau détecté à cet instant.";
+  }
+  if (stage.type === "microsystem") {
+    const setups = (moment.value && moment.value.setups) || [];
+    const signal = moment.value && moment.value.dernier_signal;
+    return setups.length ? `Signal confirmé : ${signal}.` : "Aucun signal confirmé pour l'instant.";
+  }
+  if (stage.type === "execution") {
+    return moment.isEntry ? "Entrée confirmée sur cette bougie." : `Bougie ${moment.candleCount} évaluée -- pas encore d'entrée.`;
+  }
+  return "Stop-loss / take-profit et sortie de position.";
+}
+
+function renderStageChart(instance, stage, moment) {
+  const allCandles = (instance.window && instance.window.candles) || [];
   const trade = instance.node;
-  if (!candles.length) {
+  if (allCandles.length < 2) {
     return `<text x="20" y="40" fill="var(--muted)" font-size="12">Pas de données dans cette fenêtre.</text>`;
   }
-  const minTs = candles[0].timestamp, maxTs = candles[candles.length - 1].timestamp;
-  const hasOHLC = candles.every((c) =>
-    typeof c.open === "number" && typeof c.high === "number"
-    && typeof c.low === "number" && typeof c.close === "number");
-  let prices = hasOHLC ? candles.flatMap((c) => [c.high, c.low]) : candles.map((c) => c.close).filter((p) => typeof p === "number");
-  [trade.entry_price, trade.exit_price, trade.stop_loss, trade.take_profit].forEach((v) => {
-    if (typeof v === "number") prices = [...prices, v];
-  });
+  const visibleCandles = stage.type === "execution"
+    ? allCandles.filter((c) => c.timestamp <= moment.timestamp)
+    : allCandles;
+  const minTs = allCandles[0].timestamp, maxTs = allCandles[allCandles.length - 1].timestamp;
+  let prices = allCandles.flatMap((c) => [c.high, c.low]);
+  if (stage.type === "management") {
+    [trade.entry_price, trade.exit_price, trade.stop_loss, trade.take_profit].forEach((v) => {
+      if (typeof v === "number") prices = [...prices, v];
+    });
+  }
   let minPrice = Math.min(...prices), maxPrice = Math.max(...prices);
   const pad = (maxPrice - minPrice || 1) * 0.1;
   minPrice -= pad; maxPrice += pad;
@@ -282,28 +498,64 @@ function renderChart(instance) {
     svg += `<text class="axis-label" x="${CHART_W - CHART_PAD.right + 4}" y="${(py + 3).toFixed(1)}">${p.toFixed(2)}</text>`;
   });
 
-  // The trade box drawn *before* the candles so it reads as a background
-  // wash rather than covering the price action, same ordering as
-  // concept_refine.html/microsystem_refine.html's own annotations.
-  svg += renderTradeBox(x, y, trade);
-
-  if (hasOHLC) {
-    const slotSeconds = candles.length > 1 ? (maxTs - minTs) / (candles.length - 1) : 60;
-    const slotWidth = Math.max(1, x(minTs + slotSeconds) - x(minTs));
-    const bodyWidth = Math.max(1, slotWidth * 0.7);
-    candles.forEach((c) => {
-      const cx = x(c.timestamp);
-      const cls = c.close >= c.open ? "up" : "down";
-      svg += `<line class="candle-wick ${cls}" x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" `
-        + `y1="${y(c.high).toFixed(1)}" y2="${y(c.low).toFixed(1)}"></line>`;
-      const bodyTop = y(Math.max(c.open, c.close));
-      const bodyHeight = Math.max(1, Math.abs(y(c.open) - y(c.close)));
-      svg += `<rect class="candle-body ${cls}" x="${(cx - bodyWidth / 2).toFixed(1)}" y="${bodyTop.toFixed(1)}" `
-        + `width="${bodyWidth.toFixed(1)}" height="${bodyHeight.toFixed(1)}"></rect>`;
-    });
+  // Annotations/trade-box drawn *before* the candles so they read as a
+  // background wash rather than covering the price action.
+  if (stage.type === "concept" || stage.type === "microsystem") {
+    svg += renderAnnotationNodes(x, y, moment.nodes, moment.timestamp);
+  } else if (stage.type === "management" || (stage.type === "execution" && moment.isEntry)) {
+    svg += renderTradeBox(x, y, trade);
   }
+
+  svg += renderCandles(x, y, visibleCandles);
   return svg;
 }
+
+let stages = [];
+let stageIndex = 0;
+let momentIndex = 0;
+
+function renderStage() {
+  const stage = stages[stageIndex];
+  if (!stage) {
+    el("stage-label").textContent = "";
+    el("stage-blurb").textContent = currentInstance && currentInstance.window && !currentInstance.window.replay
+      ? "Raisonnement indisponible pour ce trade (échec du replay borné)."
+      : "";
+    el("stage-prev-btn").disabled = true;
+    el("stage-next-btn").disabled = true;
+    return;
+  }
+  const moment = stage.moments[momentIndex];
+  const stageNum = stageIndex + 1;
+  el("stage-label").textContent = `Étape ${stageNum} sur ${stages.length} -- ${stage.label}`;
+  el("stage-blurb").textContent = describeMoment(stage, moment);
+  el("refine-chart").innerHTML = renderStageChart(currentInstance, stage, moment);
+  el("stage-prev-btn").disabled = stageIndex === 0 && momentIndex === 0;
+  const isVeryLast = stageIndex === stages.length - 1 && momentIndex === stage.moments.length - 1;
+  el("stage-next-btn").disabled = isVeryLast;
+  el("stage-next-btn").textContent = isVeryLast ? "Fin du raisonnement" : "Suivant →";
+}
+
+el("stage-next-btn").addEventListener("click", () => {
+  const stage = stages[stageIndex];
+  if (!stage) return;
+  if (momentIndex < stage.moments.length - 1) {
+    momentIndex += 1;
+  } else if (stageIndex < stages.length - 1) {
+    stageIndex += 1;
+    momentIndex = 0;
+  }
+  renderStage();
+});
+el("stage-prev-btn").addEventListener("click", () => {
+  if (momentIndex > 0) {
+    momentIndex -= 1;
+  } else if (stageIndex > 0) {
+    stageIndex -= 1;
+    momentIndex = stages[stageIndex].moments.length - 1;
+  }
+  renderStage();
+});
 
 function formatDuration(seconds) {
   const totalMinutes = Math.round(seconds / 60);
@@ -323,67 +575,6 @@ function renderReadout(trade) {
   if (trade.execution_log) lines.push(`Entrée : ${trade.execution_log}`);
   if (trade.management_log) lines.push(`Gestion : ${trade.management_log}`);
   return lines.join("\n");
-}
-
-// ============================================================
-// Raisonnement -- every concept/microsystem's own output over the replay
-// window around this trade, so a human labeling it can see *why* the
-// strategy took it (which concept fired, what the microsystem saw),
-// not just the price action. Collapsed to only the steps where some
-// instance's output actually changed since the previous step -- most
-// evaluation steps repeat the same output (a candle rolling forward with
-// nothing new to detect), so showing every single one would be a wall of
-// duplicate JSON rather than "the moments that mattered."
-// ============================================================
-
-function stepChanges(timeline, entryTime) {
-  const changes = [];
-  const lastJson = {};
-  let entryStep = null;
-  let entryDist = Infinity;
-  for (const step of timeline) {
-    const combined = { ...step.concepts, ...step.microsystems };
-    const changed = {};
-    for (const [name, value] of Object.entries(combined)) {
-      const json = JSON.stringify(value);
-      if (json !== lastJson[name]) {
-        changed[name] = value;
-        lastJson[name] = json;
-      }
-    }
-    if (Object.keys(changed).length) changes.push({ timestamp: step.timestamp, changed });
-    const dist = Math.abs(step.timestamp - entryTime);
-    if (dist < entryDist) { entryDist = dist; entryStep = { timestamp: step.timestamp, full: combined }; }
-  }
-  // The entry moment must always be inspectable -- it's the trade's own
-  // trigger -- even on the (common) step where nothing happened to change
-  // from the step just before it.
-  if (entryStep && !changes.some((c) => Math.abs(c.timestamp - entryStep.timestamp) < 30)) {
-    changes.push({ timestamp: entryStep.timestamp, changed: entryStep.full });
-    changes.sort((a, b) => a.timestamp - b.timestamp);
-  }
-  return changes;
-}
-
-function renderReasoning(instance) {
-  const replay = instance.window && instance.window.replay;
-  if (!replay || !replay.timeline || !replay.timeline.length) {
-    return '<p class="empty">Raisonnement indisponible pour ce trade (échec du replay borné).</p>';
-  }
-  const entryTime = instance.node.entry_time;
-  const changes = stepChanges(replay.timeline, entryTime);
-  if (!changes.length) {
-    return '<p class="empty">Aucun changement détecté dans les concepts/microsystèmes sur cette fenêtre.</p>';
-  }
-  return changes.map(({ timestamp, changed }) => {
-    const isEntry = Math.abs(timestamp - entryTime) < 30;
-    const time = new Date(timestamp * 1000).toLocaleString("fr-FR");
-    const rows = Object.entries(changed).map(([name, value]) =>
-      `<div class="reasoning-instance"><strong>${escapeHtml(name)}</strong> : <code>${escapeHtml(JSON.stringify(value))}</code></div>`
-    ).join("");
-    return `<div class="reasoning-step${isEntry ? " reasoning-step-entry" : ""}">`
-      + `<div class="reasoning-time">${time}${isEntry ? " -- entrée du trade" : ""}</div>${rows}</div>`;
-  }).join("");
 }
 
 // ============================================================
@@ -505,9 +696,11 @@ async function loadNext() {
   el("instance-panel").style.display = "block";
   el("non-note-box").classList.remove("open");
   el("non-note-text").value = "";
-  el("refine-chart").innerHTML = renderChart(currentInstance);
   el("trade-readout").innerHTML = renderReadout(currentInstance.node);
-  el("reasoning-list").innerHTML = renderReasoning(currentInstance);
+  stages = buildStages(currentInstance);
+  stageIndex = 0;
+  momentIndex = 0;
+  renderStage();
 }
 
 async function submitLabel(labelValue, note) {
