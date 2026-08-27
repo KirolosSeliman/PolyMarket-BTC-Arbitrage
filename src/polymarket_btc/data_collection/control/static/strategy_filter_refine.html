@@ -360,22 +360,35 @@ function renderAnnotationNodes(x, y, nodes, cutoffTs) {
 // a list of "moments" the Suivant/Précédent pair steps through.
 // ============================================================
 
-// Every distinct value a picker function returns across the timeline,
-// each becoming one moment -- an instance's own output only actually
-// changes at a handful of points (a new pool, a confirmed sweep), so this
-// is "the moments that mattered," not one per evaluation step.
-function dedupedMoments(timeline, pick) {
-  const moments = [];
-  let lastJson;
+// The instance's own output as of entry_time -- what actually existed by
+// the moment the trade triggered, not a history of everything it ever
+// saw across the whole window.
+function valueAtEntry(timeline, entryTime, pick) {
+  let value = null;
   for (const step of timeline) {
-    const value = pick(step);
-    const json = JSON.stringify(value);
-    if (json !== lastJson) {
-      moments.push({ timestamp: step.timestamp, value });
-      lastJson = json;
-    }
+    if (step.timestamp > entryTime) break;
+    value = pick(step);
   }
-  return moments;
+  return value;
+}
+
+function describeZone(node) {
+  return `FVG ${node.direction === "bullish" ? "haussier" : "baissier"} (${node.low.toFixed(2)} - ${node.high.toFixed(2)})`;
+}
+function describeLevel(node) {
+  const swept = typeof node.swept_at === "number";
+  // Only a confirmed sweep carries "direction" -- a still-unswept pool
+  // instead carries "side" (buyside/sellside), a different vocabulary for
+  // the same "which side of price" idea.
+  let side = "";
+  if (node.direction === "bullish") side = "haussier";
+  else if (node.direction === "bearish") side = "baissier";
+  else if (node.side === "buyside") side = "(buyside)";
+  else if (node.side === "sellside") side = "(sellside)";
+  return `Niveau de liquidité${side ? ` ${side}` : ""} à ${node.level.toFixed(2)}${swept ? " (balayé)" : ""}`;
+}
+function describeNode({ shape, node }) {
+  return shape === "zone" ? describeZone(node) : describeLevel(node);
 }
 
 function buildStages(instance) {
@@ -384,40 +397,63 @@ function buildStages(instance) {
   const timeline = replay.timeline;
   const conceptIds = Object.keys(timeline[0].concepts || {});
   const microsystemIds = Object.keys(timeline[0].microsystems || {});
+  const entryTime = instance.node.entry_time;
 
-  const conceptMoments = {};
-  conceptIds.forEach((cid) => { conceptMoments[cid] = dedupedMoments(timeline, (s) => s.concepts[cid]); });
-  const microsystemMoments = {};
-  microsystemIds.forEach((mid) => { microsystemMoments[mid] = dedupedMoments(timeline, (s) => s.microsystems[mid]); });
+  const conceptFinal = {};
+  conceptIds.forEach((cid) => { conceptFinal[cid] = valueAtEntry(timeline, entryTime, (s) => s.concepts[cid]); });
+  const microsystemFinal = {};
+  microsystemIds.forEach((mid) => { microsystemFinal[mid] = valueAtEntry(timeline, entryTime, (s) => s.microsystems[mid]); });
 
-  // Every node embedded, by value, in any microsystem's own final output
-  // -- fvg_sweep_reversal.py's setups embed the exact same fvg/sweep
-  // dicts under initial_fvg/sweep/reversal_fvg (confirmed by reading it),
-  // so a JSON-equality match is enough to find "what actually mattered,"
-  // no id/reference scheme needed.
+  // Every node embedded, by value, in any microsystem's own final
+  // (as-of-entry) output -- fvg_sweep_reversal.py's setups embed the
+  // exact same fvg/sweep dicts under initial_fvg/sweep/reversal_fvg
+  // (confirmed by reading it), so a JSON-equality match finds "what
+  // actually mattered for this trade," no id/reference scheme needed.
   const referencedJson = new Set();
   microsystemIds.forEach((mid) => {
-    const moments = microsystemMoments[mid];
-    const finalValue = moments.length ? moments[moments.length - 1].value : null;
-    walkForAnnotations(finalValue).forEach(({ node }) => referencedJson.add(JSON.stringify(node)));
+    walkForAnnotations(microsystemFinal[mid]).forEach(({ node }) => referencedJson.add(JSON.stringify(node)));
   });
 
+  const entryPrice = instance.node.entry_price;
   const stages = [];
   conceptIds.forEach((cid) => {
-    const moments = conceptMoments[cid].map((m) => ({ timestamp: m.timestamp, nodes: walkForAnnotations(m.value) }));
-    if (!moments.length) return;
-    const lastMoment = moments[moments.length - 1];
-    const relevantNodes = lastMoment.nodes.filter((n) => referencedJson.has(JSON.stringify(n.node)));
-    if (relevantNodes.length && relevantNodes.length < lastMoment.nodes.length) {
-      moments.push({ timestamp: lastMoment.timestamp, nodes: relevantNodes, relevant: true });
+    const allNodes = walkForAnnotations(conceptFinal[cid]);
+    let relevant;
+    if (referencedJson.size) {
+      // Narrowed to exactly what a microsystem locked onto.
+      relevant = allNodes.filter((n) => referencedJson.has(JSON.stringify(n.node)));
+    } else if (allNodes.length && typeof entryPrice === "number") {
+      // No microsystem to cross-reference against -- rank by relevance to
+      // the trade's own entry price instead of showing everything this
+      // concept had live: a zone's own midpoint distance to entry_price,
+      // or (for a level) a swept one first (a discrete triggering event,
+      // more likely to be why execution fired) then distance. Keep only
+      // the single closest match -- "what related to this trade," not a
+      // dump of everything the concept was tracking.
+      const scored = allNodes.map((n) => {
+        const price = n.shape === "zone" ? (n.node.high + n.node.low) / 2 : n.node.level;
+        const sweptBonus = n.shape === "level" && typeof n.node.swept_at === "number" ? -1e12 : 0;
+        return { n, score: sweptBonus + Math.abs(price - entryPrice) };
+      });
+      scored.sort((a, b) => a.score - b.score);
+      relevant = [scored[0].n];
+    } else {
+      relevant = [];
     }
-    stages.push({ type: "concept", id: cid, label: `Concept : ${cid}`, moments });
+    if (!relevant.length) return;
+    stages.push({
+      type: "concept", id: cid, label: `Concept : ${cid}`,
+      moments: [{ timestamp: entryTime, nodes: relevant }],
+    });
   });
   microsystemIds.forEach((mid) => {
-    const moments = microsystemMoments[mid].map((m) => ({
-      timestamp: m.timestamp, nodes: walkForAnnotations(m.value), value: m.value,
-    }));
-    if (moments.length) stages.push({ type: "microsystem", id: mid, label: `Microsystème : ${mid}`, moments });
+    const value = microsystemFinal[mid];
+    const setups = (value && value.setups) || [];
+    if (!setups.length) return;
+    stages.push({
+      type: "microsystem", id: mid, label: `Microsystème : ${mid}`,
+      moments: [{ timestamp: entryTime, nodes: walkForAnnotations(value), value }],
+    });
   });
 
   // Execution: the chart's own visible candle range grows one candle per
@@ -425,7 +461,6 @@ function buildStages(instance) {
   // reveal, matching what execution_profiles actually evaluate one
   // candle at a time.
   const allCandles = (instance.window && instance.window.candles) || [];
-  const entryTime = instance.node.entry_time;
   const upToEntry = allCandles.filter((c) => c.timestamp <= entryTime);
   if (upToEntry.length) {
     stages.push({
@@ -446,21 +481,10 @@ function buildStages(instance) {
 
 function describeMoment(stage, moment) {
   if (stage.type === "concept") {
-    if (moment.relevant) return `Retenu pour ce trade : ${moment.nodes.length} élément(s).`;
-    const zones = moment.nodes.filter((n) => n.shape === "zone").length;
-    const levels = moment.nodes.filter((n) => n.shape === "level").length;
-    const swept = moment.nodes.filter(
-      (n) => n.shape === "level" && typeof n.node.swept_at === "number" && n.node.swept_at <= moment.timestamp,
-    ).length;
-    const parts = [];
-    if (zones) parts.push(`${zones} FVG`);
-    if (levels) parts.push(`${levels} niveau(x) de liquidité${swept ? ` (${swept} balayé(s))` : ""}`);
-    return parts.length ? `${parts.join(", ")} détecté(s).` : "Rien de nouveau détecté à cet instant.";
+    return moment.nodes.map(describeNode).join(" -- ");
   }
   if (stage.type === "microsystem") {
-    const setups = (moment.value && moment.value.setups) || [];
-    const signal = moment.value && moment.value.dernier_signal;
-    return setups.length ? `Signal confirmé : ${signal}.` : "Aucun signal confirmé pour l'instant.";
+    return `Signal confirmé : ${moment.value && moment.value.dernier_signal}.`;
   }
   if (stage.type === "execution") {
     return moment.isEntry ? "Entrée confirmée sur cette bougie." : `Bougie ${moment.candleCount} évaluée -- pas encore d'entrée.`;
