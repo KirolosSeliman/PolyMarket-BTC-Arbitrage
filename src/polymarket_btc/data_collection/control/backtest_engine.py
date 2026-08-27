@@ -731,6 +731,7 @@ def run_backtest(
     filter_config: Mapping[str, object] = {},
     max_workers: int | None = None,
     on_progress: Callable[[float], None] | None = None,
+    records_by_key: Mapping[str, list[dict]] | None = None,
 ) -> dict[str, object]:
     """`on_progress`, when given, is called with a 0..1 fraction as the
     backtest advances -- timeline building (build_timeline's own walk,
@@ -745,7 +746,18 @@ def run_backtest(
     across every combo, matching how execution/management's own non-swept
     fields already work, and avoiding a third partner in the sweep's
     cartesian merge (see the `combos` comprehension below, already fragile
-    with just two)."""
+    with just two).
+
+    `records_by_key`, when given, is used as-is instead of fetching --
+    read_records' underlying raw storage has no seek/index, so every call
+    re-decompresses and re-parses a manifest's *entire* segment file
+    regardless of how narrow [start_ts, end_ts] is (confirmed the
+    dominant cost of a bounded reasoning-replay call by profiling
+    StrategyFilterRefinementManager._instance_window). A caller that
+    already has the records it needs (e.g. that same method, which reads
+    once over a wide range and slices in memory for both the display
+    candles and this call) passes them through here rather than paying a
+    second full-file scan for data it already has."""
     concept_infos = {info.id: info for info in discover_concepts(concepts_dir)}
     microsystem_infos = {info.id: info for info in discover_microsystems(microsystems_dir)}
     execution_infos = {info.id: info for info in discover_execution_profiles(execution_dir)}
@@ -780,9 +792,10 @@ def run_backtest(
     # (see sources/binance_futures_historical.py), so the conversion happens
     # once here rather than pushing a Binance-naming detail onto every caller.
     instrument_symbol = f"{instrument.upper()}USDT"
-    records_by_key = {
-        key: read_records(key, start_ts_ns, end_ts_ns, manifests, instrument=instrument_symbol) for key in keys
-    }
+    if records_by_key is None:
+        records_by_key = {
+            key: read_records(key, start_ts_ns, end_ts_ns, manifests, instrument=instrument_symbol) for key in keys
+        }
     # The canonical price path prices fills/SL/TP for the simulated
     # instrument -- independent of whatever data keys the strategy's own
     # concepts happen to declare (a strategy built only on klines is common,

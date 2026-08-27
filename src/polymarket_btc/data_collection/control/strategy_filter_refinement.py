@@ -52,7 +52,7 @@ import random
 
 from . import refinement
 from .backtest_data import read_records
-from .backtest_engine import estimate_warmup_seconds, run_backtest
+from .backtest_engine import estimate_warmup_seconds, required_concrete_keys, run_backtest
 from .concepts import discover_concepts
 from .microsystems import discover_microsystems
 from .runs import CollectionRunManager
@@ -187,33 +187,58 @@ class StrategyFilterRefinementManager:
         any instance that never declared one (needs everything, same as
         the original scan; see estimate_warmup_seconds). The replay is
         best-effort: if it fails for any reason, the trade is still shown
-        with its candles, just without the reasoning panel."""
+        with its candles (via a plain narrow fallback read), just without
+        the reasoning panel.
+
+        Reads every required concrete key exactly once, over the widest
+        range this review could ever need (coverage_start_ts through the
+        trade's own exit+buffer), then slices in memory for both the
+        bounded replay and the narrow display candles -- read_records'
+        underlying raw storage has no seek/index, so a call's cost is
+        dominated by decompressing/parsing a manifest's *entire* segment
+        file regardless of how narrow [start_ts, end_ts] is (confirmed by
+        profiling: the previous two-read version -- one narrow read here,
+        one wider one inside run_backtest -- paid that full-file cost
+        twice for the same key). A wider requested range costs the same
+        as a narrower one under that constraint, so there's no penalty to
+        reading generously up front and trimming afterward."""
         manifests = self.runs.list_runs()
         entry_time = trade.get("entry_time")
         exit_time = trade.get("exit_time", entry_time)
         earliest = min(entry_time, exit_time)
         latest = max(entry_time, exit_time)
-        start_ns = int((earliest - refinement.NEXT_WINDOW_BEFORE_SECONDS) * 1e9)
-        end_ns = int((latest + refinement.NEXT_WINDOW_AFTER_SECONDS) * 1e9)
+        display_start_ts = earliest - refinement.NEXT_WINDOW_BEFORE_SECONDS
+        display_end_ts = latest + refinement.NEXT_WINDOW_AFTER_SECONDS
         display_key = "binance_futures_kline"
-        records = read_records(
-            display_key, start_ns, end_ns, manifests, instrument=f"{instrument.upper()}USDT",
-        )
-        if len(records) > refinement.NEXT_WINDOW_MAX_RECORDS:
-            records = records[-refinement.NEXT_WINDOW_MAX_RECORDS:]
+        instrument_symbol = f"{instrument.upper()}USDT"
 
         replay = None
+        display_records: list[dict] = []
         try:
             concept_infos = {info.id: info for info in discover_concepts(self.runs.concepts_dir)}
             microsystem_infos = {info.id: info for info in discover_microsystems(self.runs.microsystems_dir)}
-            warmup_seconds = estimate_warmup_seconds(
+            keys_to_fetch = required_concrete_keys(
                 strategy, concept_infos, microsystem_infos, self.runs._data_requirements_for,
-                {display_key: records},
+            ) | {display_key}
+
+            fetch_start_ns, fetch_end_ns = int(coverage_start_ts * 1e9), int(display_end_ts * 1e9)
+            all_records_by_key = {
+                key: read_records(key, fetch_start_ns, fetch_end_ns, manifests, instrument=instrument_symbol)
+                for key in keys_to_fetch
+            }
+
+            warmup_seconds = estimate_warmup_seconds(
+                strategy, concept_infos, microsystem_infos, self.runs._data_requirements_for, all_records_by_key,
             )
             replay_start_ts = (
                 coverage_start_ts if warmup_seconds is None
                 else max(coverage_start_ts, earliest - warmup_seconds)
             )
+            replay_records_by_key = {
+                key: [r for r in records if r["timestamp"] >= replay_start_ts]
+                for key, records in all_records_by_key.items()
+            }
+
             unfiltered_strategy = {k: v for k, v in strategy.items() if k not in ("created_at_utc", "updated_at_utc")}
             unfiltered_strategy["filter"] = None
             result = run_backtest(
@@ -223,13 +248,26 @@ class StrategyFilterRefinementManager:
                 filter_dir=self.runs.filter_dir,
                 data_requirements_for=self.runs._data_requirements_for,
                 manifests=manifests, instrument=instrument,
-                start_ts=replay_start_ts, end_ts=latest + refinement.NEXT_WINDOW_AFTER_SECONDS,
+                start_ts=replay_start_ts, end_ts=display_end_ts,
                 cadence_seconds=DEFAULT_CADENCE_SECONDS, execution_sweep={}, management_sweep={},
+                records_by_key=replay_records_by_key,
             )
             replay = result.get("replay")
+
+            display_records = [
+                r for r in all_records_by_key.get(display_key, [])
+                if display_start_ts <= r["timestamp"] <= display_end_ts
+            ]
         except Exception:
             replay = None
-        return {"key": display_key, "candles": records, "replay": replay}
+            start_ns, end_ns = int(display_start_ts * 1e9), int(display_end_ts * 1e9)
+            try:
+                display_records = read_records(display_key, start_ns, end_ns, manifests, instrument=instrument_symbol)
+            except Exception:
+                display_records = []
+        if len(display_records) > refinement.NEXT_WINDOW_MAX_RECORDS:
+            display_records = display_records[-refinement.NEXT_WINDOW_MAX_RECORDS:]
+        return {"key": display_key, "candles": display_records, "replay": replay}
 
     def next_instance(self, *, strategy_name: str) -> dict[str, object]:
         strategy = self.strategies.load_strategy(strategy_name)
