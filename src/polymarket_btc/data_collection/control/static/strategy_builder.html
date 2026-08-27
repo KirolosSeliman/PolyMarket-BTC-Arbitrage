@@ -1912,6 +1912,12 @@ function renderExecutionConfigForm() {
 }
 
 el("execution-select").addEventListener("change", renderExecutionConfigForm);
+// Picking a profile is a discrete, deliberate action -- save right away,
+// no debounce. Editing one of its config fields afterward is delegated
+// on the (rebuilt-on-every-render) container itself, debounced so typing
+// a number doesn't fire a request per keystroke.
+el("execution-select").addEventListener("change", performAutoSave);
+el("execution-config-form").addEventListener("input", scheduleAutoSave);
 
 el("step4-back-btn").addEventListener("click", () => showStep(3));
 el("step4-next-btn").addEventListener("click", () => showStep(5));
@@ -1948,6 +1954,8 @@ function renderManagementConfigForm() {
 }
 
 el("management-select").addEventListener("change", renderManagementConfigForm);
+el("management-select").addEventListener("change", performAutoSave);
+el("management-config-form").addEventListener("input", scheduleAutoSave);
 
 el("step5-back-btn").addEventListener("click", () => showStep(4));
 el("step5-next-btn").addEventListener("click", () => showStep(6));
@@ -2029,6 +2037,60 @@ function collectExecutionAndManagement() {
     filter_id: filterId,
     config: readConfigForm(el("filter-config-form"), filterById(filterId).config_schema),
   } : null;
+}
+
+// ============================================================
+// Auto-save for execution/management -- picking a profile, or editing
+// one of its config fields, persists immediately instead of requiring a
+// trip to "Enregistrer les modifications" (which also navigates away to
+// /menu, so it can't be reused here as-is: this needs to save in place
+// and let the user keep working). A select change saves right away (a
+// deliberate, discrete action); a config field edit is debounced so
+// typing a number doesn't fire a request per keystroke.
+// ============================================================
+
+let autoSaveTimer = null;
+
+async function performAutoSave() {
+  collectExecutionAndManagement();
+  const body = {
+    name: strategyName,
+    concepts: strategyConcepts,
+    microsystems: strategyMicrosystems,
+    execution: strategyExecution,
+    management: strategyManagement,
+    filter: strategyFilter,
+    // Always true: a brand-new strategy has no existing file to collide
+    // with (overwrite is a no-op then), and an in-progress edit is
+    // exactly what auto-save exists to persist without asking again.
+    overwrite: true,
+  };
+  const status = el("save-status");
+  status.className = "import-status";
+  status.textContent = "Enregistrement automatique…";
+  try {
+    const res = await fetch("/api/strategies", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.className = "import-status error";
+      status.textContent = data.error || "échec de l'enregistrement automatique";
+      return;
+    }
+    isEditingExistingStrategy = true;
+    el("save-strategy-btn").textContent = "Enregistrer les modifications";
+    status.className = "import-status";
+    status.textContent = "Enregistré automatiquement.";
+  } catch (error) {
+    status.className = "import-status error";
+    status.textContent = "Échec de l'enregistrement automatique (erreur réseau).";
+  }
+}
+
+function scheduleAutoSave() {
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(performAutoSave, 800);
 }
 
 async function saveStrategy() {
