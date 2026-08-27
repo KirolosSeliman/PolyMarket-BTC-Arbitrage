@@ -493,16 +493,62 @@ function describeMoment(stage, moment) {
 }
 
 function renderStageChart(instance, stage, moment) {
-  const allCandles = (instance.window && instance.window.candles) || [];
   const trade = instance.node;
-  if (allCandles.length < 2) {
+  const narrowCandles = (instance.window && instance.window.candles) || [];
+  // The wider candle set the reasoning replay itself was computed over
+  // (instance.window.replay.candles) -- a level/zone can form well before
+  // the narrow display window even starts (a concept's own required_
+  // lookback_seconds can span hours), so drawing it against the narrow
+  // window would clip it off-screen. Falls back to the narrow set if the
+  // replay itself failed.
+  const wideCandles = (instance.window && instance.window.replay && instance.window.replay.candles) || narrowCandles;
+
+  let axisCandles, drawnCandles;
+  let extraPrices = [];
+  if (stage.type === "concept" || stage.type === "microsystem") {
+    // Auto-zoom to frame exactly this moment's own annotation(s), with a
+    // little breathing room either side -- "enlarge the chart to see the
+    // concept," not the same fixed frame every stage uses.
+    const nodeTimestamps = moment.nodes.flatMap(({ shape, node }) => {
+      const formedAt = typeof node.formed_at === "number" ? node.formed_at : node.swept_at;
+      const endAt = typeof node.swept_at === "number" ? node.swept_at : moment.timestamp;
+      return [formedAt, endAt];
+    });
+    const rangeStart = nodeTimestamps.length ? Math.min(...nodeTimestamps) : moment.timestamp;
+    const span = Math.max(moment.timestamp - rangeStart, 60);
+    const padding = span * 0.15;
+    let zoomStart = rangeStart - padding, zoomEnd = moment.timestamp + padding;
+    // A short-lived node (e.g. a sweep confirmed a minute after its pool
+    // formed) would otherwise zoom down to 1-2 candles, each stretched to
+    // fill the whole chart width -- unrecognizable as a candlestick, just
+    // a solid block. Widen symmetrically to a floor of ~20 candles' worth
+    // of context so it still reads as an actual chart.
+    const MIN_ZOOM_SPAN_SECONDS = 20 * 60;
+    if (zoomEnd - zoomStart < MIN_ZOOM_SPAN_SECONDS) {
+      const extra = (MIN_ZOOM_SPAN_SECONDS - (zoomEnd - zoomStart)) / 2;
+      zoomStart -= extra;
+      zoomEnd += extra;
+    }
+    const zoomed = wideCandles.filter((c) => c.timestamp >= zoomStart && c.timestamp <= zoomEnd);
+    axisCandles = zoomed.length >= 10 ? zoomed : wideCandles;
+    drawnCandles = axisCandles;
+    extraPrices = moment.nodes.flatMap(({ shape, node }) => (shape === "zone" ? [node.high, node.low] : [node.level]));
+  } else if (stage.type === "execution") {
+    // Fixed frame (the narrow display window), only the drawn subset
+    // grows one candle per moment -- a stable "reveal," not a rescaling
+    // chart on every click.
+    axisCandles = narrowCandles;
+    drawnCandles = narrowCandles.filter((c) => c.timestamp <= moment.timestamp);
+  } else {
+    axisCandles = narrowCandles;
+    drawnCandles = narrowCandles;
+  }
+
+  if (axisCandles.length < 2) {
     return `<text x="20" y="40" fill="var(--muted)" font-size="12">Pas de données dans cette fenêtre.</text>`;
   }
-  const visibleCandles = stage.type === "execution"
-    ? allCandles.filter((c) => c.timestamp <= moment.timestamp)
-    : allCandles;
-  const minTs = allCandles[0].timestamp, maxTs = allCandles[allCandles.length - 1].timestamp;
-  let prices = allCandles.flatMap((c) => [c.high, c.low]);
+  const minTs = axisCandles[0].timestamp, maxTs = axisCandles[axisCandles.length - 1].timestamp;
+  let prices = axisCandles.flatMap((c) => [c.high, c.low]).concat(extraPrices);
   if (stage.type === "management") {
     [trade.entry_price, trade.exit_price, trade.stop_loss, trade.take_profit].forEach((v) => {
       if (typeof v === "number") prices = [...prices, v];
@@ -530,7 +576,7 @@ function renderStageChart(instance, stage, moment) {
     svg += renderTradeBox(x, y, trade);
   }
 
-  svg += renderCandles(x, y, visibleCandles);
+  svg += renderCandles(x, y, drawnCandles);
   return svg;
 }
 
