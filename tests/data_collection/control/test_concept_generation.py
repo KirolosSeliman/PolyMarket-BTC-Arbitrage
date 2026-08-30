@@ -176,7 +176,10 @@ class ConceptGenerationManagerTests(unittest.IsolatedAsyncioTestCase):
                 "filename": "my_new_concept.py",
                 "content": _WELL_FORMED_RESPONSE.split("```python\n")[1].split("```")[0],
             }
-            job = manager.start_generate_job(sources=["binance_futures_kline"], plugins=[], template="un template")
+            job = manager.start_generate_job(
+                sources=["binance_futures_kline"], plugins=[], template="un template",
+                description="détecte un pattern de retournement",
+            )
             status = await self._wait_for_done(manager, job.job_id)
         self.assertIsNone(status["error"])
         self.assertEqual(status["result"]["filename"], "my_new_concept.py")
@@ -188,7 +191,10 @@ class ConceptGenerationManagerTests(unittest.IsolatedAsyncioTestCase):
             "polymarket_btc.data_collection.control.concept_generation.generate_concept_via_claude_code",
         ) as mock_generate:
             mock_generate.side_effect = ValueError("Claude Code a échoué")
-            job = manager.start_generate_job(sources=["binance_futures_kline"], plugins=[], template="un template")
+            job = manager.start_generate_job(
+                sources=["binance_futures_kline"], plugins=[], template="un template",
+                description="détecte un pattern de retournement",
+            )
             status = await self._wait_for_done(manager, job.job_id)
         self.assertIn("échoué", status["error"])
 

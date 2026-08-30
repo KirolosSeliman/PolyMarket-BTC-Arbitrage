@@ -1651,6 +1651,17 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         head, _body = await self._request("POST", "/api/concept-prompt/generate", json_body={})
         self.assertIn("400 Bad Request", head)
 
+    async def test_concept_prompt_generate_missing_description_is_400(self) -> None:
+        # A non-interactive `claude -p` call gets no back-and-forth to ask
+        # what the concept should do, unlike the manual copy-paste flow
+        # (where the user edits the template's own placeholders by hand) --
+        # so this route requires a real description, unlike /api/concept-prompt.
+        head, _body = await self._request(
+            "POST", "/api/concept-prompt/generate",
+            json_body={"sources": ["binance_futures_kline"], "plugins": [], "description": "   "},
+        )
+        self.assertIn("400 Bad Request", head)
+
     async def test_concept_prompt_generate_success_round_trip(self) -> None:
         well_formed = (
             "FILENAME: server_route_concept.py\n\n```python\n"
@@ -1667,7 +1678,10 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
             }
             head, body = await self._request(
                 "POST", "/api/concept-prompt/generate",
-                json_body={"sources": ["binance_futures_kline"], "plugins": []},
+                json_body={
+                    "sources": ["binance_futures_kline"], "plugins": [],
+                    "description": "détecte un croisement de moyennes mobiles",
+                },
             )
             self.assertIn("200 OK", head)
             job_id = body["job_id"]

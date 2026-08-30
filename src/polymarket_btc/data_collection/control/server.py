@@ -778,6 +778,9 @@ class ControlPanelServer:
         plugins = self._string_list_field(payload, "plugins")
         if sources is None or plugins is None:
             return self._error("400 Bad Request", "sources and plugins must be lists of strings")
+        description = payload.get("description", "")
+        if not isinstance(description, str):
+            return self._error("400 Bad Request", "description must be a string")
         if self.concept_prompt_doc_path is None:
             return self._error("404 Not Found", "no concept prompt document configured")
         try:
@@ -785,7 +788,9 @@ class ControlPanelServer:
         except OSError as exc:
             return self._error("404 Not Found", f"concept prompt document unavailable: {exc}")
         try:
-            content = self.runs.build_concept_prompt(sources=sources, plugins=plugins, template=template)
+            content = self.runs.build_concept_prompt(
+                sources=sources, plugins=plugins, template=template, description=description,
+            )
         except ValueError as exc:
             return self._error("400 Bad Request", str(exc))
         return self._json({"content": content})
@@ -815,6 +820,15 @@ class ControlPanelServer:
             # too so an empty request 400s immediately instead of only
             # surfacing the error later via generate-status.
             return self._error("400 Bad Request", "select at least one data source or plugin to build a concept prompt")
+        description = payload.get("description", "")
+        if not isinstance(description, str) or not description.strip():
+            # Unlike the manual copy-paste flow (where the user edits the
+            # template's own [COMPLÉTER: ...] placeholders by hand, or
+            # types a message alongside the pasted prompt), a non-
+            # interactive `claude -p` call gets one shot with no back-and-
+            # forth -- without a real description it has nothing to build
+            # and would have to invent the concept from nothing.
+            return self._error("400 Bad Request", "describe what the concept should do before generating it")
         if self.concept_prompt_doc_path is None:
             return self._error("404 Not Found", "no concept prompt document configured")
         try:
@@ -822,7 +836,9 @@ class ControlPanelServer:
         except OSError as exc:
             return self._error("404 Not Found", f"concept prompt document unavailable: {exc}")
         try:
-            job = self.concept_generation.start_generate_job(sources=sources, plugins=plugins, template=template)
+            job = self.concept_generation.start_generate_job(
+                sources=sources, plugins=plugins, template=template, description=description,
+            )
         except ValueError as exc:
             return self._error("400 Bad Request", str(exc))
         return self._json({"job_id": job.job_id})

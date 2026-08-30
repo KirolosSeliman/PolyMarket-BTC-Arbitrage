@@ -1035,6 +1035,24 @@ class BuildPromptTests(unittest.TestCase):
             self.assertIn("Mon Plugin", content)
             self.assertIn("PLUGIN_INFO", content)  # the plugin's own source code embedded
 
+    def test_concept_prompt_description_appended_when_given(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            content = manager.build_concept_prompt(
+                sources=["chainlink"], plugins=[], template="TEMPLATE_TEXT",
+                description="détecte un croisement de moyennes mobiles",
+            )
+            self.assertIn("Description du concept fournie par l'utilisateur", content)
+            self.assertIn("détecte un croisement de moyennes mobiles", content)
+
+    def test_concept_prompt_description_omitted_when_blank(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self._manager(Path(directory))
+            content = manager.build_concept_prompt(
+                sources=["chainlink"], plugins=[], template="TEMPLATE_TEXT", description="   ",
+            )
+            self.assertNotIn("Description du concept fournie par l'utilisateur", content)
+
     def test_concept_prompt_empty_selection_raises(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = self._manager(Path(directory))

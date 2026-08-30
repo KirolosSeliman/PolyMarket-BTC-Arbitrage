@@ -146,8 +146,10 @@ label.check input { margin-top: 2px; }
 
     <div class="panel" id="create-concept-panel" style="display:none">
       <h2>Créer un nouveau concept</h2>
-      <p>Choisis les types de données que ce concept va utiliser.</p>
-      <div id="concept-data-picker"></div>
+      <p>Décris ce que ce concept doit calculer ou détecter, puis choisis les types de données qu'il va utiliser.</p>
+      <strong style="font-size:12px">Description du concept</strong>
+      <textarea id="concept-description-input" style="margin-top:6px" placeholder="Ex : un score qui indique à quel point le funding actuel est anormal par rapport à son historique récent, avec une fenêtre de calcul en minutes configurable."></textarea>
+      <div id="concept-data-picker" style="margin-top:12px"></div>
       <details class="prompt-details" id="concept-prompt-details">
         <summary>Prompt pour créer ce concept avec une IA</summary>
         <div class="prompt-box">
@@ -646,8 +648,10 @@ const conceptPromptBox = createPromptBox({
   fetchContent: async () => {
     const sources = [...conceptDataSelection].filter((k) => allDataSources.some((s) => s.key === k));
     const plugins = [...conceptDataSelection].filter((k) => allPlugins.some((p) => p.id === k));
+    const description = el("concept-description-input").value;
     const res = await fetch("/api/concept-prompt", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sources, plugins }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sources, plugins, description }),
     });
     const data = await res.json();
     return res.ok ? data.content : "Prompt indisponible : " + data.error;
@@ -667,6 +671,12 @@ el("concept-generate-btn").addEventListener("click", async () => {
   const statusEl = el("concept-generate-status");
   const sources = [...conceptDataSelection].filter((k) => allDataSources.some((s) => s.key === k));
   const plugins = [...conceptDataSelection].filter((k) => allPlugins.some((p) => p.id === k));
+  const description = el("concept-description-input").value;
+  if (!description.trim()) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = "Décris ce que le concept doit faire avant de générer -- sans ça, Claude Code n'a rien à construire.";
+    return;
+  }
   if (sources.length === 0 && plugins.length === 0) {
     statusEl.className = "import-status error";
     statusEl.textContent = "Choisis au moins un type de données avant de générer.";
@@ -677,7 +687,8 @@ el("concept-generate-btn").addEventListener("click", async () => {
   statusEl.textContent = "Génération en cours (Claude Code)…";
   try {
     const startRes = await fetch("/api/concept-prompt/generate", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sources, plugins }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sources, plugins, description }),
     });
     const startData = await startRes.json();
     if (!startRes.ok) throw new Error(startData.error || "échec du lancement de la génération");

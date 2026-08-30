@@ -713,16 +713,40 @@ class CollectionRunManager:
             )
         return blocks
 
-    def build_concept_prompt(self, *, sources: list[str], plugins: list[str], template: str) -> str:
+    def build_concept_prompt(
+        self, *, sources: list[str], plugins: list[str], template: str, description: str = "",
+    ) -> str:
         """Appends a "Contexte : données sélectionnées" section to
         `template` (the raw docs/nouveau_concept_prompt.md text) so an AI
         writing a concept sees exactly what the selected data looks like.
         Raises ValueError if sources and plugins are both empty -- a
-        concept prompt with no data context defeats the point."""
+        concept prompt with no data context defeats the point.
+
+        `description` is the user's own free-text answer to the template's
+        "À compléter" placeholders ([COMPLÉTER: ...] -- filename, category,
+        label, what the concept should produce, params). The manual
+        copy-paste flow relies on the user editing those placeholders (or
+        typing a message alongside the pasted prompt) by hand; a
+        non-interactive caller (Claude Code's `-p` mode) has no chance to
+        ask, so this is appended as its own section with an explicit
+        instruction to use it -- optional here (kept backward compatible
+        for callers still relying on manual placeholder edits) but the
+        Claude Code generation route requires it non-empty."""
         if not sources and not plugins:
             raise ValueError("select at least one data source or plugin to build a concept prompt")
         blocks = self._data_context_blocks(sources=sources, plugins=plugins)
-        return template + "\n\n---\n\n## Contexte : données sélectionnées\n\n" + "\n".join(blocks)
+        content = template + "\n\n---\n\n## Contexte : données sélectionnées\n\n" + "\n".join(blocks)
+        if description.strip():
+            content += (
+                "\n\n---\n\n## Description du concept fournie par l'utilisateur\n\n"
+                + description.strip()
+                + "\n\nUtilise cette description pour compléter les champs marqués "
+                "[COMPLÉTER: ...] plus haut (nom de fichier, catégorie, label, "
+                "description courte, ce que le concept doit produire, paramètres) -- "
+                "choisis des valeurs sensées pour tout détail qui manquerait encore, "
+                "mais ne laisse jamais un [COMPLÉTER: ...] littéral dans le résultat."
+            )
+        return content
 
     def build_microsystem_prompt(
         self, *, concepts: list[str], sources: list[str], plugins: list[str], template: str,
