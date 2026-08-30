@@ -1,6 +1,4 @@
 import asyncio
-from datetime import UTC, datetime
-import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -15,20 +13,6 @@ from polymarket_btc.data_collection.control.concept_generation import (
 from polymarket_btc.data_collection.control.runs import CollectionRunManager
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _seeded_symbol_cache(root: Path) -> Path:
-    # build_concept_prompt reaches _merged_catalog() -> _symbol_catalog(),
-    # which hits the network on a cold cache -- same hidden cost this
-    # session already found in estimate_warmup_seconds. Seed a fake cache
-    # so the manager tests below stay fast and offline, matching test_
-    # strategies.py's own established fixture for the same problem.
-    cache_path = root / "cache" / "binance_symbols.json"
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps({
-        "spot": ["BTC"], "futures": ["BTC"], "fetched_at_utc": datetime.now(UTC).isoformat(),
-    }))
-    return cache_path
 
 _WELL_FORMED_RESPONSE = '''FILENAME: my_new_concept.py
 
@@ -151,7 +135,6 @@ class ConceptGenerationManagerTests(unittest.IsolatedAsyncioTestCase):
         runs = CollectionRunManager(
             config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
             collections_dir=root / "collections",
-            symbol_cache_path=_seeded_symbol_cache(root),
             plugins_dir=root / "plugins", concepts_dir=root / "concepts",
             microsystems_dir=root / "microsystems", execution_dir=root / "execution_profiles",
             management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
@@ -176,10 +159,7 @@ class ConceptGenerationManagerTests(unittest.IsolatedAsyncioTestCase):
                 "filename": "my_new_concept.py",
                 "content": _WELL_FORMED_RESPONSE.split("```python\n")[1].split("```")[0],
             }
-            job = manager.start_generate_job(
-                sources=["binance_futures_kline"], plugins=[], template="un template",
-                description="détecte un pattern de retournement",
-            )
+            job = manager.start_generate_job(prompt="un prompt déjà construit et confirmé par l'utilisateur")
             status = await self._wait_for_done(manager, job.job_id)
         self.assertIsNone(status["error"])
         self.assertEqual(status["result"]["filename"], "my_new_concept.py")
@@ -191,10 +171,7 @@ class ConceptGenerationManagerTests(unittest.IsolatedAsyncioTestCase):
             "polymarket_btc.data_collection.control.concept_generation.generate_concept_via_claude_code",
         ) as mock_generate:
             mock_generate.side_effect = ValueError("Claude Code a échoué")
-            job = manager.start_generate_job(
-                sources=["binance_futures_kline"], plugins=[], template="un template",
-                description="détecte un pattern de retournement",
-            )
+            job = manager.start_generate_job(prompt="un prompt déjà construit et confirmé par l'utilisateur")
             status = await self._wait_for_done(manager, job.job_id)
         self.assertIn("échoué", status["error"])
 

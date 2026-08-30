@@ -797,11 +797,15 @@ class ControlPanelServer:
 
     def _concept_prompt_generate(self, body: bytes) -> bytes:
         """Pilot: shells out to Claude Code (see ConceptGenerationManager)
-        instead of the user manually copying /api/concept-prompt's own
-        content into an external AI -- a subprocess call, measured at up
-        to the configured timeout (default 180s), far past this server's
-        own request timeout, so it runs as a background job exactly like
-        every other real-data scan in this app."""
+        instead of the user manually copying/pasting into an external AI.
+        Takes the exact final prompt text the frontend already built via
+        /api/concept-prompt and let the user preview/edit -- deliberately
+        not rebuilt here from sources/plugins/description, so what the
+        user saw and (optionally) corrected is exactly what gets sent, not
+        a fresh reconstruction that could silently diverge from it. A
+        subprocess call, measured at up to the configured timeout (default
+        180s), far past this server's own request timeout, so it runs as a
+        background job exactly like every other real-data scan in this app."""
         if self.concept_generation is None:
             return self._error("404 Not Found", "concept generation via Claude Code is not configured")
         try:
@@ -810,37 +814,10 @@ class ControlPanelServer:
             return self._error("400 Bad Request", "invalid JSON body")
         if not isinstance(payload, dict):
             return self._error("400 Bad Request", "body must be a JSON object")
-        sources = self._string_list_field(payload, "sources")
-        plugins = self._string_list_field(payload, "plugins")
-        if sources is None or plugins is None:
-            return self._error("400 Bad Request", "sources and plugins must be lists of strings")
-        if not sources and not plugins:
-            # build_concept_prompt itself raises this, but only once the
-            # background job actually runs -- check it synchronously here
-            # too so an empty request 400s immediately instead of only
-            # surfacing the error later via generate-status.
-            return self._error("400 Bad Request", "select at least one data source or plugin to build a concept prompt")
-        description = payload.get("description", "")
-        if not isinstance(description, str) or not description.strip():
-            # Unlike the manual copy-paste flow (where the user edits the
-            # template's own [COMPLÉTER: ...] placeholders by hand, or
-            # types a message alongside the pasted prompt), a non-
-            # interactive `claude -p` call gets one shot with no back-and-
-            # forth -- without a real description it has nothing to build
-            # and would have to invent the concept from nothing.
-            return self._error("400 Bad Request", "describe what the concept should do before generating it")
-        if self.concept_prompt_doc_path is None:
-            return self._error("404 Not Found", "no concept prompt document configured")
-        try:
-            template = self.concept_prompt_doc_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            return self._error("404 Not Found", f"concept prompt document unavailable: {exc}")
-        try:
-            job = self.concept_generation.start_generate_job(
-                sources=sources, plugins=plugins, template=template, description=description,
-            )
-        except ValueError as exc:
-            return self._error("400 Bad Request", str(exc))
+        prompt = payload.get("prompt", "")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return self._error("400 Bad Request", "prompt must be a non-empty string")
+        job = self.concept_generation.start_generate_job(prompt=prompt)
         return self._json({"job_id": job.job_id})
 
     def _concept_prompt_generate_status(self, query: dict[str, list[str]]) -> bytes:

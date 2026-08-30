@@ -32,11 +32,12 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; display: grid; gap: 16px
 .hint { font-size: 11.5px; margin: 0 0 10px; }
 
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-input[type="text"], select {
+input[type="text"], select, textarea {
   font: inherit; font-size: 12.5px; color: var(--text-1); background: var(--surface-2);
   border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
 }
-input[type="text"]:focus, select:focus { outline: none; border-color: var(--accent); }
+input[type="text"]:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+textarea { display: block; width: 100%; resize: vertical; min-height: 70px; }
 button {
   font: inherit; font-size: 12.5px; color: #fff; background: var(--accent);
   border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; white-space: nowrap;
@@ -146,23 +147,28 @@ label.check input { margin-top: 2px; }
 
     <div class="panel" id="create-concept-panel" style="display:none">
       <h2>Créer un nouveau concept</h2>
-      <p>Décris ce que ce concept doit calculer ou détecter, puis choisis les types de données qu'il va utiliser.</p>
-      <strong style="font-size:12px">Description du concept</strong>
+
+      <strong style="font-size:12px;display:block">1. Décris ton concept</strong>
       <textarea id="concept-description-input" style="margin-top:6px" placeholder="Ex : un score qui indique à quel point le funding actuel est anormal par rapport à son historique récent, avec une fenêtre de calcul en minutes configurable."></textarea>
-      <div id="concept-data-picker" style="margin-top:12px"></div>
-      <details class="prompt-details" id="concept-prompt-details">
-        <summary>Prompt pour créer ce concept avec une IA</summary>
-        <div class="prompt-box">
-          <div class="row" style="justify-content:flex-end;margin-bottom:8px">
-            <button type="button" class="secondary" id="concept-copy-prompt-btn">Copier</button>
-          </div>
-          <pre id="concept-prompt-text">Chargement…</pre>
-        </div>
-      </details>
+
+      <strong style="font-size:12px;margin-top:12px;display:block">2. Données utilisées</strong>
+      <div id="concept-data-picker" style="margin-top:6px"></div>
+
       <div class="row" style="margin-top:12px">
-        <button type="button" id="concept-generate-btn">🪄 Générer automatiquement</button>
-        <span id="concept-generate-status" class="import-status"></span>
+        <button type="button" class="secondary" id="concept-preview-prompt-btn">3. Générer l'aperçu du prompt</button>
+        <span id="concept-preview-status" class="import-status"></span>
       </div>
+
+      <div id="concept-prompt-preview-wrap" style="display:none;margin-top:10px">
+        <strong style="font-size:12px;display:block">4. Prompt -- modifiable avant envoi</strong>
+        <textarea id="concept-prompt-preview" style="margin-top:6px;min-height:220px;font-family:monospace;font-size:12px"></textarea>
+        <div class="row" style="margin-top:12px">
+          <button type="button" id="concept-generate-btn">🪄 Confirmer et générer</button>
+          <button type="button" class="secondary" id="concept-copy-prompt-btn">Copier</button>
+          <span id="concept-generate-status" class="import-status"></span>
+        </div>
+      </div>
+
       <div class="row" style="margin-top:12px">
         <button type="button" class="secondary" id="concept-import-btn">+ Importer le script du concept</button>
         <input type="file" id="concept-import-input" accept=".py" style="display:none">
@@ -643,20 +649,6 @@ function refreshCreatePickers() {
 
 const conceptDataSelection = new Set();
 const conceptDataPicker = createDataTypePicker({ container: el("concept-data-picker"), selectedSet: conceptDataSelection });
-const conceptPromptBox = createPromptBox({
-  detailsEl: el("concept-prompt-details"), preEl: el("concept-prompt-text"), copyBtnEl: el("concept-copy-prompt-btn"),
-  fetchContent: async () => {
-    const sources = [...conceptDataSelection].filter((k) => allDataSources.some((s) => s.key === k));
-    const plugins = [...conceptDataSelection].filter((k) => allPlugins.some((p) => p.id === k));
-    const description = el("concept-description-input").value;
-    const res = await fetch("/api/concept-prompt", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sources, plugins, description }),
-    });
-    const data = await res.json();
-    return res.ok ? data.content : "Prompt indisponible : " + data.error;
-  },
-});
 createImportPicker({
   buttonEl: el("concept-import-btn"), inputEl: el("concept-import-input"), statusEl: el("concept-import-status"),
   endpoint: "/api/concepts/import",
@@ -665,21 +657,60 @@ createImportPicker({
 
 // Pilot: generate the concept via Claude Code (subscription auth, see
 // concept_generation.py) instead of the manual copy-prompt/paste-back/
-// import round-trip above -- that manual flow stays fully intact as the
-// fallback if this fails.
-el("concept-generate-btn").addEventListener("click", async () => {
-  const statusEl = el("concept-generate-status");
+// import round-trip below -- that manual flow stays fully intact as the
+// fallback if this fails. Flow: describe -> preview the built prompt ->
+// edit it directly if it's wrong -> confirm, which sends exactly what's
+// in the textarea (not rebuilt from the description/data picks again),
+// so what you see is what gets sent.
+el("concept-preview-prompt-btn").addEventListener("click", async () => {
+  const statusEl = el("concept-preview-status");
+  const description = el("concept-description-input").value;
   const sources = [...conceptDataSelection].filter((k) => allDataSources.some((s) => s.key === k));
   const plugins = [...conceptDataSelection].filter((k) => allPlugins.some((p) => p.id === k));
-  const description = el("concept-description-input").value;
   if (!description.trim()) {
     statusEl.className = "import-status error";
-    statusEl.textContent = "Décris ce que le concept doit faire avant de générer -- sans ça, Claude Code n'a rien à construire.";
+    statusEl.textContent = "Décris d'abord ce que le concept doit faire.";
     return;
   }
   if (sources.length === 0 && plugins.length === 0) {
     statusEl.className = "import-status error";
-    statusEl.textContent = "Choisis au moins un type de données avant de générer.";
+    statusEl.textContent = "Choisis au moins un type de données.";
+    return;
+  }
+  statusEl.className = "import-status";
+  statusEl.textContent = "Génération de l'aperçu…";
+  try {
+    const res = await fetch("/api/concept-prompt", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sources, plugins, description }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "échec de la génération de l'aperçu");
+    el("concept-prompt-preview").value = data.content;
+    el("concept-prompt-preview-wrap").style.display = "block";
+    statusEl.textContent = "";
+  } catch (error) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = "Erreur : " + error.message;
+  }
+});
+
+el("concept-copy-prompt-btn").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(el("concept-prompt-preview").value);
+    const btn = el("concept-copy-prompt-btn");
+    const original = btn.textContent;
+    btn.textContent = "Copié !";
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  } catch (error) { alert("Copie automatique impossible -- sélectionne le texte manuellement."); }
+});
+
+el("concept-generate-btn").addEventListener("click", async () => {
+  const statusEl = el("concept-generate-status");
+  const prompt = el("concept-prompt-preview").value;
+  if (!prompt.trim()) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = "Génère d'abord un aperçu du prompt (étape 3).";
     return;
   }
   el("concept-generate-btn").disabled = true;
@@ -688,7 +719,7 @@ el("concept-generate-btn").addEventListener("click", async () => {
   try {
     const startRes = await fetch("/api/concept-prompt/generate", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sources, plugins, description }),
+      body: JSON.stringify({ prompt }),
     });
     const startData = await startRes.json();
     if (!startRes.ok) throw new Error(startData.error || "échec du lancement de la génération");
@@ -713,7 +744,7 @@ el("concept-generate-btn").addEventListener("click", async () => {
     refreshCreatePickers();
   } catch (error) {
     statusEl.className = "import-status error";
-    statusEl.textContent = "Échec de la génération automatique : " + error.message + " -- utilise le prompt manuel ci-dessus à la place.";
+    statusEl.textContent = "Échec de la génération automatique : " + error.message + " -- modifie le prompt ci-dessus ou importe le script manuellement.";
   } finally {
     el("concept-generate-btn").disabled = false;
   }

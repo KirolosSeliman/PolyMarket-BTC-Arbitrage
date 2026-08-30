@@ -92,12 +92,7 @@ class ConceptGenerationManager:
     timeout_seconds: float
     jobs: dict[str, refinement.ScanJob] = field(default_factory=dict)
 
-    def _generate(
-        self, *, sources: list[str], plugins: list[str], template: str, description: str,
-    ) -> dict[str, object]:
-        prompt = self.runs.build_concept_prompt(
-            sources=sources, plugins=plugins, template=template, description=description,
-        )
+    def _generate(self, *, prompt: str) -> dict[str, object]:
         generated = generate_concept_via_claude_code(
             prompt, command=self.command, timeout_seconds=self.timeout_seconds,
         )
@@ -107,14 +102,9 @@ class ConceptGenerationManager:
         # route), an accepted simplification for this pilot.
         return self.runs.import_concept_file(generated["filename"], generated["content"], overwrite=False)
 
-    def start_generate_job(
-        self, *, sources: list[str], plugins: list[str], template: str, description: str,
-    ) -> refinement.ScanJob:
+    def start_generate_job(self, *, prompt: str) -> refinement.ScanJob:
         return refinement.run_scan_job(
-            self.jobs,
-            lambda _on_progress: self._generate(
-                sources=sources, plugins=plugins, template=template, description=description,
-            ),
+            self.jobs, lambda _on_progress: self._generate(prompt=prompt),
             name_prefix="concept-generate-job",
         )
 

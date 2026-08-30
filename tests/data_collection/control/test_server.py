@@ -1647,18 +1647,17 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         head, _body = await self._request("GET", "/builder")
         self.assertIn("200 OK", head)
 
-    async def test_concept_prompt_generate_missing_sources_and_plugins_is_400(self) -> None:
+    async def test_concept_prompt_generate_missing_prompt_is_400(self) -> None:
         head, _body = await self._request("POST", "/api/concept-prompt/generate", json_body={})
         self.assertIn("400 Bad Request", head)
 
-    async def test_concept_prompt_generate_missing_description_is_400(self) -> None:
-        # A non-interactive `claude -p` call gets no back-and-forth to ask
-        # what the concept should do, unlike the manual copy-paste flow
-        # (where the user edits the template's own placeholders by hand) --
-        # so this route requires a real description, unlike /api/concept-prompt.
+    async def test_concept_prompt_generate_blank_prompt_is_400(self) -> None:
+        # This route takes the exact final prompt the frontend already
+        # built (and let the user preview/edit) via /api/concept-prompt --
+        # a non-interactive `claude -p` call gets no back-and-forth, so an
+        # empty prompt would have nothing to build from.
         head, _body = await self._request(
-            "POST", "/api/concept-prompt/generate",
-            json_body={"sources": ["binance_futures_kline"], "plugins": [], "description": "   "},
+            "POST", "/api/concept-prompt/generate", json_body={"prompt": "   "},
         )
         self.assertIn("400 Bad Request", head)
 
@@ -1678,10 +1677,7 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
             }
             head, body = await self._request(
                 "POST", "/api/concept-prompt/generate",
-                json_body={
-                    "sources": ["binance_futures_kline"], "plugins": [],
-                    "description": "détecte un croisement de moyennes mobiles",
-                },
+                json_body={"prompt": "un prompt déjà construit et confirmé par l'utilisateur"},
             )
             self.assertIn("200 OK", head)
             job_id = body["job_id"]
@@ -1715,8 +1711,7 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         # crash with an AttributeError.
         self.server.concept_generation = None
         head, _body = await self._request(
-            "POST", "/api/concept-prompt/generate",
-            json_body={"sources": ["binance_futures_kline"], "plugins": []},
+            "POST", "/api/concept-prompt/generate", json_body={"prompt": "un prompt"},
         )
         self.assertIn("404 Not Found", head)
 
