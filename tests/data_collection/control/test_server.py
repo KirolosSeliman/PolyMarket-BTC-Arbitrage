@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from polymarket_btc.data_collection.control.concept_generation import ConceptGenerationManager
 from polymarket_btc.data_collection.control.concept_refinement import ConceptRefinementManager
 from polymarket_btc.data_collection.control.microsystem_refinement import MicrosystemRefinementManager
 from polymarket_btc.data_collection.control.runs import CollectionRunManager
@@ -372,9 +373,13 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.filter_feedback = StrategyFilterRefinementManager(
             feedback_dir=root / "filter_feedback", runs=self.runs, strategies=self.strategies,
         )
+        self.concept_generation = ConceptGenerationManager(
+            runs=self.runs, command=["claude"], timeout_seconds=30,
+        )
         self.server = ControlPanelServer(
             runs=self.runs, strategies=self.strategies, concept_feedback=self.concept_feedback,
             microsystem_feedback=self.microsystem_feedback, filter_feedback=self.filter_feedback,
+            concept_generation=self.concept_generation,
             host="127.0.0.1", port=0,
             prompt_doc_path=self.prompt_path,
             concept_prompt_doc_path=self.concept_prompt_path,
@@ -1641,6 +1646,65 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
     async def test_builder_page_serves_200(self) -> None:
         head, _body = await self._request("GET", "/builder")
         self.assertIn("200 OK", head)
+
+    async def test_concept_prompt_generate_missing_sources_and_plugins_is_400(self) -> None:
+        head, _body = await self._request("POST", "/api/concept-prompt/generate", json_body={})
+        self.assertIn("400 Bad Request", head)
+
+    async def test_concept_prompt_generate_success_round_trip(self) -> None:
+        well_formed = (
+            "FILENAME: server_route_concept.py\n\n```python\n"
+            'CONCEPT_INFO = {"label": "x", "description": "y", '
+            '"data_sources": ["binance_futures_kline"]}\n\n'
+            "def compute(context):\n    return {}\n```\n"
+        )
+        with patch(
+            "polymarket_btc.data_collection.control.concept_generation.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {
+                "filename": "server_route_concept.py",
+                "content": well_formed.split("```python\n")[1].split("```")[0],
+            }
+            head, body = await self._request(
+                "POST", "/api/concept-prompt/generate",
+                json_body={"sources": ["binance_futures_kline"], "plugins": []},
+            )
+            self.assertIn("200 OK", head)
+            job_id = body["job_id"]
+            status = None
+            for _ in range(200):
+                _head, status = await self._request(
+                    "GET", f"/api/concept-prompt/generate-status?job_id={job_id}",
+                )
+                if status["done"]:
+                    break
+                await asyncio.sleep(0.02)
+        self.assertTrue(status["done"])
+        self.assertIsNone(status["error"])
+        self.assertEqual(status["result"]["filename"], "server_route_concept.py")
+        self.assertTrue((self.concepts_dir / "server_route_concept.py").is_file())
+
+    async def test_concept_prompt_generate_status_unknown_job_is_404(self) -> None:
+        head, _body = await self._request(
+            "GET", "/api/concept-prompt/generate-status?job_id=no-such-job",
+        )
+        self.assertIn("404 Not Found", head)
+
+    async def test_concept_prompt_generate_status_missing_job_id_is_400(self) -> None:
+        head, _body = await self._request("GET", "/api/concept-prompt/generate-status")
+        self.assertIn("400 Bad Request", head)
+
+    async def test_concept_prompt_generate_not_configured_is_404(self) -> None:
+        # Mirrors _import_generic's own "not configured" pattern (see
+        # concept_prompt_doc_path is None) -- a server built without a
+        # concept_generation manager (the default) must fail clearly, not
+        # crash with an AttributeError.
+        self.server.concept_generation = None
+        head, _body = await self._request(
+            "POST", "/api/concept-prompt/generate",
+            json_body={"sources": ["binance_futures_kline"], "plugins": []},
+        )
+        self.assertIn("404 Not Found", head)
 
 
 if __name__ == "__main__":

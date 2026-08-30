@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import shlex
 from dataclasses import replace
 import json
 import logging
@@ -97,6 +98,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     control.add_argument(
         "--filter-prompt", type=Path, default=Path("docs/nouveau_strategy_filter_prompt.md"),
+    )
+    control.add_argument(
+        "--claude-code-command", default="claude",
+        help=(
+            "Command used to auto-generate a new concept via Claude Code "
+            "instead of the manual copy-paste-a-prompt flow (pilot, concept "
+            "creation only) -- shell-splittable, e.g. 'npx @anthropic-ai/"
+            "claude-code' if 'claude' isn't directly on PATH. Authenticates "
+            "via this process's own CLAUDE_CODE_OAUTH_TOKEN environment "
+            "variable (a Claude Pro/Max subscription token from `claude "
+            "setup-token`), never a bundled key."
+        ),
+    )
+    control.add_argument(
+        "--claude-code-timeout-seconds", type=float, default=180.0,
+        help="How long to wait for a single Claude Code concept-generation call before giving up.",
     )
     status = commands.add_parser("status")
     status.add_argument("--health-file", type=Path, required=True)
@@ -314,8 +331,9 @@ async def _run_control(
     concepts_dir: Path, microsystems_dir: Path, execution_dir: Path, management_dir: Path, filter_dir: Path,
     strategies_dir: Path, concept_feedback_dir: Path, microsystem_feedback_dir: Path, filter_feedback_dir: Path,
     plugin_prompt: Path, concept_prompt: Path, microsystem_prompt: Path, execution_prompt: Path,
-    management_prompt: Path, filter_prompt: Path,
+    management_prompt: Path, filter_prompt: Path, claude_code_command: str, claude_code_timeout_seconds: float,
 ) -> None:
+    from ..control.concept_generation import ConceptGenerationManager
     from ..control.concept_refinement import ConceptRefinementManager
     from ..control.microsystem_refinement import MicrosystemRefinementManager
     from ..control.runs import CollectionRunManager
@@ -334,9 +352,13 @@ async def _run_control(
     filter_feedback_manager = StrategyFilterRefinementManager(
         feedback_dir=filter_feedback_dir, runs=manager, strategies=strategy_manager,
     )
+    concept_generation_manager = ConceptGenerationManager(
+        runs=manager, command=shlex.split(claude_code_command), timeout_seconds=claude_code_timeout_seconds,
+    )
     server = ControlPanelServer(
         runs=manager, strategies=strategy_manager, concept_feedback=concept_feedback_manager,
         microsystem_feedback=microsystem_feedback_manager, filter_feedback=filter_feedback_manager,
+        concept_generation=concept_generation_manager,
         host=host, port=port,
         prompt_doc_path=plugin_prompt, concept_prompt_doc_path=concept_prompt,
         microsystem_prompt_doc_path=microsystem_prompt, execution_prompt_doc_path=execution_prompt,
@@ -370,7 +392,7 @@ def _control(args: argparse.Namespace) -> int:
         args.concepts_dir, args.microsystems_dir, args.execution_dir, args.management_dir, args.filter_dir,
         args.strategies_dir, args.concept_feedback_dir, args.microsystem_feedback_dir, args.filter_feedback_dir,
         args.plugin_prompt, args.concept_prompt, args.microsystem_prompt, args.execution_prompt,
-        args.management_prompt, args.filter_prompt,
+        args.management_prompt, args.filter_prompt, args.claude_code_command, args.claude_code_timeout_seconds,
     ))
     return 0
 

@@ -23,6 +23,7 @@ from ..common.http import (
     read_request,
 )
 from .backtest_jobs import BacktestJobManager
+from .concept_generation import ConceptGenerationManager
 from .concept_refinement import ConceptRefinementManager
 from .microsystem_refinement import MicrosystemRefinementManager
 from .runs import CollectionRunManager
@@ -57,6 +58,7 @@ class ControlPanelServer:
         concept_feedback: ConceptRefinementManager,
         microsystem_feedback: MicrosystemRefinementManager,
         filter_feedback: StrategyFilterRefinementManager,
+        concept_generation: ConceptGenerationManager | None = None,
         host: str = "127.0.0.1",
         port: int = 8780,
         prompt_doc_path: Path | None = None,
@@ -71,6 +73,7 @@ class ControlPanelServer:
         self.concept_feedback = concept_feedback
         self.microsystem_feedback = microsystem_feedback
         self.filter_feedback = filter_feedback
+        self.concept_generation = concept_generation
         self.host = host
         self.port = port
         self.prompt_doc_path = prompt_doc_path
@@ -184,6 +187,8 @@ class ControlPanelServer:
             return self._backtest_status(query)
         if path == "/api/concept-refine/scan-status":
             return self._concept_refine_scan_status(query)
+        if path == "/api/concept-prompt/generate-status":
+            return self._concept_prompt_generate_status(query)
         if path == "/api/microsystem-refine/scan-status":
             return self._microsystem_refine_scan_status(query)
         if path == "/api/strategy-filter-refine/scan-status":
@@ -592,6 +597,8 @@ class ControlPanelServer:
             return self._view_source(body, self.runs.read_concept_source)
         if path == "/api/concept-prompt":
             return self._concept_prompt(body)
+        if path == "/api/concept-prompt/generate":
+            return self._concept_prompt_generate(body)
         if path == "/api/microsystem-prompt":
             return self._microsystem_prompt(body)
         if path == "/api/strategies":
@@ -782,6 +789,54 @@ class ControlPanelServer:
         except ValueError as exc:
             return self._error("400 Bad Request", str(exc))
         return self._json({"content": content})
+
+    def _concept_prompt_generate(self, body: bytes) -> bytes:
+        """Pilot: shells out to Claude Code (see ConceptGenerationManager)
+        instead of the user manually copying /api/concept-prompt's own
+        content into an external AI -- a subprocess call, measured at up
+        to the configured timeout (default 180s), far past this server's
+        own request timeout, so it runs as a background job exactly like
+        every other real-data scan in this app."""
+        if self.concept_generation is None:
+            return self._error("404 Not Found", "concept generation via Claude Code is not configured")
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        sources = self._string_list_field(payload, "sources")
+        plugins = self._string_list_field(payload, "plugins")
+        if sources is None or plugins is None:
+            return self._error("400 Bad Request", "sources and plugins must be lists of strings")
+        if not sources and not plugins:
+            # build_concept_prompt itself raises this, but only once the
+            # background job actually runs -- check it synchronously here
+            # too so an empty request 400s immediately instead of only
+            # surfacing the error later via generate-status.
+            return self._error("400 Bad Request", "select at least one data source or plugin to build a concept prompt")
+        if self.concept_prompt_doc_path is None:
+            return self._error("404 Not Found", "no concept prompt document configured")
+        try:
+            template = self.concept_prompt_doc_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._error("404 Not Found", f"concept prompt document unavailable: {exc}")
+        try:
+            job = self.concept_generation.start_generate_job(sources=sources, plugins=plugins, template=template)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json({"job_id": job.job_id})
+
+    def _concept_prompt_generate_status(self, query: dict[str, list[str]]) -> bytes:
+        if self.concept_generation is None:
+            return self._error("404 Not Found", "concept generation via Claude Code is not configured")
+        ids = query.get("job_id")
+        if not ids:
+            return self._error("400 Bad Request", "job_id query parameter is required")
+        status = self.concept_generation.generate_job_status(ids[0])
+        if status is None:
+            return self._error("404 Not Found", f"unknown job id: {ids[0]!r}")
+        return self._json(status)
 
     def _microsystem_prompt(self, body: bytes) -> bytes:
         try:

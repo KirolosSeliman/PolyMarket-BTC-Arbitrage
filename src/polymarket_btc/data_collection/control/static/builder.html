@@ -158,6 +158,10 @@ label.check input { margin-top: 2px; }
         </div>
       </details>
       <div class="row" style="margin-top:12px">
+        <button type="button" id="concept-generate-btn">🪄 Générer automatiquement</button>
+        <span id="concept-generate-status" class="import-status"></span>
+      </div>
+      <div class="row" style="margin-top:12px">
         <button type="button" class="secondary" id="concept-import-btn">+ Importer le script du concept</button>
         <input type="file" id="concept-import-input" accept=".py" style="display:none">
         <span id="concept-import-status" class="import-status"></span>
@@ -653,6 +657,55 @@ createImportPicker({
   buttonEl: el("concept-import-btn"), inputEl: el("concept-import-input"), statusEl: el("concept-import-status"),
   endpoint: "/api/concepts/import",
   onImported: async () => { await loadCatalogs(); refreshCreatePickers(); },
+});
+
+// Pilot: generate the concept via Claude Code (subscription auth, see
+// concept_generation.py) instead of the manual copy-prompt/paste-back/
+// import round-trip above -- that manual flow stays fully intact as the
+// fallback if this fails.
+el("concept-generate-btn").addEventListener("click", async () => {
+  const statusEl = el("concept-generate-status");
+  const sources = [...conceptDataSelection].filter((k) => allDataSources.some((s) => s.key === k));
+  const plugins = [...conceptDataSelection].filter((k) => allPlugins.some((p) => p.id === k));
+  if (sources.length === 0 && plugins.length === 0) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = "Choisis au moins un type de données avant de générer.";
+    return;
+  }
+  el("concept-generate-btn").disabled = true;
+  statusEl.className = "import-status";
+  statusEl.textContent = "Génération en cours (Claude Code)…";
+  try {
+    const startRes = await fetch("/api/concept-prompt/generate", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sources, plugins }),
+    });
+    const startData = await startRes.json();
+    if (!startRes.ok) throw new Error(startData.error || "échec du lancement de la génération");
+    let result = null;
+    while (true) {
+      const statusRes = await fetch(`/api/concept-prompt/generate-status?job_id=${encodeURIComponent(startData.job_id)}`);
+      const status = await statusRes.json();
+      if (!statusRes.ok) throw new Error(status.error || "échec de la génération");
+      statusEl.textContent = `Génération en cours (Claude Code)… ${Math.round(status.elapsed_seconds)}s`;
+      if (status.done) {
+        if (status.error) throw new Error(status.error);
+        result = status.result;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+    statusEl.className = result.recognized ? "import-status" : "import-status warn";
+    statusEl.textContent = result.recognized
+      ? `${result.filename} généré, importé et reconnu.`
+      : `${result.filename} généré et copié, mais pas reconnu -- vérifie le contrat.`;
+    await loadCatalogs();
+    refreshCreatePickers();
+  } catch (error) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = "Échec de la génération automatique : " + error.message + " -- utilise le prompt manuel ci-dessus à la place.";
+  } finally {
+    el("concept-generate-btn").disabled = false;
+  }
 });
 
 // microsystemConceptPicker chooses from the *whole* concept catalog, not
