@@ -149,7 +149,12 @@ label.check input { margin-top: 2px; }
       <h2>Créer un nouveau concept</h2>
 
       <strong style="font-size:12px;display:block">1. Décris ton concept</strong>
-      <textarea id="concept-description-input" style="margin-top:6px" placeholder="Ex : un score qui indique à quel point le funding actuel est anormal par rapport à son historique récent, avec une fenêtre de calcul en minutes configurable."></textarea>
+      <p class="hint" style="margin:2px 0 0;color:var(--text-2)">Un mot-clé court (ex : "range breakout") suffit -- "Développer avec l'IA" le recherche et le rédige pour toi. Tu peux aussi tout écrire toi-même directement.</p>
+      <textarea id="concept-description-input" style="margin-top:6px" placeholder="Ex : range breakout -- ou une description complète si tu préfères tout écrire toi-même."></textarea>
+      <div class="row" style="margin-top:8px">
+        <button type="button" class="secondary" id="concept-expand-description-btn">💡 Développer avec l'IA (recherche internet)</button>
+        <span id="concept-expand-status" class="import-status"></span>
+      </div>
 
       <strong style="font-size:12px;margin-top:12px;display:block">2. Données utilisées</strong>
       <div id="concept-data-picker" style="margin-top:6px"></div>
@@ -653,6 +658,54 @@ createImportPicker({
   buttonEl: el("concept-import-btn"), inputEl: el("concept-import-input"), statusEl: el("concept-import-status"),
   endpoint: "/api/concepts/import",
   onImported: async () => { await loadCatalogs(); refreshCreatePickers(); },
+});
+
+// A second, distinct Claude Code call from the generate flow below (see
+// expand_concept_description_via_claude_code) -- this one is deliberately
+// given web search, to turn a short/ambiguous term (e.g. "range breakout")
+// into a full description instead of making the user write it by hand.
+// Reads from and writes back into the same textarea, so the result is
+// immediately editable exactly like everything else in this flow.
+el("concept-expand-description-btn").addEventListener("click", async () => {
+  const statusEl = el("concept-expand-status");
+  const shortText = el("concept-description-input").value;
+  if (!shortText.trim()) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = "Écris d'abord un mot-clé ou une idée courte.";
+    return;
+  }
+  el("concept-expand-description-btn").disabled = true;
+  statusEl.className = "import-status";
+  statusEl.textContent = "Recherche et rédaction en cours (Claude Code)…";
+  try {
+    const startRes = await fetch("/api/concept-prompt/expand-description", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: shortText }),
+    });
+    const startData = await startRes.json();
+    if (!startRes.ok) throw new Error(startData.error || "échec du lancement");
+    let result = null;
+    while (true) {
+      const statusRes = await fetch(`/api/concept-prompt/expand-description-status?job_id=${encodeURIComponent(startData.job_id)}`);
+      const status = await statusRes.json();
+      if (!statusRes.ok) throw new Error(status.error || "échec de la recherche");
+      statusEl.textContent = `Recherche et rédaction en cours (Claude Code)… ${Math.round(status.elapsed_seconds)}s`;
+      if (status.done) {
+        if (status.error) throw new Error(status.error);
+        result = status.result;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+    el("concept-description-input").value = result.description;
+    statusEl.className = "import-status";
+    statusEl.textContent = "Description développée -- modifie-la si besoin, puis continue à l'étape 2.";
+  } catch (error) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = "Échec : " + error.message + " -- écris la description toi-même à la place.";
+  } finally {
+    el("concept-expand-description-btn").disabled = false;
+  }
 });
 
 // Pilot: generate the concept via Claude Code (subscription auth, see

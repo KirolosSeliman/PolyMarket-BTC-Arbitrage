@@ -189,6 +189,8 @@ class ControlPanelServer:
             return self._concept_refine_scan_status(query)
         if path == "/api/concept-prompt/generate-status":
             return self._concept_prompt_generate_status(query)
+        if path == "/api/concept-prompt/expand-description-status":
+            return self._concept_prompt_expand_description_status(query)
         if path == "/api/microsystem-refine/scan-status":
             return self._microsystem_refine_scan_status(query)
         if path == "/api/strategy-filter-refine/scan-status":
@@ -599,6 +601,8 @@ class ControlPanelServer:
             return self._concept_prompt(body)
         if path == "/api/concept-prompt/generate":
             return self._concept_prompt_generate(body)
+        if path == "/api/concept-prompt/expand-description":
+            return self._concept_prompt_expand_description(body)
         if path == "/api/microsystem-prompt":
             return self._microsystem_prompt(body)
         if path == "/api/strategies":
@@ -827,6 +831,37 @@ class ControlPanelServer:
         if not ids:
             return self._error("400 Bad Request", "job_id query parameter is required")
         status = self.concept_generation.generate_job_status(ids[0])
+        if status is None:
+            return self._error("404 Not Found", f"unknown job id: {ids[0]!r}")
+        return self._json(status)
+
+    def _concept_prompt_expand_description(self, body: bytes) -> bytes:
+        """A second, distinct Claude Code call from _concept_prompt_generate
+        above (see expand_concept_description_via_claude_code) -- given web
+        search but nothing else, to research and expand a short/ambiguous
+        term the user typed instead of writing a full description
+        themselves. Returns plain text, never imports anything."""
+        if self.concept_generation is None:
+            return self._error("404 Not Found", "concept generation via Claude Code is not configured")
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        text = payload.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            return self._error("400 Bad Request", "text must be a non-empty string")
+        job = self.concept_generation.start_expand_description_job(short_text=text)
+        return self._json({"job_id": job.job_id})
+
+    def _concept_prompt_expand_description_status(self, query: dict[str, list[str]]) -> bytes:
+        if self.concept_generation is None:
+            return self._error("404 Not Found", "concept generation via Claude Code is not configured")
+        ids = query.get("job_id")
+        if not ids:
+            return self._error("400 Bad Request", "job_id query parameter is required")
+        status = self.concept_generation.expand_description_job_status(ids[0])
         if status is None:
             return self._error("404 Not Found", f"unknown job id: {ids[0]!r}")
         return self._json(status)

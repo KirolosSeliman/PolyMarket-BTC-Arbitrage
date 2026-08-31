@@ -85,6 +85,50 @@ def generate_concept_via_claude_code(
     return {"filename": filename, "content": content}
 
 
+def expand_concept_description_via_claude_code(
+    short_text: str, *, command: list[str], timeout_seconds: float,
+) -> str:
+    """A second, distinct Claude Code call from generate_concept_via_claude_
+    code above -- that one is pure text-in/text-out with zero tool access
+    (--disallowedTools "*"), deliberately, since it writes a script that
+    gets imported and trusted. This one exists for the opposite case: the
+    user typed a short/ambiguous term (e.g. "range breakout") instead of
+    writing a full description themselves, and wants it researched and
+    expanded. So it's deliberately given web search -- but nothing else:
+    --permission-mode dontAsk denies anything not explicitly allowed, then
+    --allowedTools "WebSearch" adds only that one tool back. No Bash, no
+    file read/write/edit, ever. Returns plain descriptive text, never
+    touches the filesystem, never feeds import_concept_file."""
+    prompt = (
+        "L'utilisateur envisage de créer un concept de trading algorithmique "
+        "à partir de cette idée, éventuellement courte ou informelle :\n\n"
+        f"{short_text}\n\n"
+        "Si c'est un terme ou motif de trading connu (ex: range breakout, "
+        "order block, fair value gap...), recherche sur internet ce qu'il "
+        "signifie précisément pour t'assurer d'une définition correcte et à "
+        "jour. Rédige ensuite une description complète (4 à 8 phrases) de ce "
+        "que ce concept doit calculer ou détecter à partir de données de "
+        "marché, avec des paramètres ajustables pertinents s'il y en a. "
+        "Réponds uniquement avec cette description, sans préambule, sans "
+        "conclusion, sans guillemets et sans mentionner la recherche."
+    )
+    try:
+        result = subprocess.run(
+            [*command, "-p", prompt, "--permission-mode", "dontAsk", "--allowedTools", "WebSearch"],
+            capture_output=True, text=True, timeout=timeout_seconds,
+        )
+    except FileNotFoundError as exc:
+        raise ValueError(f"commande Claude Code introuvable ({command[0]!r}) : {exc}") from None
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"Claude Code n'a pas répondu en {timeout_seconds:.0f}s -- réessaie") from None
+    if result.returncode != 0:
+        raise ValueError(f"Claude Code a échoué (code {result.returncode}) : {result.stderr.strip()[:500]}")
+    description = result.stdout.strip()
+    if not description:
+        raise ValueError("réponse de Claude Code vide -- réessaie ou écris la description toi-même")
+    return description
+
+
 @dataclass(slots=True)
 class ConceptGenerationManager:
     runs: CollectionRunManager
@@ -111,5 +155,22 @@ class ConceptGenerationManager:
     def generate_job_status(self, job_id: str) -> dict[str, object] | None:
         return refinement.scan_job_status(self.jobs, job_id)
 
+    def _expand_description(self, *, short_text: str) -> dict[str, object]:
+        description = expand_concept_description_via_claude_code(
+            short_text, command=self.command, timeout_seconds=self.timeout_seconds,
+        )
+        return {"description": description}
 
-__all__ = ["ConceptGenerationManager", "generate_concept_via_claude_code"]
+    def start_expand_description_job(self, *, short_text: str) -> refinement.ScanJob:
+        return refinement.run_scan_job(
+            self.jobs, lambda _on_progress: self._expand_description(short_text=short_text),
+            name_prefix="concept-expand-description-job",
+        )
+
+    def expand_description_job_status(self, job_id: str) -> dict[str, object] | None:
+        return refinement.scan_job_status(self.jobs, job_id)
+
+
+__all__ = [
+    "ConceptGenerationManager", "expand_concept_description_via_claude_code", "generate_concept_via_claude_code",
+]

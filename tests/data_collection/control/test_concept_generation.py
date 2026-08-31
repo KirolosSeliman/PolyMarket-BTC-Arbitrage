@@ -8,6 +8,7 @@ from unittest.mock import patch
 from polymarket_btc.data_collection.control.concept_generation import (
     ConceptGenerationManager,
     _parse_claude_code_response,
+    expand_concept_description_via_claude_code,
     generate_concept_via_claude_code,
 )
 from polymarket_btc.data_collection.control.runs import CollectionRunManager
@@ -121,6 +122,81 @@ class GenerateConceptViaClaudeCodeTests(unittest.TestCase):
                 generate_concept_via_claude_code("un prompt", command=["claude"], timeout_seconds=30)
 
 
+class ExpandConceptDescriptionViaClaudeCodeTests(unittest.TestCase):
+    def test_success_returns_stripped_description(self) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="  Une description complète.  \n", stderr="",
+            )
+            result = expand_concept_description_via_claude_code(
+                "range breakout", command=["claude"], timeout_seconds=30,
+            )
+        self.assertEqual(result, "Une description complète.")
+
+    def test_invokes_with_web_search_only_and_dont_ask_mode(self) -> None:
+        # Safety-critical: unlike generate_concept_via_claude_code (zero
+        # tool access), this call is deliberately given web search -- but
+        # confirm it's scoped to exactly that, not a bare grant of every
+        # tool. See expand_concept_description_via_claude_code's docstring.
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="une description", stderr="",
+            )
+            expand_concept_description_via_claude_code(
+                "range breakout", command=["claude"], timeout_seconds=30,
+            )
+        called_args = mock_run.call_args[0][0]
+        self.assertIn("-p", called_args)
+        self.assertIn("--permission-mode", called_args)
+        self.assertEqual(called_args[called_args.index("--permission-mode") + 1], "dontAsk")
+        self.assertIn("--allowedTools", called_args)
+        self.assertEqual(called_args[called_args.index("--allowedTools") + 1], "WebSearch")
+        self.assertNotIn("--disallowedTools", called_args)
+        self.assertNotIn("shell", mock_run.call_args[1])
+
+    def test_short_text_reaches_the_prompt(self) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="une description", stderr="",
+            )
+            expand_concept_description_via_claude_code(
+                "range breakout", command=["claude"], timeout_seconds=30,
+            )
+        called_args = mock_run.call_args[0][0]
+        prompt = called_args[called_args.index("-p") + 1]
+        self.assertIn("range breakout", prompt)
+
+    def test_nonzero_exit_raises_with_stderr(self) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="authentication failed",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                expand_concept_description_via_claude_code(
+                    "range breakout", command=["claude"], timeout_seconds=30,
+                )
+            self.assertIn("authentication failed", str(ctx.exception))
+
+    def test_empty_response_raises(self) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="   \n", stderr="",
+            )
+            with self.assertRaises(ValueError):
+                expand_concept_description_via_claude_code(
+                    "range breakout", command=["claude"], timeout_seconds=30,
+                )
+
+    def test_timeout_raises_clearly(self) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=30)
+            with self.assertRaises(ValueError) as ctx:
+                expand_concept_description_via_claude_code(
+                    "range breakout", command=["claude"], timeout_seconds=30,
+                )
+            self.assertIn("30", str(ctx.exception))
+
+
 class ConceptGenerationManagerTests(unittest.IsolatedAsyncioTestCase):
     # start_generate_job schedules its background work via asyncio.create_
     # task (see refinement.run_scan_job), which requires a running event
@@ -178,6 +254,43 @@ class ConceptGenerationManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_job_id_returns_none(self) -> None:
         manager, _root = self._setup()
         self.assertIsNone(manager.generate_job_status("no-such-job"))
+
+    async def test_expand_description_job_round_trip(self) -> None:
+        manager, _root = self._setup()
+        with patch(
+            "polymarket_btc.data_collection.control.concept_generation.expand_concept_description_via_claude_code",
+        ) as mock_expand:
+            mock_expand.return_value = "Une description complète du concept."
+            job = manager.start_expand_description_job(short_text="range breakout")
+            for _ in range(100):
+                status = manager.expand_description_job_status(job.job_id)
+                if status["done"]:
+                    break
+                await asyncio.sleep(0.02)
+            else:
+                self.fail("job never completed")
+        self.assertIsNone(status["error"])
+        self.assertEqual(status["result"]["description"], "Une description complète du concept.")
+
+    async def test_expand_description_job_error_surfaces_through_status(self) -> None:
+        manager, _root = self._setup()
+        with patch(
+            "polymarket_btc.data_collection.control.concept_generation.expand_concept_description_via_claude_code",
+        ) as mock_expand:
+            mock_expand.side_effect = ValueError("Claude Code a échoué")
+            job = manager.start_expand_description_job(short_text="range breakout")
+            for _ in range(100):
+                status = manager.expand_description_job_status(job.job_id)
+                if status["done"]:
+                    break
+                await asyncio.sleep(0.02)
+            else:
+                self.fail("job never completed")
+        self.assertIn("échoué", status["error"])
+
+    async def test_expand_description_unknown_job_id_returns_none(self) -> None:
+        manager, _root = self._setup()
+        self.assertIsNone(manager.expand_description_job_status("no-such-job"))
 
 
 if __name__ == "__main__":

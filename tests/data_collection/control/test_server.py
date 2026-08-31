@@ -1715,6 +1715,57 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("404 Not Found", head)
 
+    async def test_concept_prompt_expand_description_missing_text_is_400(self) -> None:
+        head, _body = await self._request(
+            "POST", "/api/concept-prompt/expand-description", json_body={},
+        )
+        self.assertIn("400 Bad Request", head)
+
+    async def test_concept_prompt_expand_description_blank_text_is_400(self) -> None:
+        head, _body = await self._request(
+            "POST", "/api/concept-prompt/expand-description", json_body={"text": "   "},
+        )
+        self.assertIn("400 Bad Request", head)
+
+    async def test_concept_prompt_expand_description_success_round_trip(self) -> None:
+        with patch(
+            "polymarket_btc.data_collection.control.concept_generation.expand_concept_description_via_claude_code",
+        ) as mock_expand:
+            mock_expand.return_value = "Une description complète du range breakout."
+            head, body = await self._request(
+                "POST", "/api/concept-prompt/expand-description", json_body={"text": "range breakout"},
+            )
+            self.assertIn("200 OK", head)
+            job_id = body["job_id"]
+            status = None
+            for _ in range(200):
+                _head, status = await self._request(
+                    "GET", f"/api/concept-prompt/expand-description-status?job_id={job_id}",
+                )
+                if status["done"]:
+                    break
+                await asyncio.sleep(0.02)
+        self.assertTrue(status["done"])
+        self.assertIsNone(status["error"])
+        self.assertEqual(status["result"]["description"], "Une description complète du range breakout.")
+
+    async def test_concept_prompt_expand_description_status_unknown_job_is_404(self) -> None:
+        head, _body = await self._request(
+            "GET", "/api/concept-prompt/expand-description-status?job_id=no-such-job",
+        )
+        self.assertIn("404 Not Found", head)
+
+    async def test_concept_prompt_expand_description_status_missing_job_id_is_400(self) -> None:
+        head, _body = await self._request("GET", "/api/concept-prompt/expand-description-status")
+        self.assertIn("400 Bad Request", head)
+
+    async def test_concept_prompt_expand_description_not_configured_is_404(self) -> None:
+        self.server.concept_generation = None
+        head, _body = await self._request(
+            "POST", "/api/concept-prompt/expand-description", json_body={"text": "range breakout"},
+        )
+        self.assertIn("404 Not Found", head)
+
 
 if __name__ == "__main__":
     unittest.main()
