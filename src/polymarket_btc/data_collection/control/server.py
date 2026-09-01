@@ -299,6 +299,19 @@ class ControlPanelServer:
             )
         except ValueError as exc:
             return self._error("400 Bad Request", str(exc))
+        # A no-op no-progress-info-lost best-effort: if the prompt doc is
+        # unreadable, auto-refine simply doesn't fire this time -- the
+        # label itself must never fail because of it, and try_claim_
+        # auto_refine hasn't been called yet at this point, so this is
+        # not a lost attempt, just a deferred one (retried on next label).
+        if self.concept_prompt_doc_path is not None:
+            try:
+                template = self.concept_prompt_doc_path.read_text(encoding="utf-8")
+                job = self.concept_feedback.start_auto_refine_job(concept_id=concept_id, template=template)
+                if job is not None:
+                    result["auto_refine_job_id"] = job.job_id
+            except OSError:
+                pass
         return self._json(result)
 
     def _concept_refine_prompt(self, body: bytes) -> bytes:
@@ -391,6 +404,16 @@ class ControlPanelServer:
             )
         except ValueError as exc:
             return self._error("400 Bad Request", str(exc))
+        if self.microsystem_prompt_doc_path is not None:
+            try:
+                template = self.microsystem_prompt_doc_path.read_text(encoding="utf-8")
+                job = self.microsystem_feedback.start_auto_refine_job(
+                    microsystem_id=microsystem_id, template=template,
+                )
+                if job is not None:
+                    result["auto_refine_job_id"] = job.job_id
+            except OSError:
+                pass
         return self._json(result)
 
     def _microsystem_refine_prompt(self, body: bytes) -> bytes:
@@ -485,6 +508,14 @@ class ControlPanelServer:
             )
         except ValueError as exc:
             return self._error("400 Bad Request", str(exc))
+        if self.filter_prompt_doc_path is not None:
+            try:
+                template = self.filter_prompt_doc_path.read_text(encoding="utf-8")
+                job = self.filter_feedback.start_auto_refine_job(strategy_name=strategy_name, template=template)
+                if job is not None:
+                    result["auto_refine_job_id"] = job.job_id
+            except OSError:
+                pass
         return self._json(result)
 
     def _filter_refine_prompt(self, body: bytes) -> bytes:

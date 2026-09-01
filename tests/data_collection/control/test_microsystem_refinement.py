@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 import json
@@ -5,6 +6,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from polymarket_btc.data_collection.control import refinement
 from polymarket_btc.data_collection.control.microsystem_refinement import MicrosystemRefinementManager
@@ -150,7 +152,7 @@ def _write_manifest(run_dir: Path, *, sources: list[str], start_ts: float, end_t
 class _RefinementTestBase(unittest.TestCase):
     def _setup(
         self, microsystem_source: str, *, concept_source: str | None = _ZONE_CONCEPT,
-        microsystem_filename: str = "test_micro.py",
+        microsystem_filename: str = "test_micro.py", claude_code_command: list[str] | None = None,
     ) -> MicrosystemRefinementManager:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -170,7 +172,9 @@ class _RefinementTestBase(unittest.TestCase):
             microsystems_dir=microsystems_dir, execution_dir=root / "execution_profiles",
             management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
-        return MicrosystemRefinementManager(feedback_dir=root / "microsystem_feedback", runs=runs)
+        return MicrosystemRefinementManager(
+            feedback_dir=root / "microsystem_feedback", runs=runs, claude_code_command=claude_code_command,
+        )
 
 
 class ScanSetupDetectionTests(_RefinementTestBase):
@@ -377,6 +381,97 @@ class GatingAndPromptTests(_RefinementTestBase):
         self.assertIn("TEMPLATE", prompt)
         self.assertIn("nuance manquée numéro 0", prompt)
         self.assertIn("MICROSYSTEM_INFO", prompt)  # embeds the microsystem's own current source
+
+
+class AutoRefineJobTests(_RefinementTestBase, unittest.IsolatedAsyncioTestCase):
+    # See test_concept_refinement.py's AutoRefineJobTests -- identical
+    # mechanism, mirrored here for microsystem_id.
+
+    def _setup_eligible(self) -> None:
+        self.manager = self._setup(_SETUP_MICROSYSTEM, claude_code_command=["claude"])
+        run_dir = self.collections_dir / "run1"
+        candles = []
+        t = 0.0
+        for i in range(25):
+            candles.append({"timestamp": t, "open": 100, "high": 101, "low": 99, "close": 99})
+            t += 60.0
+            candles.append({"timestamp": t, "open": 99, "high": 103 + i, "low": 99, "close": 102})
+            t += 60.0
+        _write_kline_events(run_dir, candles)
+        _write_manifest(run_dir, sources=["binance_futures_kline"], start_ts=-60, end_ts=t + 60)
+        self.manager.scan("test_micro")
+
+    def _label(self, count: int, no_count: int) -> None:
+        for i in range(count):
+            instance = self.manager.next_instance(microsystem_id="test_micro")["instance"]
+            label, note = ("non", f"nuance manquée numéro {i}") if i < no_count else ("oui", "")
+            self.manager.label(
+                microsystem_id="test_micro", shape=instance["shape"], node=instance["node"],
+                label=label, note=note,
+            )
+
+    async def _wait_for_done(self, job) -> dict[str, object]:
+        for _ in range(100):
+            status = refinement.scan_job_status(self.manager.jobs, job.job_id)
+            if status["done"]:
+                return status
+            await asyncio.sleep(0.02)
+        self.fail("job never completed")
+
+    def test_returns_none_below_eligibility(self) -> None:
+        self._setup_eligible()
+        self._label(MIN_TOTAL_FOR_PROMPT - 1, no_count=1)
+        self.assertIsNone(self.manager.start_auto_refine_job(microsystem_id="test_micro", template="TEMPLATE"))
+
+    async def test_fires_once_at_eligibility_and_imports_auto_suffixed_file(self) -> None:
+        self._setup_eligible()
+        self._label(MIN_TOTAL_FOR_PROMPT - 1, no_count=1)
+        well_formed_content = "MICROSYSTEM_INFO = {}\n"
+        with patch(
+            "polymarket_btc.data_collection.control.microsystem_refinement.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {"filename": "test_micro.py", "content": well_formed_content}
+            instance = self.manager.next_instance(microsystem_id="test_micro")["instance"]
+            self.manager.label(
+                microsystem_id="test_micro", shape=instance["shape"], node=instance["node"], label="oui",
+            )
+            job = self.manager.start_auto_refine_job(microsystem_id="test_micro", template="TEMPLATE")
+            self.assertIsNotNone(job)
+            status = await self._wait_for_done(job)
+            self.assertIsNone(status["error"])
+            self.assertEqual(status["result"]["filename"], "test_micro_auto.py")
+            self.assertTrue((self.manager.runs.microsystems_dir / "test_micro_auto.py").is_file())
+
+            mock_generate.reset_mock()
+            instance = self.manager.next_instance(microsystem_id="test_micro")["instance"]
+            self.manager.label(
+                microsystem_id="test_micro", shape=instance["shape"], node=instance["node"], label="oui",
+            )
+            second_job = self.manager.start_auto_refine_job(microsystem_id="test_micro", template="TEMPLATE")
+            self.assertIsNone(second_job)
+            mock_generate.assert_not_called()
+
+    async def test_failure_releases_claim_so_the_next_label_retries(self) -> None:
+        self._setup_eligible()
+        self._label(MIN_TOTAL_FOR_PROMPT - 1, no_count=1)
+        with patch(
+            "polymarket_btc.data_collection.control.microsystem_refinement.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.side_effect = ValueError("Claude Code a échoué")
+            instance = self.manager.next_instance(microsystem_id="test_micro")["instance"]
+            self.manager.label(
+                microsystem_id="test_micro", shape=instance["shape"], node=instance["node"], label="oui",
+            )
+            job = self.manager.start_auto_refine_job(microsystem_id="test_micro", template="TEMPLATE")
+            status = await self._wait_for_done(job)
+            self.assertIn("échoué", status["error"])
+
+            mock_generate.side_effect = None
+            mock_generate.return_value = {"filename": "test_micro.py", "content": "MICROSYSTEM_INFO = {}\n"}
+            retry_job = self.manager.start_auto_refine_job(microsystem_id="test_micro", template="TEMPLATE")
+            self.assertIsNotNone(retry_job)
+            retry_status = await self._wait_for_done(retry_job)
+            self.assertIsNone(retry_status["error"])
 
 
 if __name__ == "__main__":

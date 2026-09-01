@@ -13,15 +13,19 @@ key) -- that concern still applies and is still avoided here. This uses
 the user's own already-paid-for subscription via Claude Code's own CLI,
 confirmed live by the user (a subscription-authenticated `claude -p` call
 showed up as normal subscription usage in their account, not separate API
-billing) before any of this was built. Scoped to concept *creation* only
-(a pilot) -- concept_refinement.py's own "perfectionner" flow, and every
-other create/refine prompt in this app, is untouched; if this pilot works
-out, the same mechanism can extend to those later.
+billing) before any of this was built. Started as a pilot scoped to
+concept *creation* only -- `generate_concept_via_claude_code` is generic
+(subprocess call + FILENAME:/code-block parsing, nothing concept-specific
+about its behavior despite the name/module), so `concept_refinement.py`,
+`microsystem_refinement.py`, and `strategy_filter_refinement.py` now reuse
+it too, for their own auto-perfectionnement (see `auto_suffixed_filename`
+below, and each manager's own `start_auto_refine_job`).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 import re
 import subprocess
 
@@ -54,6 +58,19 @@ def _parse_claude_code_response(stdout: str) -> tuple[str, str]:
             "(essaie le prompt manuel ci-dessus à la place)"
         )
     return filename_match.group(1).strip(), code_match.group(1).strip() + "\n"
+
+
+def auto_suffixed_filename(filename: str) -> str:
+    """Used by every auto-perfectionnement flow (concept/microsystem/
+    filter): never trust the model to avoid colliding with the original
+    file it was asked to improve -- always rewrite the returned filename
+    with an `_auto` suffix before import, regardless of what Claude Code
+    itself returned. Strips any directory component; idempotent if the
+    model already picked an `_auto`-suffixed name on its own."""
+    stem = Path(filename).name.removesuffix(".py")
+    if not stem.endswith("_auto"):
+        stem += "_auto"
+    return f"{stem}.py"
 
 
 def generate_concept_via_claude_code(
@@ -178,5 +195,6 @@ class ConceptGenerationManager:
 
 
 __all__ = [
-    "ConceptGenerationManager", "expand_concept_description_via_claude_code", "generate_concept_via_claude_code",
+    "ConceptGenerationManager", "auto_suffixed_filename", "expand_concept_description_via_claude_code",
+    "generate_concept_via_claude_code",
 ]

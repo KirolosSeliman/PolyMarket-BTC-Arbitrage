@@ -253,6 +253,34 @@ def pool_cache_path(feedback_dir: Path, owner_id: str) -> Path:
     return feedback_dir / owner_id / "pool_cache.json"
 
 
+def auto_refine_marker_path(feedback_dir: Path, owner_id: str) -> Path:
+    return feedback_dir / owner_id / "auto_refine_triggered.marker"
+
+
+def try_claim_auto_refine(feedback_dir: Path, owner_id: str) -> bool:
+    """True exactly once per owner_id -- creates the marker file (O_EXCL)
+    and returns True the first time; a later call while it still exists
+    returns False. The single asyncio event loop with no `await` inside a
+    label handler already makes this race-free in practice; O_EXCL is
+    cheap insurance, not a fix for a real race."""
+    path = auto_refine_marker_path(feedback_dir, owner_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.open("x", encoding="utf-8").close()
+        return True
+    except FileExistsError:
+        return False
+
+
+def release_auto_refine_claim(feedback_dir: Path, owner_id: str) -> None:
+    """Called when a claimed auto-refine job fails (Claude Code error,
+    timeout, unparseable response) -- undoes try_claim_auto_refine so the
+    next label (the eligibility threshold is already met, so this is
+    immediate) retries once more, instead of a transient failure silently
+    disabling the one-shot trigger forever."""
+    auto_refine_marker_path(feedback_dir, owner_id).unlink(missing_ok=True)
+
+
 def read_labels(feedback_dir: Path, owner_id: str) -> list[dict[str, object]]:
     path = labels_path(feedback_dir, owner_id)
     if not path.is_file():
@@ -449,9 +477,10 @@ def scan_job_status(jobs: dict[str, ScanJob], job_id: str) -> dict[str, object] 
 __all__ = [
     "MIN_NO_FOR_PROMPT", "MIN_TOTAL_FOR_PROMPT", "NEXT_WINDOW_AFTER_SECONDS",
     "NEXT_WINDOW_BEFORE_SECONDS", "NEXT_WINDOW_MAX_RECORDS", "SCAN_WINDOW_RECORDS",
-    "ScanJob", "append_label", "build_prompt", "empty_pool_cache", "find_setup_candidates",
-    "instance_key", "iso_to_ts", "key_instrument", "labels_path", "load_pool_cache",
-    "looks_like_level", "looks_like_setup_entry", "looks_like_zone", "noop_log",
-    "pool_cache_path", "progress", "read_labels", "round_value", "run_scan_job",
-    "scan_job_status", "trigger_timestamp", "walk_for_annotations", "write_pool_cache",
+    "ScanJob", "append_label", "auto_refine_marker_path", "build_prompt", "empty_pool_cache",
+    "find_setup_candidates", "instance_key", "iso_to_ts", "key_instrument", "labels_path",
+    "load_pool_cache", "looks_like_level", "looks_like_setup_entry", "looks_like_zone", "noop_log",
+    "pool_cache_path", "progress", "read_labels", "release_auto_refine_claim", "round_value",
+    "run_scan_job", "scan_job_status", "trigger_timestamp", "try_claim_auto_refine",
+    "walk_for_annotations", "write_pool_cache",
 ]

@@ -33,6 +33,7 @@ import random
 
 from . import refinement
 from .backtest_data import combined_coverage, narrowest_key, read_records
+from .concept_generation import auto_suffixed_filename, generate_concept_via_claude_code
 from .concepts import ConceptContext, ConceptInfo, discover_concepts
 from .config_schema import resolve_config
 from .microsystems import MicrosystemContext, MicrosystemInfo, discover_microsystems
@@ -44,6 +45,8 @@ class MicrosystemRefinementManager:
     feedback_dir: Path
     runs: CollectionRunManager
     jobs: dict[str, refinement.ScanJob] = field(default_factory=dict)
+    claude_code_command: list[str] | None = None
+    claude_code_timeout_seconds: float = 600.0
 
     def _microsystem_info(self, microsystem_id: str) -> MicrosystemInfo:
         for info in discover_microsystems(self.runs.microsystems_dir):
@@ -246,6 +249,30 @@ class MicrosystemRefinementManager:
     def build_prompt(self, *, microsystem_id: str, template: str) -> str:
         source = self.runs.read_microsystem_source(microsystem_id)["content"]
         return refinement.build_prompt(self.feedback_dir, microsystem_id, template=template, source=source)
+
+    def start_auto_refine_job(self, *, microsystem_id: str, template: str) -> refinement.ScanJob | None:
+        """See ConceptRefinementManager.start_auto_refine_job -- identical
+        mechanism, fires exactly once per microsystem_id."""
+        if self.claude_code_command is None:
+            return None
+        if not self.progress(microsystem_id=microsystem_id)["eligible_for_prompt"]:
+            return None
+        if not refinement.try_claim_auto_refine(self.feedback_dir, microsystem_id):
+            return None
+        prompt = self.build_prompt(microsystem_id=microsystem_id, template=template)
+
+        def _run(_on_progress) -> dict[str, object]:
+            try:
+                generated = generate_concept_via_claude_code(
+                    prompt, command=self.claude_code_command, timeout_seconds=self.claude_code_timeout_seconds,
+                )
+                filename = auto_suffixed_filename(generated["filename"])
+                return self.runs.import_microsystem_file(filename, generated["content"], overwrite=False)
+            except Exception:
+                refinement.release_auto_refine_claim(self.feedback_dir, microsystem_id)
+                raise
+
+        return refinement.run_scan_job(self.jobs, _run, name_prefix="microsystem-auto-refine-job")
 
 
 __all__ = ["MicrosystemRefinementManager"]

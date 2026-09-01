@@ -47,6 +47,7 @@ import random
 
 from . import refinement
 from .backtest_data import combined_coverage, narrowest_key, read_records
+from .concept_generation import auto_suffixed_filename, generate_concept_via_claude_code
 from .concepts import ConceptContext, ConceptInfo, discover_concepts
 from .config_schema import resolve_config
 from .runs import CollectionRunManager
@@ -57,6 +58,12 @@ class ConceptRefinementManager:
     feedback_dir: Path
     runs: CollectionRunManager
     jobs: dict[str, refinement.ScanJob] = field(default_factory=dict)
+    # None (the default) means auto-perfectionnement is disabled -- kept
+    # backward compatible with every test/caller that constructs this
+    # manager without these two, same as ConceptGenerationManager's own
+    # command/timeout_seconds.
+    claude_code_command: list[str] | None = None
+    claude_code_timeout_seconds: float = 600.0
 
     def _concept_info(self, concept_id: str) -> ConceptInfo:
         for info in discover_concepts(self.runs.concepts_dir):
@@ -247,6 +254,35 @@ class ConceptRefinementManager:
     def build_prompt(self, *, concept_id: str, template: str) -> str:
         source = self.runs.read_concept_source(concept_id)["content"]
         return refinement.build_prompt(self.feedback_dir, concept_id, template=template, source=source)
+
+    def start_auto_refine_job(self, *, concept_id: str, template: str) -> refinement.ScanJob | None:
+        """Fires exactly once per concept_id, the first time labeling
+        crosses refinement.py's own eligibility gate -- see
+        refinement.try_claim_auto_refine. Improves the concept via Claude
+        Code (same subprocess call the creation pilot uses) and imports
+        the result as a NEW, `_auto`-suffixed file (never overwrites the
+        original -- a real strategy may already depend on it), so it just
+        shows up in Builder like anything else, adopted manually."""
+        if self.claude_code_command is None:
+            return None
+        if not self.progress(concept_id=concept_id)["eligible_for_prompt"]:
+            return None
+        if not refinement.try_claim_auto_refine(self.feedback_dir, concept_id):
+            return None
+        prompt = self.build_prompt(concept_id=concept_id, template=template)
+
+        def _run(_on_progress) -> dict[str, object]:
+            try:
+                generated = generate_concept_via_claude_code(
+                    prompt, command=self.claude_code_command, timeout_seconds=self.claude_code_timeout_seconds,
+                )
+                filename = auto_suffixed_filename(generated["filename"])
+                return self.runs.import_concept_file(filename, generated["content"], overwrite=False)
+            except Exception:
+                refinement.release_auto_refine_claim(self.feedback_dir, concept_id)
+                raise
+
+        return refinement.run_scan_job(self.jobs, _run, name_prefix="concept-auto-refine-job")
 
 
 __all__ = ["ConceptRefinementManager"]

@@ -1139,6 +1139,71 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("200 OK", head)
         self.assertIn("il manque la nuance X", prompt_body["content"])
 
+    async def test_concept_refine_label_triggers_auto_refine_job_exactly_once(self) -> None:
+        # claude_code_command defaults to None (disabled) on the shared
+        # fixture's concept_feedback -- enable it in place for this test
+        # only, without losing the manager's own feedback_dir/state.
+        self.server.concept_feedback.claude_code_command = ["claude"]
+        self._write_zone_concept_fixture(up_candle_count=12)
+        await self._run_scan_and_wait("zone_route_test")
+        for _ in range(9):
+            _head, next_body = await self._request(
+                "POST", "/api/concept-refine/next", json_body={"concept_id": "zone_route_test"},
+            )
+            instance = next_body["instance"]
+            head, label_body = await self._request(
+                "POST", "/api/concept-refine/label",
+                json_body={
+                    "concept_id": "zone_route_test", "shape": instance["shape"], "node": instance["node"],
+                    "trigger_ts": instance["trigger_ts"], "label": "oui",
+                },
+            )
+            self.assertNotIn("auto_refine_job_id", label_body)  # not eligible yet
+
+        with patch(
+            "polymarket_btc.data_collection.control.concept_refinement.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {"filename": "zone_route_test.py", "content": "CONCEPT_INFO = {}\n"}
+            _head, next_body = await self._request(
+                "POST", "/api/concept-refine/next", json_body={"concept_id": "zone_route_test"},
+            )
+            instance = next_body["instance"]
+            head, label_body = await self._request(
+                "POST", "/api/concept-refine/label",
+                json_body={
+                    "concept_id": "zone_route_test", "shape": instance["shape"], "node": instance["node"],
+                    "trigger_ts": instance["trigger_ts"], "label": "non", "note": "il manque la nuance X",
+                },
+            )
+            self.assertIn("200 OK", head)
+            job_id = label_body["auto_refine_job_id"]
+            status = None
+            for _ in range(200):
+                _head, status = await self._request("GET", f"/api/concept-refine/scan-status?job_id={job_id}")
+                if status["done"]:
+                    break
+                await asyncio.sleep(0.02)
+            self.assertTrue(status["done"])
+            self.assertIsNone(status["error"])
+            self.assertEqual(status["result"]["filename"], "zone_route_test_auto.py")
+            self.assertTrue((self.concepts_dir / "zone_route_test_auto.py").is_file())
+
+            # A further "oui" label, still eligible, must not refire.
+            mock_generate.reset_mock()
+            _head, next_body = await self._request(
+                "POST", "/api/concept-refine/next", json_body={"concept_id": "zone_route_test"},
+            )
+            instance = next_body["instance"]
+            _head, label_body = await self._request(
+                "POST", "/api/concept-refine/label",
+                json_body={
+                    "concept_id": "zone_route_test", "shape": instance["shape"], "node": instance["node"],
+                    "trigger_ts": instance["trigger_ts"], "label": "oui",
+                },
+            )
+            self.assertNotIn("auto_refine_job_id", label_body)
+            mock_generate.assert_not_called()
+
     async def test_concept_refine_label_non_without_note_is_400(self) -> None:
         self._write_zone_concept_fixture(up_candle_count=1)
         await self._run_scan_and_wait("zone_route_test")
@@ -1309,6 +1374,53 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("200 OK", head)
         self.assertIn("il manque la nuance Y", prompt_body["content"])
+
+    async def test_microsystem_refine_label_triggers_auto_refine_job(self) -> None:
+        # Lighter than the concept version above -- the underlying manager
+        # logic is fully covered in test_microsystem_refinement.py; this
+        # only confirms the server wiring (label route -> job id -> status
+        # route) actually connects for this flow too.
+        self.server.microsystem_feedback.claude_code_command = ["claude"]
+        self._write_setup_microsystem_fixture(up_candle_count=12)
+        await self._run_microsystem_scan_and_wait("setup_route_test")
+        for _ in range(9):
+            _head, next_body = await self._request(
+                "POST", "/api/microsystem-refine/next", json_body={"microsystem_id": "setup_route_test"},
+            )
+            instance = next_body["instance"]
+            await self._request(
+                "POST", "/api/microsystem-refine/label",
+                json_body={
+                    "microsystem_id": "setup_route_test", "shape": instance["shape"], "node": instance["node"],
+                    "trigger_ts": instance["trigger_ts"], "label": "oui",
+                },
+            )
+        with patch(
+            "polymarket_btc.data_collection.control.microsystem_refinement.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {"filename": "setup_route_test.py", "content": "MICROSYSTEM_INFO = {}\n"}
+            _head, next_body = await self._request(
+                "POST", "/api/microsystem-refine/next", json_body={"microsystem_id": "setup_route_test"},
+            )
+            instance = next_body["instance"]
+            _head, label_body = await self._request(
+                "POST", "/api/microsystem-refine/label",
+                json_body={
+                    "microsystem_id": "setup_route_test", "shape": instance["shape"], "node": instance["node"],
+                    "trigger_ts": instance["trigger_ts"], "label": "non", "note": "il manque la nuance Y",
+                },
+            )
+            job_id = label_body["auto_refine_job_id"]
+            status = None
+            for _ in range(200):
+                _head, status = await self._request("GET", f"/api/microsystem-refine/scan-status?job_id={job_id}")
+                if status["done"]:
+                    break
+                await asyncio.sleep(0.02)
+            self.assertTrue(status["done"])
+            self.assertIsNone(status["error"])
+            self.assertEqual(status["result"]["filename"], "setup_route_test_auto.py")
+            self.assertTrue((self.microsystems_dir / "setup_route_test_auto.py").is_file())
 
     async def test_microsystem_refine_label_non_without_note_is_400(self) -> None:
         self._write_setup_microsystem_fixture(up_candle_count=1)
@@ -1507,6 +1619,53 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         # No filter configured for this strategy yet -- confirms the
         # "build one from nothing" placeholder path, not a source read.
         self.assertIn("Aucun filtre", prompt_body["content"])
+
+    async def test_filter_refine_label_triggers_auto_refine_job(self) -> None:
+        # Lighter than the concept version above -- see that test's own
+        # comment; this only confirms the server wiring for this flow too.
+        self.server.filter_feedback.claude_code_command = ["claude"]
+        self._write_filter_refine_fixture(candle_count=30)
+        await self._run_filter_scan_and_wait("filter_route_test")
+        for _ in range(9):
+            _head, next_body = await self._request(
+                "POST", "/api/strategy-filter-refine/next", json_body={"strategy_name": "filter_route_test"},
+            )
+            instance = next_body["instance"]
+            await self._request(
+                "POST", "/api/strategy-filter-refine/label",
+                json_body={
+                    "strategy_name": "filter_route_test", "shape": instance["shape"], "node": instance["node"],
+                    "trigger_ts": instance["trigger_ts"], "label": "oui",
+                },
+            )
+        with patch(
+            "polymarket_btc.data_collection.control.strategy_filter_refinement.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {"filename": "new_filter.py", "content": "FILTER_INFO = {}\n"}
+            _head, next_body = await self._request(
+                "POST", "/api/strategy-filter-refine/next", json_body={"strategy_name": "filter_route_test"},
+            )
+            instance = next_body["instance"]
+            _head, label_body = await self._request(
+                "POST", "/api/strategy-filter-refine/label",
+                json_body={
+                    "strategy_name": "filter_route_test", "shape": instance["shape"], "node": instance["node"],
+                    "trigger_ts": instance["trigger_ts"], "label": "non", "note": "ce trade n'aurait pas dû être pris",
+                },
+            )
+            job_id = label_body["auto_refine_job_id"]
+            status = None
+            for _ in range(200):
+                _head, status = await self._request(
+                    "GET", f"/api/strategy-filter-refine/scan-status?job_id={job_id}",
+                )
+                if status["done"]:
+                    break
+                await asyncio.sleep(0.02)
+            self.assertTrue(status["done"])
+            self.assertIsNone(status["error"])
+            self.assertEqual(status["result"]["filename"], "new_filter_auto.py")
+            self.assertTrue((self.filter_dir / "new_filter_auto.py").is_file())
 
     async def test_filter_refine_label_non_without_note_is_400(self) -> None:
         self._write_filter_refine_fixture(candle_count=4)

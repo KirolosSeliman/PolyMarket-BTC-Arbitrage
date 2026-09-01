@@ -201,6 +201,33 @@ class AppendLabelValidationTests(unittest.TestCase):
             refinement.append_label(self.feedback_dir, "micro_1", shape="nonsense", node={}, label="oui")
 
 
+class AutoRefineClaimTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.feedback_dir = Path(self._tmp.name)
+
+    def test_first_claim_succeeds_and_creates_marker(self) -> None:
+        self.assertTrue(refinement.try_claim_auto_refine(self.feedback_dir, "concept_1"))
+        self.assertTrue(refinement.auto_refine_marker_path(self.feedback_dir, "concept_1").is_file())
+
+    def test_second_claim_for_same_owner_fails(self) -> None:
+        self.assertTrue(refinement.try_claim_auto_refine(self.feedback_dir, "concept_1"))
+        self.assertFalse(refinement.try_claim_auto_refine(self.feedback_dir, "concept_1"))
+
+    def test_different_owners_claim_independently(self) -> None:
+        self.assertTrue(refinement.try_claim_auto_refine(self.feedback_dir, "concept_1"))
+        self.assertTrue(refinement.try_claim_auto_refine(self.feedback_dir, "concept_2"))
+
+    def test_release_then_reclaim_succeeds(self) -> None:
+        refinement.try_claim_auto_refine(self.feedback_dir, "concept_1")
+        refinement.release_auto_refine_claim(self.feedback_dir, "concept_1")
+        self.assertTrue(refinement.try_claim_auto_refine(self.feedback_dir, "concept_1"))
+
+    def test_release_without_a_prior_claim_is_a_noop(self) -> None:
+        refinement.release_auto_refine_claim(self.feedback_dir, "never_claimed")  # must not raise
+
+
 class ScanJobTests(unittest.TestCase):
     def test_run_scan_job_and_status_round_trip(self) -> None:
         import asyncio

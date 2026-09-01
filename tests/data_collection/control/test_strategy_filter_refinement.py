@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 import json
@@ -5,8 +6,10 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from polymarket_btc.data_collection.control import refinement
+from polymarket_btc.data_collection.control.refinement import MIN_TOTAL_FOR_PROMPT
 from polymarket_btc.data_collection.control.runs import CollectionRunManager
 from polymarket_btc.data_collection.control.strategies import StrategyManager
 from polymarket_btc.data_collection.control.strategy_filter_refinement import StrategyFilterRefinementManager
@@ -97,7 +100,9 @@ def _write_manifest(run_dir: Path, *, start_ts: float, end_ts: float) -> None:
 
 
 class _RefinementTestBase(unittest.TestCase):
-    def _setup(self, *, with_filter: bool = False) -> tuple[StrategyFilterRefinementManager, Path]:
+    def _setup(
+        self, *, with_filter: bool = False, claude_code_command: list[str] | None = None,
+    ) -> tuple[StrategyFilterRefinementManager, Path]:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         root = Path(self._tmp.name)
@@ -130,6 +135,7 @@ class _RefinementTestBase(unittest.TestCase):
         )
         manager = StrategyFilterRefinementManager(
             feedback_dir=root / "filter_feedback", runs=runs, strategies=strategies,
+            claude_code_command=claude_code_command,
         )
         return manager, root
 
@@ -317,6 +323,91 @@ class BuildPromptTests(_RefinementTestBase):
         prompt = manager.build_prompt(strategy_name="test_strategy", template="TEMPLATE")
         self.assertIn("FILTER_INFO", prompt)
         self.assertNotIn("Aucun filtre", prompt)
+
+
+class AutoRefineJobTests(_RefinementTestBase, unittest.IsolatedAsyncioTestCase):
+    # See test_concept_refinement.py's AutoRefineJobTests -- identical
+    # mechanism, mirrored here for strategy_name. Uses with_filter=False
+    # (build_prompt's placeholder-source path -- already exercised by
+    # BuildPromptTests above) since it needs no filter_id plumbing.
+
+    def _setup_eligible(self) -> tuple[StrategyFilterRefinementManager, Path]:
+        manager, root = self._setup(with_filter=False, claude_code_command=["claude"])
+        self._write_candles(root, 10)
+        manager.scan("test_strategy")
+        return manager, root
+
+    def _label(self, manager: StrategyFilterRefinementManager, count: int, no_count: int) -> None:
+        labeled = 0
+        for i in range(count):
+            instance = manager.next_instance(strategy_name="test_strategy")["instance"]
+            if instance is None:
+                break
+            label, note = ("non", f"nuance manquée numéro {i}") if i < no_count else ("oui", "")
+            manager.label(
+                strategy_name="test_strategy", shape=instance["shape"], node=instance["node"],
+                label=label, note=note,
+            )
+            labeled += 1
+        if labeled < count:
+            self.skipTest("not enough real trade candidates in this fixture to reach the prompt gate")
+
+    async def _wait_for_done(self, manager: StrategyFilterRefinementManager, job) -> dict[str, object]:
+        for _ in range(100):
+            status = refinement.scan_job_status(manager.jobs, job.job_id)
+            if status["done"]:
+                return status
+            await asyncio.sleep(0.02)
+        self.fail("job never completed")
+
+    def test_returns_none_below_eligibility(self) -> None:
+        manager, _root = self._setup_eligible()
+        self._label(manager, MIN_TOTAL_FOR_PROMPT - 1, no_count=1)
+        self.assertIsNone(manager.start_auto_refine_job(strategy_name="test_strategy", template="TEMPLATE"))
+
+    async def test_fires_once_at_eligibility_and_imports_auto_suffixed_file(self) -> None:
+        manager, root = self._setup_eligible()
+        self._label(manager, MIN_TOTAL_FOR_PROMPT - 1, no_count=1)
+        with patch(
+            "polymarket_btc.data_collection.control.strategy_filter_refinement.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {"filename": "new_filter.py", "content": "FILTER_INFO = {}\n"}
+            instance = manager.next_instance(strategy_name="test_strategy")["instance"]
+            if instance is None:
+                self.skipTest("not enough real trade candidates in this fixture to reach the prompt gate")
+            manager.label(
+                strategy_name="test_strategy", shape=instance["shape"], node=instance["node"], label="oui",
+            )
+            job = manager.start_auto_refine_job(strategy_name="test_strategy", template="TEMPLATE")
+            self.assertIsNotNone(job)
+            status = await self._wait_for_done(manager, job)
+            self.assertIsNone(status["error"])
+            self.assertEqual(status["result"]["filename"], "new_filter_auto.py")
+            self.assertTrue((root / "filter_profiles" / "new_filter_auto.py").is_file())
+
+    async def test_failure_releases_claim_so_the_next_label_retries(self) -> None:
+        manager, _root = self._setup_eligible()
+        self._label(manager, MIN_TOTAL_FOR_PROMPT - 1, no_count=1)
+        with patch(
+            "polymarket_btc.data_collection.control.strategy_filter_refinement.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.side_effect = ValueError("Claude Code a échoué")
+            instance = manager.next_instance(strategy_name="test_strategy")["instance"]
+            if instance is None:
+                self.skipTest("not enough real trade candidates in this fixture to reach the prompt gate")
+            manager.label(
+                strategy_name="test_strategy", shape=instance["shape"], node=instance["node"], label="oui",
+            )
+            job = manager.start_auto_refine_job(strategy_name="test_strategy", template="TEMPLATE")
+            status = await self._wait_for_done(manager, job)
+            self.assertIn("échoué", status["error"])
+
+            mock_generate.side_effect = None
+            mock_generate.return_value = {"filename": "new_filter.py", "content": "FILTER_INFO = {}\n"}
+            retry_job = manager.start_auto_refine_job(strategy_name="test_strategy", template="TEMPLATE")
+            self.assertIsNotNone(retry_job)
+            retry_status = await self._wait_for_done(manager, retry_job)
+            self.assertIsNone(retry_status["error"])
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 import json
@@ -5,6 +6,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from polymarket_btc.data_collection.control import refinement
 from polymarket_btc.data_collection.control.concept_refinement import ConceptRefinementManager
@@ -126,7 +128,10 @@ def _write_manifest(run_dir: Path, *, sources: list[str], start_ts: float, end_t
 
 
 class _RefinementTestBase(unittest.TestCase):
-    def _setup(self, concept_source: str, *, concept_filename: str = "test_concept.py") -> ConceptRefinementManager:
+    def _setup(
+        self, concept_source: str, *, concept_filename: str = "test_concept.py",
+        claude_code_command: list[str] | None = None,
+    ) -> ConceptRefinementManager:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         root = Path(self._tmp.name)
@@ -142,7 +147,9 @@ class _RefinementTestBase(unittest.TestCase):
             microsystems_dir=root / "microsystems", execution_dir=root / "execution_profiles",
             management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
         )
-        return ConceptRefinementManager(feedback_dir=root / "concept_feedback", runs=runs)
+        return ConceptRefinementManager(
+            feedback_dir=root / "concept_feedback", runs=runs, claude_code_command=claude_code_command,
+        )
 
 
 class ScanZoneDetectionTests(_RefinementTestBase):
@@ -362,6 +369,125 @@ class GatingAndPromptTests(_RefinementTestBase):
         prompt = self.manager.build_prompt(concept_id="test_concept", template="TEMPLATE")
         for i in range(20):
             self.assertIn(f"nuance manquée numéro {i}", prompt)
+
+
+class AutoRefineJobTests(_RefinementTestBase, unittest.IsolatedAsyncioTestCase):
+    # start_auto_refine_job schedules its background work via asyncio.
+    # create_task (see refinement.run_scan_job), which requires a running
+    # event loop -- IsolatedAsyncioTestCase, same pattern used across this
+    # app's other job-creation tests.
+
+    def _setup_eligible(self) -> None:
+        self.manager = self._setup(_ZONE_CONCEPT, claude_code_command=["claude"])
+        run_dir = self.collections_dir / "run1"
+        candles = []
+        t = 0.0
+        for i in range(25):
+            candles.append({"timestamp": t, "open": 100, "high": 101, "low": 99, "close": 99})
+            t += 60.0
+            candles.append({"timestamp": t, "open": 99, "high": 103 + i, "low": 99, "close": 102})
+            t += 60.0
+        _write_kline_events(run_dir, candles)
+        _write_manifest(run_dir, sources=["binance_futures_kline"], start_ts=-60, end_ts=t + 60)
+        self.manager.scan("test_concept")
+
+    def _label(self, count: int, no_count: int) -> None:
+        for i in range(count):
+            instance = self.manager.next_instance(concept_id="test_concept")["instance"]
+            label, note = ("non", f"nuance manquée numéro {i}") if i < no_count else ("oui", "")
+            self.manager.label(
+                concept_id="test_concept", shape=instance["shape"], node=instance["node"], label=label, note=note,
+            )
+
+    async def _wait_for_done(self, job) -> dict[str, object]:
+        for _ in range(100):
+            status = refinement.scan_job_status(self.manager.jobs, job.job_id)
+            if status["done"]:
+                return status
+            await asyncio.sleep(0.02)
+        self.fail("job never completed")
+
+    def test_returns_none_below_eligibility(self) -> None:
+        self._setup_eligible()
+        self._label(MIN_TOTAL_FOR_PROMPT - 1, no_count=1)
+        self.assertIsNone(self.manager.start_auto_refine_job(concept_id="test_concept", template="TEMPLATE"))
+
+    def test_returns_none_when_claude_code_command_not_configured(self) -> None:
+        self.manager = self._setup(_ZONE_CONCEPT)  # claude_code_command defaults to None
+        run_dir = self.collections_dir / "run1"
+        _write_kline_events(run_dir, [{"timestamp": 0.0, "open": 100, "high": 101, "low": 99, "close": 102}])
+        _write_manifest(run_dir, sources=["binance_futures_kline"], start_ts=-60, end_ts=60)
+        self.manager.scan("test_concept")
+        for i in range(MIN_TOTAL_FOR_PROMPT):
+            refinement.append_label(
+                self.manager.feedback_dir, "test_concept", shape="zone",
+                node={"direction": "bullish", "high": 1, "low": 1, "formed_at": float(i)},
+                label="non" if i == 0 else "oui", note="x" if i == 0 else "",
+            )
+        self.assertIsNone(self.manager.start_auto_refine_job(concept_id="test_concept", template="TEMPLATE"))
+
+    async def test_fires_once_at_eligibility_and_imports_auto_suffixed_file(self) -> None:
+        self._setup_eligible()
+        self._label(MIN_TOTAL_FOR_PROMPT - 1, no_count=1)  # not yet eligible
+        well_formed = (
+            "FILENAME: test_concept.py\n\n```python\n"
+            'CONCEPT_INFO = {"label": "x", "description": "y", "data_sources": ["binance_futures_kline"]}\n\n'
+            "def compute(context):\n    return {}\n```\n"
+        )
+        with patch(
+            "polymarket_btc.data_collection.control.concept_refinement.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {
+                "filename": "test_concept.py",
+                "content": well_formed.split("```python\n")[1].split("```")[0],
+            }
+            # This label crosses the threshold -- must fire.
+            instance = self.manager.next_instance(concept_id="test_concept")["instance"]
+            self.manager.label(
+                concept_id="test_concept", shape=instance["shape"], node=instance["node"],
+                label="oui",
+            )
+            job = self.manager.start_auto_refine_job(concept_id="test_concept", template="TEMPLATE")
+            self.assertIsNotNone(job)
+            status = await self._wait_for_done(job)
+            self.assertIsNone(status["error"])
+            self.assertEqual(status["result"]["filename"], "test_concept_auto.py")
+            self.assertTrue((self.concepts_dir / "test_concept_auto.py").is_file())
+            self.assertTrue((self.concepts_dir / "test_concept.py").is_file())  # original untouched
+
+            # A further label, still eligible, must NOT fire again.
+            mock_generate.reset_mock()
+            instance = self.manager.next_instance(concept_id="test_concept")["instance"]
+            self.manager.label(
+                concept_id="test_concept", shape=instance["shape"], node=instance["node"], label="oui",
+            )
+            second_job = self.manager.start_auto_refine_job(concept_id="test_concept", template="TEMPLATE")
+            self.assertIsNone(second_job)
+            mock_generate.assert_not_called()
+
+    async def test_failure_releases_claim_so_the_next_label_retries(self) -> None:
+        self._setup_eligible()
+        self._label(MIN_TOTAL_FOR_PROMPT - 1, no_count=1)
+        with patch(
+            "polymarket_btc.data_collection.control.concept_refinement.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.side_effect = ValueError("Claude Code a échoué")
+            instance = self.manager.next_instance(concept_id="test_concept")["instance"]
+            self.manager.label(
+                concept_id="test_concept", shape=instance["shape"], node=instance["node"], label="oui",
+            )
+            job = self.manager.start_auto_refine_job(concept_id="test_concept", template="TEMPLATE")
+            status = await self._wait_for_done(job)
+            self.assertIn("échoué", status["error"])
+
+            # Still eligible, and the failure released the claim -- the
+            # very next attempt must be allowed to retry.
+            mock_generate.side_effect = None
+            mock_generate.return_value = {"filename": "test_concept.py", "content": "CONCEPT_INFO = {}\n"}
+            retry_job = self.manager.start_auto_refine_job(concept_id="test_concept", template="TEMPLATE")
+            self.assertIsNotNone(retry_job)
+            retry_status = await self._wait_for_done(retry_job)
+            self.assertIsNone(retry_status["error"])
 
 
 if __name__ == "__main__":

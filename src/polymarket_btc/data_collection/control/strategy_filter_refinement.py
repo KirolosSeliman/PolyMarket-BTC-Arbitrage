@@ -53,6 +53,7 @@ import random
 from . import refinement
 from .backtest_data import read_records
 from .backtest_engine import estimate_warmup_seconds, required_concrete_keys, run_backtest
+from .concept_generation import auto_suffixed_filename, generate_concept_via_claude_code
 from .concepts import discover_concepts
 from .microsystems import discover_microsystems
 from .runs import CollectionRunManager
@@ -67,6 +68,8 @@ class StrategyFilterRefinementManager:
     runs: CollectionRunManager
     strategies: StrategyManager
     jobs: dict[str, refinement.ScanJob] = field(default_factory=dict)
+    claude_code_command: list[str] | None = None
+    claude_code_timeout_seconds: float = 600.0
 
     def scan(
         self, strategy_name: str, *, on_progress: Callable[[float], None] | None = None,
@@ -326,6 +329,33 @@ class StrategyFilterRefinementManager:
                 "# Ce prompt sert à en créer un nouveau à partir des exemples réels ci-dessous.\n"
             )
         return refinement.build_prompt(self.feedback_dir, strategy_name, template=template, source=source)
+
+    def start_auto_refine_job(self, *, strategy_name: str, template: str) -> refinement.ScanJob | None:
+        """See ConceptRefinementManager.start_auto_refine_job -- identical
+        mechanism, fires exactly once per strategy_name. If the strategy
+        has no filter configured yet, build_prompt's own placeholder
+        source means this effectively authors a first one, same as the
+        manual flow already does in that case."""
+        if self.claude_code_command is None:
+            return None
+        if not self.progress(strategy_name=strategy_name)["eligible_for_prompt"]:
+            return None
+        if not refinement.try_claim_auto_refine(self.feedback_dir, strategy_name):
+            return None
+        prompt = self.build_prompt(strategy_name=strategy_name, template=template)
+
+        def _run(_on_progress) -> dict[str, object]:
+            try:
+                generated = generate_concept_via_claude_code(
+                    prompt, command=self.claude_code_command, timeout_seconds=self.claude_code_timeout_seconds,
+                )
+                filename = auto_suffixed_filename(generated["filename"])
+                return self.runs.import_filter_profile_file(filename, generated["content"], overwrite=False)
+            except Exception:
+                refinement.release_auto_refine_claim(self.feedback_dir, strategy_name)
+                raise
+
+        return refinement.run_scan_job(self.jobs, _run, name_prefix="filter-auto-refine-job")
 
 
 __all__ = ["StrategyFilterRefinementManager"]

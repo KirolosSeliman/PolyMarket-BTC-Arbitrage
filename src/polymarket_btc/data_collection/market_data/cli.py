@@ -351,13 +351,21 @@ async def _run_control(
         management_dir=management_dir, filter_dir=filter_dir,
     )
     strategy_manager = StrategyManager(strategies_dir=strategies_dir, runs=manager)
-    concept_feedback_manager = ConceptRefinementManager(feedback_dir=concept_feedback_dir, runs=manager)
-    microsystem_feedback_manager = MicrosystemRefinementManager(feedback_dir=microsystem_feedback_dir, runs=manager)
+    claude_code_command_list = shlex.split(claude_code_command)
+    concept_feedback_manager = ConceptRefinementManager(
+        feedback_dir=concept_feedback_dir, runs=manager,
+        claude_code_command=claude_code_command_list, claude_code_timeout_seconds=claude_code_timeout_seconds,
+    )
+    microsystem_feedback_manager = MicrosystemRefinementManager(
+        feedback_dir=microsystem_feedback_dir, runs=manager,
+        claude_code_command=claude_code_command_list, claude_code_timeout_seconds=claude_code_timeout_seconds,
+    )
     filter_feedback_manager = StrategyFilterRefinementManager(
         feedback_dir=filter_feedback_dir, runs=manager, strategies=strategy_manager,
+        claude_code_command=claude_code_command_list, claude_code_timeout_seconds=claude_code_timeout_seconds,
     )
     concept_generation_manager = ConceptGenerationManager(
-        runs=manager, command=shlex.split(claude_code_command), timeout_seconds=claude_code_timeout_seconds,
+        runs=manager, command=claude_code_command_list, timeout_seconds=claude_code_timeout_seconds,
     )
     server = ControlPanelServer(
         runs=manager, strategies=strategy_manager, concept_feedback=concept_feedback_manager,
