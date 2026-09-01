@@ -112,8 +112,12 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     control.add_argument(
-        "--claude-code-timeout-seconds", type=float, default=180.0,
-        help="How long to wait for a single Claude Code concept-generation call before giving up.",
+        "--claude-code-timeout-seconds", type=float, default=600.0,
+        help=(
+            "How long to wait for a single Claude Code concept-generation call before "
+            "giving up. A real concept-generation prompt (full doc + plugin source, ~10KB+) "
+            "takes noticeably longer than a short test prompt -- 180s measured as too tight."
+        ),
     )
     status = commands.add_parser("status")
     status.add_argument("--health-file", type=Path, required=True)
