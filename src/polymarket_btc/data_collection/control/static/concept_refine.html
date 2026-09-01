@@ -154,6 +154,29 @@ button.critical { background: var(--critical); }
 "use strict";
 
 function el(id) { return document.getElementById(id); }
+function escapeAttr(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// concept_refinement.py's scan() raises a plain string ValueError when no
+// real data covers the concept's own data_sources, ending in
+// "-- limité par : <key(s)>" (see its own docstring) -- mirrors
+// backtest.html's own /collect?missing= link (same query param, same
+// comma-separated catalog-key convention) for the same underlying gap,
+// parsed back out of the message since the scan job's error is a plain
+// string, not structured JSON.
+function renderScanError(statusEl, message) {
+  const marker = "-- limité par : ";
+  const idx = message.indexOf(marker);
+  if (idx === -1) {
+    statusEl.textContent = "Échec de l'analyse : " + message;
+    return;
+  }
+  const missing = message.slice(idx + marker.length).trim();
+  const missingParam = encodeURIComponent(missing);
+  statusEl.innerHTML = `Échec de l'analyse : ${escapeAttr(message.slice(0, idx + marker.length))}<strong>${escapeAttr(missing)}</strong>. `
+    + `<a href="/collect?missing=${missingParam}">Lance une collecte</a> pour ces données avant de perfectionner.`;
+}
 
 const params = new URLSearchParams(window.location.search);
 const conceptId = params.get("id");
@@ -342,7 +365,7 @@ async function startScanThenNext() {
     if (!scanRes.ok) throw new Error(scanData.error || "échec du lancement de l'analyse");
     await pollScan(scanData.job_id);
   } catch (error) {
-    el("scan-status").textContent = "Échec de l'analyse : " + error.message;
+    renderScanError(el("scan-status"), error.message);
     return;
   }
   el("scan-panel").style.display = "none";

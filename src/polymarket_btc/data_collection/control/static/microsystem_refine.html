@@ -151,6 +151,25 @@ button.critical { background: var(--critical); }
 "use strict";
 
 function el(id) { return document.getElementById(id); }
+function escapeAttr(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// See concept_refine.html's own renderScanError -- identical mechanism,
+// mirrored here for microsystem_refinement.py's own "-- limité par : "
+// ValueError message.
+function renderScanError(statusEl, message) {
+  const marker = "-- limité par : ";
+  const idx = message.indexOf(marker);
+  if (idx === -1) {
+    statusEl.textContent = "Échec de l'analyse : " + message;
+    return;
+  }
+  const missing = message.slice(idx + marker.length).trim();
+  const missingParam = encodeURIComponent(missing);
+  statusEl.innerHTML = `Échec de l'analyse : ${escapeAttr(message.slice(0, idx + marker.length))}<strong>${escapeAttr(missing)}</strong>. `
+    + `<a href="/collect?missing=${missingParam}">Lance une collecte</a> pour ces données avant de perfectionner.`;
+}
 
 const params = new URLSearchParams(window.location.search);
 const microsystemId = params.get("id");
@@ -396,7 +415,7 @@ async function startScanThenNext() {
     if (!scanRes.ok) throw new Error(scanData.error || "échec du lancement de l'analyse");
     await pollScan(scanData.job_id);
   } catch (error) {
-    el("scan-status").textContent = "Échec de l'analyse : " + error.message;
+    renderScanError(el("scan-status"), error.message);
     return;
   }
   el("scan-panel").style.display = "none";
