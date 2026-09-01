@@ -65,6 +65,12 @@ def generate_concept_via_claude_code(
     what the prompt asks for -- and parses stdout for a FILENAME: line plus
     one fenced python code block.
 
+    stdin=DEVNULL: without it, the exact same command that completes in
+    seconds when a user runs it by hand can hang until the timeout when
+    launched from here -- the control server's own process doesn't give
+    the child a real interactive stdin, and whatever Claude Code tries to
+    read from it otherwise never gets EOF.
+
     Raises ValueError on a missing command, a timeout, a non-zero exit, or
     an unparseable response -- the same exception type _import_generic
     already maps to 400, kept consistent with every other bad-import error
@@ -73,7 +79,7 @@ def generate_concept_via_claude_code(
     try:
         result = subprocess.run(
             [*command, "-p", full_prompt, "--disallowedTools", "*"],
-            capture_output=True, text=True, timeout=timeout_seconds,
+            capture_output=True, text=True, timeout=timeout_seconds, stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
         raise ValueError(f"commande Claude Code introuvable ({command[0]!r}) : {exc}") from None
@@ -115,7 +121,7 @@ def expand_concept_description_via_claude_code(
     try:
         result = subprocess.run(
             [*command, "-p", prompt, "--permission-mode", "dontAsk", "--allowedTools", "WebSearch"],
-            capture_output=True, text=True, timeout=timeout_seconds,
+            capture_output=True, text=True, timeout=timeout_seconds, stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
         raise ValueError(f"commande Claude Code introuvable ({command[0]!r}) : {exc}") from None

@@ -76,6 +76,12 @@ class GenerateConceptViaClaudeCodeTests(unittest.TestCase):
         # shell=True must never be used -- the prompt is passed as a single
         # argv element, never interpolated into a shell string.
         self.assertNotIn("shell", mock_run.call_args[1])
+        # stdin=DEVNULL: found live -- without this, the subprocess can hang
+        # indefinitely (until the timeout) waiting on stdin when launched
+        # from the control server's own process instead of an interactive
+        # terminal, even though the exact same command completes in
+        # seconds when run by hand.
+        self.assertEqual(mock_run.call_args[1].get("stdin"), subprocess.DEVNULL)
 
     def test_multi_word_command_is_used_as_given(self) -> None:
         # e.g. ["npx", "@anthropic-ai/claude-code"] for an environment where
@@ -153,6 +159,7 @@ class ExpandConceptDescriptionViaClaudeCodeTests(unittest.TestCase):
         self.assertEqual(called_args[called_args.index("--allowedTools") + 1], "WebSearch")
         self.assertNotIn("--disallowedTools", called_args)
         self.assertNotIn("shell", mock_run.call_args[1])
+        self.assertEqual(mock_run.call_args[1].get("stdin"), subprocess.DEVNULL)
 
     def test_short_text_reaches_the_prompt(self) -> None:
         with patch("subprocess.run") as mock_run:
