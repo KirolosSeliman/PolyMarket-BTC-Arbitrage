@@ -1820,6 +1820,55 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("400 Bad Request", head)
 
+    async def test_concept_prompt_generate_non_bool_overwrite_is_400(self) -> None:
+        head, _body = await self._request(
+            "POST", "/api/concept-prompt/generate", json_body={"prompt": "un prompt", "overwrite": "yes"},
+        )
+        self.assertIn("400 Bad Request", head)
+
+    async def test_concept_prompt_generate_collision_then_overwrite_round_trip(self) -> None:
+        self.concepts_dir.mkdir(parents=True, exist_ok=True)
+        (self.concepts_dir / "server_route_concept.py").write_text("EXISTING = True\n", encoding="utf-8")
+        well_formed_content = (
+            'CONCEPT_INFO = {"label": "x", "description": "y", '
+            '"data_sources": ["binance_futures_kline"]}\n\ndef compute(context):\n    return {}\n'
+        )
+        with patch(
+            "polymarket_btc.data_collection.control.concept_generation.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {"filename": "server_route_concept.py", "content": well_formed_content}
+            head, body = await self._request(
+                "POST", "/api/concept-prompt/generate", json_body={"prompt": "un prompt"},
+            )
+            job_id = body["job_id"]
+            status = None
+            for _ in range(200):
+                _head, status = await self._request(
+                    "GET", f"/api/concept-prompt/generate-status?job_id={job_id}",
+                )
+                if status["done"]:
+                    break
+                await asyncio.sleep(0.02)
+            self.assertIn("already exists in", status["error"])
+            self.assertIn("EXISTING = True", (self.concepts_dir / "server_route_concept.py").read_text())
+
+            head, body = await self._request(
+                "POST", "/api/concept-prompt/generate",
+                json_body={"prompt": "un prompt", "overwrite": True},
+            )
+            self.assertIn("200 OK", head)
+            job_id = body["job_id"]
+            status = None
+            for _ in range(200):
+                _head, status = await self._request(
+                    "GET", f"/api/concept-prompt/generate-status?job_id={job_id}",
+                )
+                if status["done"]:
+                    break
+                await asyncio.sleep(0.02)
+        self.assertIsNone(status["error"])
+        self.assertNotIn("EXISTING = True", (self.concepts_dir / "server_route_concept.py").read_text())
+
     async def test_concept_prompt_generate_success_round_trip(self) -> None:
         well_formed = (
             "FILENAME: server_route_concept.py\n\n```python\n"

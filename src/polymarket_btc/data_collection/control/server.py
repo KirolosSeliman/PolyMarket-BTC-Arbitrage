@@ -852,7 +852,10 @@ class ControlPanelServer:
         prompt = payload.get("prompt", "")
         if not isinstance(prompt, str) or not prompt.strip():
             return self._error("400 Bad Request", "prompt must be a non-empty string")
-        job = self.concept_generation.start_generate_job(prompt=prompt)
+        overwrite = payload.get("overwrite", False)
+        if not isinstance(overwrite, bool):
+            return self._error("400 Bad Request", "overwrite must be a boolean")
+        job = self.concept_generation.start_generate_job(prompt=prompt, overwrite=overwrite)
         return self._json({"job_id": job.job_id})
 
     def _concept_prompt_generate_status(self, query: dict[str, list[str]]) -> bytes:

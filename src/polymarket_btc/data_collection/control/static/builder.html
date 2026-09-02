@@ -758,21 +758,15 @@ el("concept-copy-prompt-btn").addEventListener("click", async () => {
   } catch (error) { alert("Copie automatique impossible -- sélectionne le texte manuellement."); }
 });
 
-el("concept-generate-btn").addEventListener("click", async () => {
+async function runConceptGenerate(prompt, overwrite) {
   const statusEl = el("concept-generate-status");
-  const prompt = el("concept-prompt-preview").value;
-  if (!prompt.trim()) {
-    statusEl.className = "import-status error";
-    statusEl.textContent = "Génère d'abord un aperçu du prompt (étape 3).";
-    return;
-  }
   el("concept-generate-btn").disabled = true;
   statusEl.className = "import-status";
   statusEl.textContent = "Génération en cours (Claude Code)…";
   try {
     const startRes = await fetch("/api/concept-prompt/generate", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, overwrite }),
     });
     const startData = await startRes.json();
     if (!startRes.ok) throw new Error(startData.error || "échec du lancement de la génération");
@@ -796,11 +790,36 @@ el("concept-generate-btn").addEventListener("click", async () => {
     await loadCatalogs();
     refreshCreatePickers();
   } catch (error) {
+    // import_concept_file's own FileExistsError message, e.g.
+    // "range_breakout.py already exists in concepts" -- same collision
+    // createImportPicker's own confirm()-to-overwrite flow already
+    // handles for a manual import, offered here too instead of a dead end
+    // (regenerating costs a fresh Claude Code call, but that's the only
+    // way to get new content to overwrite with -- nothing from the
+    // failed attempt is kept server-side).
+    if (!overwrite && error.message.includes(" already exists in ")) {
+      const filename = error.message.split(" already exists in ")[0];
+      if (confirm(`${filename} existe déjà. Regénérer et écraser ?`)) {
+        await runConceptGenerate(prompt, true);
+        return;
+      }
+    }
     statusEl.className = "import-status error";
     statusEl.textContent = "Échec de la génération automatique : " + error.message + " -- modifie le prompt ci-dessus ou importe le script manuellement.";
   } finally {
     el("concept-generate-btn").disabled = false;
   }
+}
+
+el("concept-generate-btn").addEventListener("click", () => {
+  const statusEl = el("concept-generate-status");
+  const prompt = el("concept-prompt-preview").value;
+  if (!prompt.trim()) {
+    statusEl.className = "import-status error";
+    statusEl.textContent = "Génère d'abord un aperçu du prompt (étape 3).";
+    return;
+  }
+  runConceptGenerate(prompt, false);
 });
 
 // microsystemConceptPicker chooses from the *whole* concept catalog, not

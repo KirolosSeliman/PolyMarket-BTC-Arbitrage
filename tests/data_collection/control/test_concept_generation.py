@@ -248,6 +248,36 @@ class ConceptGenerationManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["result"]["filename"], "my_new_concept.py")
         self.assertTrue((root / "concepts" / "my_new_concept.py").is_file())
 
+    async def test_collision_without_overwrite_surfaces_file_exists_error(self) -> None:
+        manager, root = self._setup()
+        (root / "concepts" / "my_new_concept.py").write_text("EXISTING = True\n", encoding="utf-8")
+        with patch(
+            "polymarket_btc.data_collection.control.concept_generation.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {
+                "filename": "my_new_concept.py",
+                "content": _WELL_FORMED_RESPONSE.split("```python\n")[1].split("```")[0],
+            }
+            job = manager.start_generate_job(prompt="un prompt", overwrite=False)
+            status = await self._wait_for_done(manager, job.job_id)
+        self.assertIn("already exists in", status["error"])
+        self.assertIn("EXISTING = True", (root / "concepts" / "my_new_concept.py").read_text())
+
+    async def test_collision_with_overwrite_replaces_the_file(self) -> None:
+        manager, root = self._setup()
+        (root / "concepts" / "my_new_concept.py").write_text("EXISTING = True\n", encoding="utf-8")
+        with patch(
+            "polymarket_btc.data_collection.control.concept_generation.generate_concept_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {
+                "filename": "my_new_concept.py",
+                "content": _WELL_FORMED_RESPONSE.split("```python\n")[1].split("```")[0],
+            }
+            job = manager.start_generate_job(prompt="un prompt", overwrite=True)
+            status = await self._wait_for_done(manager, job.job_id)
+        self.assertIsNone(status["error"])
+        self.assertNotIn("EXISTING = True", (root / "concepts" / "my_new_concept.py").read_text())
+
     async def test_job_error_surfaces_through_status_without_raising(self) -> None:
         manager, _root = self._setup()
         with patch(

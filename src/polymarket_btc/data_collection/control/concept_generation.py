@@ -159,19 +159,21 @@ class ConceptGenerationManager:
     timeout_seconds: float
     jobs: dict[str, refinement.ScanJob] = field(default_factory=dict)
 
-    def _generate(self, *, prompt: str) -> dict[str, object]:
+    def _generate(self, *, prompt: str, overwrite: bool) -> dict[str, object]:
         generated = generate_concept_via_claude_code(
             prompt, command=self.command, timeout_seconds=self.timeout_seconds,
         )
-        # overwrite=False: a name collision surfaces as a plain FileExistsError
-        # message through the job's own `error` field -- no special 409 path
-        # for the background-job route (unlike the direct manual-import
-        # route), an accepted simplification for this pilot.
-        return self.runs.import_concept_file(generated["filename"], generated["content"], overwrite=False)
+        # A name collision surfaces as a plain FileExistsError message
+        # through the job's own `error` field -- no special 409 path for
+        # the background-job route (unlike the direct manual-import
+        # route). The frontend parses that message the same way
+        # createImportPicker's own confirm()-to-overwrite flow already
+        # does, then resubmits with overwrite=True.
+        return self.runs.import_concept_file(generated["filename"], generated["content"], overwrite=overwrite)
 
-    def start_generate_job(self, *, prompt: str) -> refinement.ScanJob:
+    def start_generate_job(self, *, prompt: str, overwrite: bool = False) -> refinement.ScanJob:
         return refinement.run_scan_job(
-            self.jobs, lambda _on_progress: self._generate(prompt=prompt),
+            self.jobs, lambda _on_progress: self._generate(prompt=prompt, overwrite=overwrite),
             name_prefix="concept-generate-job",
         )
 
