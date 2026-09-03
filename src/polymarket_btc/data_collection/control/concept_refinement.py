@@ -47,12 +47,98 @@ import random
 
 from . import refinement
 from .backtest_data import combined_coverage, narrowest_key, read_records
-from .concept_generation import (
-    auto_suffixed_filename, generate_concept_via_claude_code, generate_synthetic_example_via_claude_code,
-)
+from .concept_generation import auto_suffixed_filename, generate_concept_via_claude_code
 from .concepts import ConceptContext, ConceptInfo, discover_concepts
 from .config_schema import resolve_config
 from .runs import CollectionRunManager
+
+# One fixed, generic scenario for generate_synthetic_instance below: a
+# tight oscillation (a "range") for _RANGE_STEPS candles, then a single
+# sharp move with much higher volume (a "breakout") -- the same textbook
+# shape validated by hand against concepts/range_breakout.py earlier this
+# session. Shaped per source per backtest_data.py's own _ACCESS_
+# EXTRACTORS/_COLLECT_EXTRACTORS (the real field names concepts actually
+# receive) -- a source this app doesn't know how to read for real is
+# simply not included in the result, matching how a concept declaring an
+# unsupported source already gets nothing for it in real scans.
+_BASE_PRICE = 100.0
+_OSCILLATION = 0.02
+_BREAKOUT_PRICE = 103.0
+_RANGE_STEPS = 60
+_STEP_SECONDS = 60.0
+
+
+def _synthetic_kline_series() -> list[dict[str, object]]:
+    candles = []
+    t = 0.0
+    for i in range(_RANGE_STEPS):
+        o = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
+        c = _BASE_PRICE + (-_OSCILLATION if i % 2 == 0 else _OSCILLATION)
+        candles.append({
+            "open": o, "high": max(o, c) + 0.01, "low": min(o, c) - 0.01, "close": c,
+            "volume": 1.0, "timestamp": t + _STEP_SECONDS, "open_time": t,
+            "close_time": t + _STEP_SECONDS, "is_closed": True,
+        })
+        t += _STEP_SECONDS
+    candles.append({
+        "open": _BASE_PRICE, "high": _BREAKOUT_PRICE + 0.5, "low": _BASE_PRICE - 0.1, "close": _BREAKOUT_PRICE,
+        "volume": 50.0, "timestamp": t + _STEP_SECONDS, "open_time": t,
+        "close_time": t + _STEP_SECONDS, "is_closed": True,
+    })
+    return candles
+
+
+def _synthetic_trade_series() -> list[dict[str, object]]:
+    trades = []
+    t = 0.0
+    for i in range(_RANGE_STEPS):
+        price = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
+        trades.append({"price": price, "quantity": 1.0, "timestamp": t, "taker_side": "buy"})
+        t += _STEP_SECONDS
+    trades.append({"price": _BREAKOUT_PRICE, "quantity": 50.0, "timestamp": t, "taker_side": "buy"})
+    return trades
+
+
+def _synthetic_mark_price_series() -> list[dict[str, object]]:
+    records = []
+    t = 0.0
+    for i in range(_RANGE_STEPS):
+        price = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
+        records.append({"mark_price": price, "index_price": price, "funding_rate": 0.0001, "timestamp": t})
+        t += _STEP_SECONDS
+    records.append({
+        "mark_price": _BREAKOUT_PRICE, "index_price": _BREAKOUT_PRICE, "funding_rate": 0.0005, "timestamp": t,
+    })
+    return records
+
+
+def _synthetic_price_series() -> list[dict[str, object]]:
+    records = []
+    t = 0.0
+    for i in range(_RANGE_STEPS):
+        price = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
+        records.append({"price": price, "timestamp": t})
+        t += _STEP_SECONDS
+    records.append({"price": _BREAKOUT_PRICE, "timestamp": t})
+    return records
+
+
+_SYNTHETIC_SERIES_BUILDERS: dict[str, object] = {
+    "binance_futures_kline": _synthetic_kline_series,
+    "binance_futures_trade": _synthetic_trade_series,
+    "binance_futures_mark_price": _synthetic_mark_price_series,
+    "chainlink": _synthetic_price_series,
+    "binance_spot": _synthetic_price_series,
+}
+
+
+def build_synthetic_candle_set(data_sources: list[str]) -> dict[str, list[dict[str, object]]]:
+    result: dict[str, list[dict[str, object]]] = {}
+    for key in data_sources:
+        builder = _SYNTHETIC_SERIES_BUILDERS.get(key.partition(":")[0])
+        if builder is not None:
+            result[key] = builder()
+    return result
 
 
 @dataclass(slots=True)
@@ -286,22 +372,22 @@ class ConceptRefinementManager:
 
         return refinement.run_scan_job(self.jobs, _run, name_prefix="concept-auto-refine-job")
 
-    def _generate_synthetic(self, *, concept_id: str) -> dict[str, object]:
+    def generate_synthetic_instance(self, *, concept_id: str) -> dict[str, object]:
         """For when there's too little (or no) real collected data to find
-        a real instance to review -- Claude Code invents a plausible
-        synthetic scenario of what this concept is meant to detect (see
-        generate_synthetic_example_via_claude_code), then this concept's
-        own real compute() decides what's detected in it, not the AI's own
-        claim. Returns the exact same shape next_instance() does, so the
-        frontend can render/label it through the identical existing path."""
-        if self.claude_code_command is None:
-            raise ValueError("génération d'exemple imaginaire non configurée (Claude Code)")
+        a real instance to review -- builds ONE fixed, generic synthetic
+        scenario (see build_synthetic_candle_set below: oscillate tightly,
+        then break out sharply with much higher volume) and runs this
+        concept's own real compute() against it, so the Python code
+        decides what's detected, not any external claim. No AI call, no
+        network, no subprocess -- pure and instant, unlike the Claude Code
+        calls elsewhere in this app. Generic by design (not tailored to
+        what THIS concept specifically looks for), so some concepts won't
+        react to it at all -- that's an accepted, disclosed trade-off for
+        speed and zero dependency, not a bug. Returns the exact same shape
+        next_instance() does, so the frontend renders/labels it through
+        the identical existing path."""
         info = self._concept_info(concept_id)
-        source = self.runs.read_concept_source(concept_id)["content"]
-        synthetic_data = generate_synthetic_example_via_claude_code(
-            source, list(info.data_sources),
-            command=self.claude_code_command, timeout_seconds=self.claude_code_timeout_seconds,
-        )
+        synthetic_data = build_synthetic_candle_set(list(info.data_sources))
         resolved_config = resolve_config(info.config_schema, {})
         try:
             result = info.compute(ConceptContext(data=synthetic_data, config=resolved_config, log=refinement.noop_log))
@@ -309,7 +395,10 @@ class ConceptRefinementManager:
             raise ValueError(f"le concept a levé une erreur sur cet exemple : {exc}") from None
         annotations = refinement.walk_for_annotations(result)
         if not annotations:
-            raise ValueError("l'IA a généré un exemple, mais le concept n'y a rien détecté -- réessaie")
+            raise ValueError(
+                "ce scénario synthétique générique (range puis cassure) n'a rien déclenché pour ce concept "
+                "-- certains concepts ont besoin d'un motif différent, essaie avec de vraies données"
+            )
         shape, node = annotations[0]
         display_key = list(dict.fromkeys(info.data_sources))[0]
         return {
@@ -317,12 +406,6 @@ class ConceptRefinementManager:
             "window": {"key": display_key, "candles": synthetic_data.get(display_key, [])},
             "synthetic": True,
         }
-
-    def start_synthetic_job(self, *, concept_id: str) -> refinement.ScanJob:
-        return refinement.run_scan_job(
-            self.jobs, lambda _on_progress: self._generate_synthetic(concept_id=concept_id),
-            name_prefix="concept-synthetic-job",
-        )
 
 
 __all__ = ["ConceptRefinementManager"]

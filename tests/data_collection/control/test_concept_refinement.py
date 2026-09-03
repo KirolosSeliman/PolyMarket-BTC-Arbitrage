@@ -9,7 +9,10 @@ import unittest
 from unittest.mock import patch
 
 from polymarket_btc.data_collection.control import refinement
-from polymarket_btc.data_collection.control.concept_refinement import ConceptRefinementManager
+from polymarket_btc.data_collection.control.concept_refinement import (
+    ConceptRefinementManager,
+    build_synthetic_candle_set,
+)
 from polymarket_btc.data_collection.control.refinement import MIN_NO_FOR_PROMPT, MIN_TOTAL_FOR_PROMPT
 from polymarket_btc.data_collection.control.runs import CollectionRunManager
 from polymarket_btc.data_collection.market_data.models import (
@@ -490,75 +493,76 @@ class AutoRefineJobTests(_RefinementTestBase, unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(retry_status["error"])
 
 
-class SyntheticExampleTests(_RefinementTestBase, unittest.IsolatedAsyncioTestCase):
-    # generate_synthetic_example_via_claude_code is mocked throughout --
-    # no real Claude Code call, no real collected data needed at all
-    # (unlike every other test class here) since _generate_synthetic reads
-    # the concept's own source directly and runs compute() itself.
+class BuildSyntheticCandleSetTests(unittest.TestCase):
+    def test_kline_series_has_a_tight_range_then_a_clear_breakout(self) -> None:
+        data = build_synthetic_candle_set(["binance_futures_kline"])
+        candles = data["binance_futures_kline"]
+        range_candles, breakout_candle = candles[:-1], candles[-1]
+        range_width = max(c["high"] for c in range_candles) - min(c["low"] for c in range_candles)
+        self.assertLess(range_width, 1.0)  # tight relative to the breakout below
+        self.assertGreater(breakout_candle["close"], max(c["high"] for c in range_candles))
+        self.assertGreater(breakout_candle["volume"], max(c["volume"] for c in range_candles))
 
-    async def _wait_for_done(self, manager: ConceptRefinementManager, job) -> dict[str, object]:
-        for _ in range(100):
-            status = refinement.scan_job_status(manager.jobs, job.job_id)
-            if status["done"]:
-                return status
-            await asyncio.sleep(0.02)
-        self.fail("job never completed")
+    def test_trade_series_shape_matches_real_records(self) -> None:
+        data = build_synthetic_candle_set(["binance_futures_trade"])
+        for record in data["binance_futures_trade"]:
+            self.assertIn("price", record)
+            self.assertIn("quantity", record)
+            self.assertIn("timestamp", record)
+            self.assertIn("taker_side", record)
 
-    async def test_detected_synthetic_instance_matches_next_instance_shape(self) -> None:
-        manager = self._setup(_ZONE_CONCEPT, claude_code_command=["claude"])
-        synthetic = {
-            "binance_futures_kline": [
-                {"open": 100, "high": 103, "low": 99, "close": 102, "timestamp": 60.0},
-            ],
-        }
-        with patch(
-            "polymarket_btc.data_collection.control.concept_refinement.generate_synthetic_example_via_claude_code",
-        ) as mock_generate:
-            mock_generate.return_value = synthetic
-            job = manager.start_synthetic_job(concept_id="test_concept")
-            status = await self._wait_for_done(manager, job)
-        self.assertIsNone(status["error"])
-        result = status["result"]
+    def test_unsupported_source_is_silently_omitted(self) -> None:
+        data = build_synthetic_candle_set(["some_unsupported_source"])
+        self.assertEqual(data, {})
+
+    def test_multiple_sources_each_get_their_own_series(self) -> None:
+        data = build_synthetic_candle_set(["binance_futures_kline", "binance_futures_trade"])
+        self.assertIn("binance_futures_kline", data)
+        self.assertIn("binance_futures_trade", data)
+
+
+class SyntheticExampleTests(_RefinementTestBase):
+    # generate_synthetic_instance is pure/synchronous now (no AI call, no
+    # job) -- plain TestCase, no real collected data needed since it reads
+    # the concept's own source directly and runs compute() itself against
+    # build_synthetic_candle_set's fixed, generic scenario.
+
+    def test_range_breakout_zone_concept_detects_the_synthetic_breakout(self) -> None:
+        # The exact scenario that motivated this feature: a concept whose
+        # compute() only fires on an up-candle. build_synthetic_candle_set's
+        # fixed range-then-breakout shape must trip it.
+        manager = self._setup(_ZONE_CONCEPT)
+        result = manager.generate_synthetic_instance(concept_id="test_concept")
         self.assertEqual(result["shape"], "zone")
-        self.assertEqual(result["node"]["high"], 103)
-        self.assertEqual(result["trigger_ts"], 60.0)
-        self.assertEqual(result["window"], {"key": "binance_futures_kline", "candles": synthetic["binance_futures_kline"]})
+        self.assertEqual(result["node"]["direction"], "bullish")
+        self.assertEqual(result["window"]["key"], "binance_futures_kline")
+        self.assertTrue(result["window"]["candles"])
         self.assertTrue(result["synthetic"])
 
-    async def test_nothing_detected_raises_clear_error(self) -> None:
-        manager = self._setup(_ZONE_CONCEPT, claude_code_command=["claude"])
-        synthetic = {
-            "binance_futures_kline": [
-                {"open": 100, "high": 101, "low": 99, "close": 99, "timestamp": 60.0},  # down candle, no zone
-            ],
-        }
-        with patch(
-            "polymarket_btc.data_collection.control.concept_refinement.generate_synthetic_example_via_claude_code",
-        ) as mock_generate:
-            mock_generate.return_value = synthetic
-            job = manager.start_synthetic_job(concept_id="test_concept")
-            status = await self._wait_for_done(manager, job)
-        self.assertIn("rien détecté", status["error"])
+    def test_nothing_detected_raises_clear_error(self) -> None:
+        # A concept that can never fire on this generic scenario (it only
+        # ever looks at a data source build_synthetic_candle_set doesn't
+        # know how to fabricate) -- confirms the "generic, not tailored"
+        # trade-off is surfaced clearly rather than silently returning
+        # nothing useful.
+        never_fires_concept = (
+            'CONCEPT_INFO = {"label": "x", "description": "d", "data_sources": ["some_unsupported_source"]}\n'
+            "def compute(context):\n    return {}\n"
+        )
+        manager = self._setup(never_fires_concept, concept_filename="never_fires.py")
+        with self.assertRaises(ValueError) as ctx:
+            manager.generate_synthetic_instance(concept_id="never_fires")
+        self.assertIn("rien déclenché", str(ctx.exception))
 
-    async def test_compute_exception_surfaces_clearly(self) -> None:
+    def test_compute_exception_surfaces_clearly(self) -> None:
         crashing_concept = (
             'CONCEPT_INFO = {"label": "x", "description": "d", "data_sources": ["binance_futures_kline"]}\n'
             "def compute(context):\n    raise RuntimeError(\"boom\")\n"
         )
-        manager = self._setup(crashing_concept, claude_code_command=["claude"])
-        with patch(
-            "polymarket_btc.data_collection.control.concept_refinement.generate_synthetic_example_via_claude_code",
-        ) as mock_generate:
-            mock_generate.return_value = {"binance_futures_kline": []}
-            job = manager.start_synthetic_job(concept_id="test_concept")
-            status = await self._wait_for_done(manager, job)
-        self.assertIn("boom", status["error"])
-
-    async def test_not_configured_raises_clearly(self) -> None:
-        manager = self._setup(_ZONE_CONCEPT)  # claude_code_command defaults to None
-        job = manager.start_synthetic_job(concept_id="test_concept")
-        status = await self._wait_for_done(manager, job)
-        self.assertIn("non configurée", status["error"])
+        manager = self._setup(crashing_concept, concept_filename="crashing.py")
+        with self.assertRaises(ValueError) as ctx:
+            manager.generate_synthetic_instance(concept_id="crashing")
+        self.assertIn("boom", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -10,7 +10,6 @@ from polymarket_btc.data_collection.control.concept_generation import (
     _parse_claude_code_response,
     expand_concept_description_via_claude_code,
     generate_concept_via_claude_code,
-    generate_synthetic_example_via_claude_code,
 )
 from polymarket_btc.data_collection.control.runs import CollectionRunManager
 
@@ -204,96 +203,6 @@ class ExpandConceptDescriptionViaClaudeCodeTests(unittest.TestCase):
                 )
             self.assertIn("30", str(ctx.exception))
 
-
-class GenerateSyntheticExampleViaClaudeCodeTests(unittest.TestCase):
-    def test_success_parses_json_dict_of_records(self) -> None:
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0,
-                stdout='{"binance_futures_trade": [{"price": 100.0, "quantity": 1.0, "timestamp": 0.0}]}',
-                stderr="",
-            )
-            result = generate_synthetic_example_via_claude_code(
-                "CONCEPT_INFO = {}", ["binance_futures_trade"], command=["claude"], timeout_seconds=30,
-            )
-        self.assertEqual(result["binance_futures_trade"][0]["price"], 100.0)
-
-    def test_invokes_with_disallowed_tools_and_no_stdin(self) -> None:
-        # Safety-critical: this generates fake DATA, not a script -- must
-        # stay pure text-in/JSON-out, same as generate_concept_via_claude_
-        # code's own script-generation call.
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout='{"binance_futures_trade": []}', stderr="",
-            )
-            generate_synthetic_example_via_claude_code(
-                "CONCEPT_INFO = {}", ["binance_futures_trade"], command=["claude"], timeout_seconds=30,
-            )
-        called_args = mock_run.call_args[0][0]
-        self.assertIn("-p", called_args)
-        self.assertIn("--disallowedTools", called_args)
-        self.assertIn("*", called_args)
-        self.assertEqual(mock_run.call_args[1].get("stdin"), subprocess.DEVNULL)
-
-    def test_concept_source_and_shape_doc_reach_the_prompt(self) -> None:
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout='{"binance_futures_trade": []}', stderr="",
-            )
-            generate_synthetic_example_via_claude_code(
-                "MARQUEUR_SOURCE_UNIQUE", ["binance_futures_trade"], command=["claude"], timeout_seconds=30,
-            )
-        called_args = mock_run.call_args[0][0]
-        prompt = called_args[called_args.index("-p") + 1]
-        self.assertIn("MARQUEUR_SOURCE_UNIQUE", prompt)
-        self.assertIn("binance_futures_trade", prompt)
-        self.assertIn("quantity", prompt)  # from _SYNTHETIC_SHAPE_DOCS
-
-    def test_non_json_response_raises(self) -> None:
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="voici vos données : {...}", stderr="",
-            )
-            with self.assertRaises(ValueError):
-                generate_synthetic_example_via_claude_code(
-                    "CONCEPT_INFO = {}", ["binance_futures_trade"], command=["claude"], timeout_seconds=30,
-                )
-
-    def test_non_dict_json_response_raises(self) -> None:
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="[1, 2, 3]", stderr="")
-            with self.assertRaises(ValueError):
-                generate_synthetic_example_via_claude_code(
-                    "CONCEPT_INFO = {}", ["binance_futures_trade"], command=["claude"], timeout_seconds=30,
-                )
-
-    def test_empty_dict_response_raises(self) -> None:
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="{}", stderr="")
-            with self.assertRaises(ValueError):
-                generate_synthetic_example_via_claude_code(
-                    "CONCEPT_INFO = {}", ["binance_futures_trade"], command=["claude"], timeout_seconds=30,
-                )
-
-    def test_nonzero_exit_raises_with_stderr(self) -> None:
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr="authentication failed",
-            )
-            with self.assertRaises(ValueError) as ctx:
-                generate_synthetic_example_via_claude_code(
-                    "CONCEPT_INFO = {}", ["binance_futures_trade"], command=["claude"], timeout_seconds=30,
-                )
-            self.assertIn("authentication failed", str(ctx.exception))
-
-    def test_timeout_raises_clearly(self) -> None:
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=30)
-            with self.assertRaises(ValueError) as ctx:
-                generate_synthetic_example_via_claude_code(
-                    "CONCEPT_INFO = {}", ["binance_futures_trade"], command=["claude"], timeout_seconds=30,
-                )
-            self.assertIn("30", str(ctx.exception))
 
 
 class ConceptGenerationManagerTests(unittest.IsolatedAsyncioTestCase):

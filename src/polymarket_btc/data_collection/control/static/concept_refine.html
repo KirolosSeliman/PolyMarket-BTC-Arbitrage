@@ -112,7 +112,7 @@ button.critical { background: var(--critical); }
 
   <div class="panel" id="instance-panel" style="display:none">
     <h2>Est-ce bien ce concept ?</h2>
-    <p class="empty" id="synthetic-badge" style="display:none;color:var(--warning)">🎭 Exemple imaginé par l'IA -- pas une vraie détection sur des données réelles.</p>
+    <p class="empty" id="synthetic-badge" style="display:none;color:var(--warning)">🎲 Exemple synthétique générique -- pas une vraie détection sur des données réelles.</p>
     <svg class="refine-chart" id="refine-chart" viewBox="0 0 760 220"></svg>
     <div class="refine-legend">
       <span><span class="swatch bullish"></span>Haussier</span>
@@ -135,7 +135,7 @@ button.critical { background: var(--critical); }
   <div class="panel" id="empty-panel" style="display:none">
     <p class="empty" id="empty-message"></p>
     <div class="row" style="margin-top:8px">
-      <button type="button" class="secondary" id="synthetic-btn">🎭 Imaginer un exemple avec l'IA (Claude Code)</button>
+      <button type="button" class="secondary" id="synthetic-btn">🎲 Générer un exemple synthétique</button>
       <span id="synthetic-status" class="progress-line"></span>
     </div>
   </div>
@@ -358,45 +358,31 @@ async function pollScan(jobId) {
 }
 
 // For when there's too little (or no) real collected data to find a real
-// instance -- Claude Code invents a plausible synthetic scenario of what
-// this concept is meant to detect, then the concept's own real compute()
-// decides what's found in it, not the AI's own claim. Returns the exact
-// same instance shape next_instance() does, so it renders/labels through
-// the identical existing path (showInstance/submitLabel, unchanged).
+// instance -- builds one fixed, generic synthetic scenario (a tight range
+// then a sharp breakout) and runs this concept's own real compute()
+// against it, so the Python code decides what's found, not any external
+// claim. No AI call, instant. Returns the exact same instance shape
+// next_instance() does, so it renders/labels through the identical
+// existing path (showInstance/submitLabel, unchanged).
 el("synthetic-btn").addEventListener("click", async () => {
   const statusEl = el("synthetic-status");
   el("synthetic-btn").disabled = true;
-  statusEl.textContent = "Génération d'un exemple imaginaire en cours (Claude Code)…";
+  statusEl.textContent = "Génération d'un exemple synthétique…";
   try {
-    const startRes = await fetch("/api/concept-refine/synthetic", {
+    const res = await fetch("/api/concept-refine/synthetic", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ concept_id: conceptId }),
     });
-    const startData = await startRes.json();
-    if (!startRes.ok) throw new Error(startData.error || "échec du lancement de la génération");
-    const instance = await pollSyntheticJob(startData.job_id, statusEl);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "échec de la génération");
     statusEl.textContent = "";
-    showInstance(instance);
+    showInstance(data);
   } catch (error) {
     statusEl.textContent = "Échec : " + error.message + " -- réessaie, ou collecte de vraies données.";
   } finally {
     el("synthetic-btn").disabled = false;
   }
 });
-
-async function pollSyntheticJob(jobId, statusEl) {
-  while (true) {
-    const res = await fetch(`/api/concept-refine/scan-status?job_id=${encodeURIComponent(jobId)}`);
-    const status = await res.json();
-    if (!res.ok) throw new Error(status.error || "échec de la génération");
-    statusEl.textContent = `Génération d'un exemple imaginaire en cours (Claude Code)… ${Math.round(status.elapsed_seconds)}s`;
-    if (status.done) {
-      if (status.error) throw new Error(status.error);
-      return status.result;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 700));
-  }
-}
 
 async function startScanThenNext() {
   el("scan-panel").style.display = "block";

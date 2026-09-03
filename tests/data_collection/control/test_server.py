@@ -1230,30 +1230,14 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("400 Bad Request", head)
 
     async def test_concept_refine_synthetic_full_round_trip(self) -> None:
-        self.server.concept_feedback.claude_code_command = ["claude"]
+        # No mock, no job/poll -- build_synthetic_candle_set is pure and
+        # synchronous, and zone_route_test's own concept (any up-candle)
+        # reliably fires on its fixed range-then-breakout scenario.
         self._write_zone_concept_fixture(up_candle_count=1)
-        synthetic = {
-            "binance_futures_kline": [
-                {"open": 100, "high": 103, "low": 99, "close": 102, "timestamp": 60.0},
-            ],
-        }
-        with patch(
-            "polymarket_btc.data_collection.control.concept_refinement.generate_synthetic_example_via_claude_code",
-        ) as mock_generate:
-            mock_generate.return_value = synthetic
-            head, body = await self._request(
-                "POST", "/api/concept-refine/synthetic", json_body={"concept_id": "zone_route_test"},
-            )
-            self.assertIn("200 OK", head)
-            job_id = body["job_id"]
-            status = None
-            for _ in range(200):
-                _head, status = await self._request("GET", f"/api/concept-refine/scan-status?job_id={job_id}")
-                if status["done"]:
-                    break
-                await asyncio.sleep(0.02)
-        self.assertIsNone(status["error"])
-        result = status["result"]
+        head, result = await self._request(
+            "POST", "/api/concept-refine/synthetic", json_body={"concept_id": "zone_route_test"},
+        )
+        self.assertIn("200 OK", head)
         self.assertEqual(result["shape"], "zone")
         self.assertTrue(result["synthetic"])
 

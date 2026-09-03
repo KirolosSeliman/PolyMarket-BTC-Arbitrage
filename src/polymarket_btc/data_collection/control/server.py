@@ -256,12 +256,11 @@ class ControlPanelServer:
         return self._json({"job_id": job.job_id})
 
     def _concept_refine_synthetic(self, body: bytes) -> bytes:
-        """Asks Claude Code to invent a synthetic example when there's too
-        little real data to find one (see ConceptRefinementManager.
-        _generate_synthetic) -- a background job like every other Claude
-        Code call in this app; not-configured surfaces as a job error (via
-        the shared scan-status route below), not a synchronous 404, since
-        the button that triggers this needs a clear message either way."""
+        """Builds one fixed, generic synthetic scenario and runs this
+        concept's own compute() against it (see ConceptRefinementManager.
+        generate_synthetic_instance) -- no AI call, no subprocess, pure and
+        fast enough to answer synchronously, unlike every Claude-Code-
+        backed route in this app."""
         try:
             payload = json.loads(body or b"{}")
         except json.JSONDecodeError:
@@ -271,8 +270,11 @@ class ControlPanelServer:
         concept_id = payload.get("concept_id")
         if not isinstance(concept_id, str) or not concept_id:
             return self._error("400 Bad Request", "concept_id must be a non-empty string")
-        job = self.concept_feedback.start_synthetic_job(concept_id=concept_id)
-        return self._json({"job_id": job.job_id})
+        try:
+            result = self.concept_feedback.generate_synthetic_instance(concept_id=concept_id)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json(result)
 
     def _concept_refine_next(self, body: bytes) -> bytes:
         try:
