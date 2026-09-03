@@ -25,6 +25,7 @@ below, and each manager's own `start_auto_refine_job`).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -152,6 +153,79 @@ def expand_concept_description_via_claude_code(
     return description
 
 
+# Only the sources backtest_data.py's own _ACCESS_EXTRACTORS/_COLLECT_
+# EXTRACTORS actually know how to turn into records -- documented here
+# (not derivable from CollectionRunManager._data_context_blocks, which
+# only has label/description prose, no field-level shape) so the AI knows
+# exactly what a single synthetic record must look like per source, the
+# same way docs/nouveau_concept_prompt.md documents the CONCEPT_INFO
+# contract for a concept's own *code*.
+_SYNTHETIC_SHAPE_DOCS = {
+    "binance_futures_kline": "champs : open, high, low, close, volume (float), "
+        "timestamp, open_time, close_time (float, secondes unix), is_closed (bool)",
+    "binance_futures_trade": "champs : price, quantity (float), timestamp (float, secondes unix), "
+        "taker_side (\"buy\" ou \"sell\")",
+    "binance_futures_mark_price": "champs : mark_price, index_price, funding_rate (float), "
+        "timestamp (float, secondes unix)",
+    "chainlink": "champs : price (float), timestamp (float, secondes unix)",
+    "binance_spot": "champs : price (float), timestamp (float, secondes unix)",
+}
+
+
+def generate_synthetic_example_via_claude_code(
+    concept_source: str, data_sources: list[str], *, command: list[str], timeout_seconds: float,
+) -> dict[str, list[dict]]:
+    """A third, distinct Claude Code call -- for when there's too little
+    (or no) real collected data to find a real instance to review on
+    Perfectionner. Reads the concept's own source and invents a plausible,
+    textbook-quality synthetic scenario of what it's meant to detect, as
+    raw records shaped like this app's own real data (see
+    _SYNTHETIC_SHAPE_DOCS) -- the concept's real compute() then decides
+    what's detected, not the AI's own claim. Pure text-in/JSON-out,
+    --disallowedTools "*" like generate_concept_via_claude_code -- this
+    generates fake DATA, not a script, so no filesystem/tool access is
+    needed here either."""
+    shape_blocks = []
+    for key in data_sources:
+        doc = _SYNTHETIC_SHAPE_DOCS.get(key)
+        shape_blocks.append(f"- `{key}` : {doc}" if doc else f"- `{key}` : type de donnée non supporté, ignore-le")
+    prompt = (
+        "Voici le code source d'un concept de trading algorithmique :\n\n"
+        f"```python\n{concept_source}\n```\n\n"
+        "Invente un exemple de données brutes SYNTHÉTIQUES (fictives mais réalistes) "
+        "représentant un cas d'école clair et net de ce que ce concept est censé "
+        "détecter -- assez de records, sur une plage de temps assez longue, pour que "
+        "compute() puisse effectivement le détecter avec les paramètres par défaut du "
+        "concept. Types de données à générer (une liste de records par type) :\n"
+        + "\n".join(shape_blocks)
+        + "\n\nRéponds uniquement avec un objet JSON de la forme "
+        '{"<clé de la source>": [ {...}, {...}, ... ], ...} -- records triés par '
+        "timestamp croissant. Pas de texte avant ou après, pas de bloc de code, "
+        "juste le JSON brut."
+    )
+    try:
+        result = subprocess.run(
+            [*command, "-p", prompt, "--disallowedTools", "*"],
+            capture_output=True, text=True, timeout=timeout_seconds, stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError as exc:
+        raise ValueError(f"commande Claude Code introuvable ({command[0]!r}) : {exc}") from None
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"Claude Code n'a pas répondu en {timeout_seconds:.0f}s -- réessaie") from None
+    if result.returncode != 0:
+        raise ValueError(f"Claude Code a échoué (code {result.returncode}) : {result.stderr.strip()[:500]}")
+    stdout = result.stdout.strip()
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        raise ValueError(
+            "réponse de Claude Code illisible -- pas du JSON valide (réessaie, ou collecte de vraies données)"
+        ) from None
+    if not isinstance(parsed, dict) or not parsed:
+        raise ValueError("réponse de Claude Code invalide -- attendu un objet JSON non vide de listes de records")
+    return parsed
+
+
 @dataclass(slots=True)
 class ConceptGenerationManager:
     runs: CollectionRunManager
@@ -198,5 +272,5 @@ class ConceptGenerationManager:
 
 __all__ = [
     "ConceptGenerationManager", "auto_suffixed_filename", "expand_concept_description_via_claude_code",
-    "generate_concept_via_claude_code",
+    "generate_concept_via_claude_code", "generate_synthetic_example_via_claude_code",
 ]

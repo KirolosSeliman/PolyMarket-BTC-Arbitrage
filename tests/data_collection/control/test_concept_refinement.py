@@ -490,5 +490,76 @@ class AutoRefineJobTests(_RefinementTestBase, unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(retry_status["error"])
 
 
+class SyntheticExampleTests(_RefinementTestBase, unittest.IsolatedAsyncioTestCase):
+    # generate_synthetic_example_via_claude_code is mocked throughout --
+    # no real Claude Code call, no real collected data needed at all
+    # (unlike every other test class here) since _generate_synthetic reads
+    # the concept's own source directly and runs compute() itself.
+
+    async def _wait_for_done(self, manager: ConceptRefinementManager, job) -> dict[str, object]:
+        for _ in range(100):
+            status = refinement.scan_job_status(manager.jobs, job.job_id)
+            if status["done"]:
+                return status
+            await asyncio.sleep(0.02)
+        self.fail("job never completed")
+
+    async def test_detected_synthetic_instance_matches_next_instance_shape(self) -> None:
+        manager = self._setup(_ZONE_CONCEPT, claude_code_command=["claude"])
+        synthetic = {
+            "binance_futures_kline": [
+                {"open": 100, "high": 103, "low": 99, "close": 102, "timestamp": 60.0},
+            ],
+        }
+        with patch(
+            "polymarket_btc.data_collection.control.concept_refinement.generate_synthetic_example_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = synthetic
+            job = manager.start_synthetic_job(concept_id="test_concept")
+            status = await self._wait_for_done(manager, job)
+        self.assertIsNone(status["error"])
+        result = status["result"]
+        self.assertEqual(result["shape"], "zone")
+        self.assertEqual(result["node"]["high"], 103)
+        self.assertEqual(result["trigger_ts"], 60.0)
+        self.assertEqual(result["window"], {"key": "binance_futures_kline", "candles": synthetic["binance_futures_kline"]})
+        self.assertTrue(result["synthetic"])
+
+    async def test_nothing_detected_raises_clear_error(self) -> None:
+        manager = self._setup(_ZONE_CONCEPT, claude_code_command=["claude"])
+        synthetic = {
+            "binance_futures_kline": [
+                {"open": 100, "high": 101, "low": 99, "close": 99, "timestamp": 60.0},  # down candle, no zone
+            ],
+        }
+        with patch(
+            "polymarket_btc.data_collection.control.concept_refinement.generate_synthetic_example_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = synthetic
+            job = manager.start_synthetic_job(concept_id="test_concept")
+            status = await self._wait_for_done(manager, job)
+        self.assertIn("rien détecté", status["error"])
+
+    async def test_compute_exception_surfaces_clearly(self) -> None:
+        crashing_concept = (
+            'CONCEPT_INFO = {"label": "x", "description": "d", "data_sources": ["binance_futures_kline"]}\n'
+            "def compute(context):\n    raise RuntimeError(\"boom\")\n"
+        )
+        manager = self._setup(crashing_concept, claude_code_command=["claude"])
+        with patch(
+            "polymarket_btc.data_collection.control.concept_refinement.generate_synthetic_example_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = {"binance_futures_kline": []}
+            job = manager.start_synthetic_job(concept_id="test_concept")
+            status = await self._wait_for_done(manager, job)
+        self.assertIn("boom", status["error"])
+
+    async def test_not_configured_raises_clearly(self) -> None:
+        manager = self._setup(_ZONE_CONCEPT)  # claude_code_command defaults to None
+        job = manager.start_synthetic_job(concept_id="test_concept")
+        status = await self._wait_for_done(manager, job)
+        self.assertIn("non configurée", status["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

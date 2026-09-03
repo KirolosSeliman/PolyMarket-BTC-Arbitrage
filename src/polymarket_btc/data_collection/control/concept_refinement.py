@@ -47,7 +47,9 @@ import random
 
 from . import refinement
 from .backtest_data import combined_coverage, narrowest_key, read_records
-from .concept_generation import auto_suffixed_filename, generate_concept_via_claude_code
+from .concept_generation import (
+    auto_suffixed_filename, generate_concept_via_claude_code, generate_synthetic_example_via_claude_code,
+)
 from .concepts import ConceptContext, ConceptInfo, discover_concepts
 from .config_schema import resolve_config
 from .runs import CollectionRunManager
@@ -283,6 +285,44 @@ class ConceptRefinementManager:
                 raise
 
         return refinement.run_scan_job(self.jobs, _run, name_prefix="concept-auto-refine-job")
+
+    def _generate_synthetic(self, *, concept_id: str) -> dict[str, object]:
+        """For when there's too little (or no) real collected data to find
+        a real instance to review -- Claude Code invents a plausible
+        synthetic scenario of what this concept is meant to detect (see
+        generate_synthetic_example_via_claude_code), then this concept's
+        own real compute() decides what's detected in it, not the AI's own
+        claim. Returns the exact same shape next_instance() does, so the
+        frontend can render/label it through the identical existing path."""
+        if self.claude_code_command is None:
+            raise ValueError("génération d'exemple imaginaire non configurée (Claude Code)")
+        info = self._concept_info(concept_id)
+        source = self.runs.read_concept_source(concept_id)["content"]
+        synthetic_data = generate_synthetic_example_via_claude_code(
+            source, list(info.data_sources),
+            command=self.claude_code_command, timeout_seconds=self.claude_code_timeout_seconds,
+        )
+        resolved_config = resolve_config(info.config_schema, {})
+        try:
+            result = info.compute(ConceptContext(data=synthetic_data, config=resolved_config, log=refinement.noop_log))
+        except Exception as exc:
+            raise ValueError(f"le concept a levé une erreur sur cet exemple : {exc}") from None
+        annotations = refinement.walk_for_annotations(result)
+        if not annotations:
+            raise ValueError("l'IA a généré un exemple, mais le concept n'y a rien détecté -- réessaie")
+        shape, node = annotations[0]
+        display_key = list(dict.fromkeys(info.data_sources))[0]
+        return {
+            "shape": shape, "node": node, "trigger_ts": refinement.trigger_timestamp(shape, node),
+            "window": {"key": display_key, "candles": synthetic_data.get(display_key, [])},
+            "synthetic": True,
+        }
+
+    def start_synthetic_job(self, *, concept_id: str) -> refinement.ScanJob:
+        return refinement.run_scan_job(
+            self.jobs, lambda _on_progress: self._generate_synthetic(concept_id=concept_id),
+            name_prefix="concept-synthetic-job",
+        )
 
 
 __all__ = ["ConceptRefinementManager"]

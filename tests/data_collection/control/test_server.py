@@ -1225,6 +1225,50 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(status["error"])
         self.assertIn("no_such_concept", status["error"])
 
+    async def test_concept_refine_synthetic_missing_concept_id_is_400(self) -> None:
+        head, _body = await self._request("POST", "/api/concept-refine/synthetic", json_body={})
+        self.assertIn("400 Bad Request", head)
+
+    async def test_concept_refine_synthetic_full_round_trip(self) -> None:
+        self.server.concept_feedback.claude_code_command = ["claude"]
+        self._write_zone_concept_fixture(up_candle_count=1)
+        synthetic = {
+            "binance_futures_kline": [
+                {"open": 100, "high": 103, "low": 99, "close": 102, "timestamp": 60.0},
+            ],
+        }
+        with patch(
+            "polymarket_btc.data_collection.control.concept_refinement.generate_synthetic_example_via_claude_code",
+        ) as mock_generate:
+            mock_generate.return_value = synthetic
+            head, body = await self._request(
+                "POST", "/api/concept-refine/synthetic", json_body={"concept_id": "zone_route_test"},
+            )
+            self.assertIn("200 OK", head)
+            job_id = body["job_id"]
+            status = None
+            for _ in range(200):
+                _head, status = await self._request("GET", f"/api/concept-refine/scan-status?job_id={job_id}")
+                if status["done"]:
+                    break
+                await asyncio.sleep(0.02)
+        self.assertIsNone(status["error"])
+        result = status["result"]
+        self.assertEqual(result["shape"], "zone")
+        self.assertTrue(result["synthetic"])
+
+        # Labeling it goes through the exact same /label route as a real
+        # instance -- no special-casing needed for a synthetic origin.
+        head, label_body = await self._request(
+            "POST", "/api/concept-refine/label",
+            json_body={
+                "concept_id": "zone_route_test", "shape": result["shape"], "node": result["node"],
+                "trigger_ts": result["trigger_ts"], "label": "oui",
+            },
+        )
+        self.assertIn("200 OK", head)
+        self.assertEqual(label_body["total"], 1)
+
     async def test_concept_refine_next_missing_concept_id_is_400(self) -> None:
         head, _body = await self._request("POST", "/api/concept-refine/next", json_body={})
         self.assertIn("400 Bad Request", head)

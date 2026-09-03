@@ -255,6 +255,25 @@ class ControlPanelServer:
         job = self.concept_feedback.start_scan_job(concept_id=concept_id)
         return self._json({"job_id": job.job_id})
 
+    def _concept_refine_synthetic(self, body: bytes) -> bytes:
+        """Asks Claude Code to invent a synthetic example when there's too
+        little real data to find one (see ConceptRefinementManager.
+        _generate_synthetic) -- a background job like every other Claude
+        Code call in this app; not-configured surfaces as a job error (via
+        the shared scan-status route below), not a synchronous 404, since
+        the button that triggers this needs a clear message either way."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        concept_id = payload.get("concept_id")
+        if not isinstance(concept_id, str) or not concept_id:
+            return self._error("400 Bad Request", "concept_id must be a non-empty string")
+        job = self.concept_feedback.start_synthetic_job(concept_id=concept_id)
+        return self._json({"job_id": job.job_id})
+
     def _concept_refine_next(self, body: bytes) -> bytes:
         try:
             payload = json.loads(body or b"{}")
@@ -650,6 +669,8 @@ class ControlPanelServer:
             return self._refresh_symbols()
         if path == "/api/concept-refine/scan":
             return self._concept_refine_scan(body)
+        if path == "/api/concept-refine/synthetic":
+            return self._concept_refine_synthetic(body)
         if path == "/api/concept-refine/next":
             return self._concept_refine_next(body)
         if path == "/api/concept-refine/label":
