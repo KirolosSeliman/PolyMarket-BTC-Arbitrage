@@ -504,6 +504,23 @@ class ControlPanelServer:
         job = self.filter_feedback.start_scan_job(strategy_name=strategy_name)
         return self._json({"job_id": job.job_id})
 
+    def _filter_refine_synthetic(self, body: bytes) -> bytes:
+        """Mirrors _filter_refine_scan -- see
+        StrategyFilterRefinementManager.start_synthetic_job for why this
+        (unlike concept/microsystem's own synthetic route) always runs as
+        a background job."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        strategy_name = payload.get("strategy_name")
+        if not isinstance(strategy_name, str) or not strategy_name:
+            return self._error("400 Bad Request", "strategy_name must be a non-empty string")
+        job = self.filter_feedback.start_synthetic_job(strategy_name=strategy_name)
+        return self._json({"job_id": job.job_id})
+
     def _filter_refine_next(self, body: bytes) -> bytes:
         try:
             payload = json.loads(body or b"{}")
@@ -710,6 +727,8 @@ class ControlPanelServer:
             return self._microsystem_refine_prompt(body)
         if path == "/api/strategy-filter-refine/scan":
             return self._filter_refine_scan(body)
+        if path == "/api/strategy-filter-refine/synthetic":
+            return self._filter_refine_synthetic(body)
         if path == "/api/strategy-filter-refine/label":
             return self._filter_refine_label(body)
         if path == "/api/strategy-filter-refine/prompt":

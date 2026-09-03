@@ -398,6 +398,12 @@ async function startScanThenNext() {
     await pollScan(scanData.job_id);
   } catch (error) {
     renderScanError(el("scan-status"), error.message);
+    // The scan itself failed outright (e.g. zero real coverage at all) --
+    // unlike the "found zero candidates" case below, loadNext() never
+    // runs, so without this the synthetic-example button in #empty-panel
+    // would stay unreachable exactly when it's most needed.
+    el("empty-panel").style.display = "block";
+    el("empty-message").textContent = "En attendant, tu peux essayer un exemple synthétique :";
     return;
   }
   el("scan-panel").style.display = "none";

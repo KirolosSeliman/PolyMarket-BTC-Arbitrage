@@ -357,5 +357,86 @@ class StrategyFilterRefinementManager:
 
         return refinement.run_scan_job(self.jobs, _run, name_prefix="filter-auto-refine-job")
 
+    def generate_synthetic_instance(self, *, strategy_name: str) -> dict[str, object]:
+        """See ConceptRefinementManager.generate_synthetic_instance -- same
+        fixed, generic, no-AI scenario (refinement.build_synthetic_candle_
+        set), but architecturally different: a filter judges whole
+        *trades*, which only emerge from a full strategy replay (concepts
+        -> microsystems -> execution -> management, filter forced off --
+        same as scan() itself), not a single compute() call. Unlike
+        scan()/next_instance's own _instance_window (which re-runs a
+        second, narrower replay specifically to avoid re-reading/re-
+        running over a vastly larger REAL data range), this scenario is
+        already small and fixed, so the one replay that finds the trade
+        doubles as its own reasoning window -- no second pass needed.
+        Raises ValueError if the strategy is unknown, has no execution/
+        management wired yet (nothing to replay -- same precondition
+        scan() enforces), or the synthetic run produces no trade at all."""
+        strategy = self.strategies.load_strategy(strategy_name)
+        if strategy is None:
+            raise ValueError(f"unknown strategy: {strategy_name!r}")
+        eligibility = self.strategies.backtest_eligibility(strategy_name)
+        if eligibility is None:
+            raise ValueError(f"unknown strategy: {strategy_name!r}")
+        if eligibility["missing_execution"] or eligibility["missing_management"]:
+            raise ValueError(
+                f"la stratégie {strategy_name!r} doit avoir un profil d'exécution et de gestion "
+                "avant de pouvoir perfectionner son filtre"
+            )
+
+        concept_infos = {info.id: info for info in discover_concepts(self.runs.concepts_dir)}
+        microsystem_infos = {info.id: info for info in discover_microsystems(self.runs.microsystems_dir)}
+        keys = required_concrete_keys(strategy, concept_infos, microsystem_infos, self.runs._data_requirements_for)
+        # binance_futures_kline guaranteed too: run_backtest's own price
+        # path needs at least one of trades/klines/mark price regardless
+        # of what the strategy's concepts declare (same reasoning
+        # backtest_eligibility's own docstring gives for real backtests).
+        synthetic_data = refinement.build_synthetic_candle_set(list(keys | {"binance_futures_kline"}))
+        all_timestamps = [r["timestamp"] for records in synthetic_data.values() for r in records]
+        end_ts = (max(all_timestamps) + 60.0) if all_timestamps else 3600.0
+
+        unfiltered_strategy = {k: v for k, v in strategy.items() if k not in ("created_at_utc", "updated_at_utc")}
+        unfiltered_strategy["filter"] = None
+        try:
+            result = run_backtest(
+                strategy=unfiltered_strategy,
+                concepts_dir=self.runs.concepts_dir, microsystems_dir=self.runs.microsystems_dir,
+                execution_dir=self.runs.execution_dir, management_dir=self.runs.management_dir,
+                filter_dir=self.runs.filter_dir,
+                data_requirements_for=self.runs._data_requirements_for,
+                manifests=[], instrument=eligibility["default_instrument"],
+                start_ts=0.0, end_ts=end_ts, cadence_seconds=DEFAULT_CADENCE_SECONDS,
+                execution_sweep={}, management_sweep={},
+                records_by_key=synthetic_data,
+            )
+        except Exception as exc:
+            raise ValueError(f"la stratégie a levé une erreur sur cet exemple : {exc}") from None
+        trades = ((result.get("replay") or {}).get("trades")) or []
+        if not trades:
+            raise ValueError(
+                "ce scénario synthétique générique (range puis cassure) n'a produit aucun trade pour cette "
+                "stratégie -- certaines stratégies ont besoin d'un motif différent, essaie avec de vraies données"
+            )
+        trade = trades[0]
+        return {
+            "shape": "trade", "node": trade, "trigger_ts": trade.get("entry_time"),
+            "window": {
+                "key": "binance_futures_kline", "candles": synthetic_data.get("binance_futures_kline", []),
+                "replay": result.get("replay"),
+            },
+            "synthetic": True,
+        }
+
+    def start_synthetic_job(self, *, strategy_name: str) -> refinement.ScanJob:
+        """Unlike concept/microsystem refinement's own synchronous
+        synthetic-instance route, this always runs as a background job --
+        generate_synthetic_instance calls run_backtest, a heavier
+        operation than a single compute() call, and this server blocks
+        the whole event loop on any synchronous route handler."""
+        return refinement.run_scan_job(
+            self.jobs, lambda _on_progress: self.generate_synthetic_instance(strategy_name=strategy_name),
+            name_prefix="filter-synthetic-job",
+        )
+
 
 __all__ = ["StrategyFilterRefinementManager"]

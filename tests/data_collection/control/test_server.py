@@ -1671,6 +1671,44 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         # "build one from nothing" placeholder path, not a source read.
         self.assertIn("Aucun filtre", prompt_body["content"])
 
+    async def test_filter_refine_synthetic_missing_strategy_name_is_400(self) -> None:
+        head, _body = await self._request("POST", "/api/strategy-filter-refine/synthetic", json_body={})
+        self.assertIn("400 Bad Request", head)
+
+    async def test_filter_refine_synthetic_full_round_trip(self) -> None:
+        # No real data needed at all -- generate_synthetic_instance builds
+        # its own scenario and runs a real (small, fast) backtest against
+        # it, unlike scan()'s own real-data replay.
+        self._write_filter_refine_fixture(candle_count=1)
+        head, body = await self._request(
+            "POST", "/api/strategy-filter-refine/synthetic", json_body={"strategy_name": "filter_route_test"},
+        )
+        self.assertIn("200 OK", head)
+        job_id = body["job_id"]
+        status = None
+        for _ in range(300):
+            _head, status = await self._request(
+                "GET", f"/api/strategy-filter-refine/scan-status?job_id={job_id}",
+            )
+            if status["done"]:
+                break
+            await asyncio.sleep(0.05)
+        self.assertTrue(status["done"])
+        self.assertIsNone(status["error"])
+        result = status["result"]
+        self.assertEqual(result["shape"], "trade")
+        self.assertTrue(result["synthetic"])
+
+        head, label_body = await self._request(
+            "POST", "/api/strategy-filter-refine/label",
+            json_body={
+                "strategy_name": "filter_route_test", "shape": result["shape"], "node": result["node"],
+                "trigger_ts": result["trigger_ts"], "label": "oui",
+            },
+        )
+        self.assertIn("200 OK", head)
+        self.assertEqual(label_body["total"], 1)
+
     async def test_filter_refine_label_triggers_auto_refine_job(self) -> None:
         # Lighter than the concept version above -- see that test's own
         # comment; this only confirms the server wiring for this flow too.

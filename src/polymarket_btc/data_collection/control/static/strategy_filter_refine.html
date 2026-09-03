@@ -138,6 +138,7 @@ button.critical { background: var(--critical); }
 
   <div class="panel" id="instance-panel" style="display:none">
     <h2>Ce trade aurait-il dû être pris ?</h2>
+    <p class="empty" id="synthetic-badge" style="display:none;color:var(--warning)">🎲 Trade synthétique générique -- pas une vraie détection sur des données réelles.</p>
     <svg class="refine-chart" id="refine-chart" viewBox="0 0 760 220"></svg>
     <div class="refine-legend">
       <span><span class="swatch win"></span>Gain</span>
@@ -168,6 +169,10 @@ button.critical { background: var(--critical); }
 
   <div class="panel" id="empty-panel" style="display:none">
     <p class="empty" id="empty-message"></p>
+    <div class="row" style="margin-top:8px">
+      <button type="button" class="secondary" id="synthetic-btn">🎲 Générer un trade synthétique</button>
+      <span id="synthetic-status" class="progress-line"></span>
+    </div>
   </div>
 
   <div class="panel">
@@ -746,6 +751,13 @@ async function startScanThenNext() {
     await pollScan(scanData.job_id);
   } catch (error) {
     renderScanError(el("scan-status"), error.message);
+    // The scan itself failed outright (e.g. missing execution/management,
+    // or zero real coverage at all) -- unlike the "found zero candidates"
+    // case below, loadNext() never runs, so without this the synthetic-
+    // trade button in #empty-panel would stay unreachable exactly when
+    // it's most needed.
+    el("empty-panel").style.display = "block";
+    el("empty-message").textContent = "En attendant, tu peux essayer un trade synthétique :";
     return;
   }
   await loadNext();
@@ -792,17 +804,63 @@ async function loadNext() {
       + "Collecte plus de données, ou reviens plus tard, pour continuer.";
     return;
   }
-  currentInstance = data.instance;
+  showInstance(data.instance);
+}
+
+function showInstance(instance) {
+  currentInstance = instance;
   el("empty-panel").style.display = "none";
   el("instance-panel").style.display = "block";
   el("non-note-box").classList.remove("open");
   el("non-note-text").value = "";
+  el("synthetic-badge").style.display = instance.synthetic ? "block" : "none";
   el("trade-readout").innerHTML = renderReadout(currentInstance.node);
   stages = buildStages(currentInstance);
   stageIndex = 0;
   momentIndex = 0;
   renderStage();
 }
+
+// For when there's too little (or no) real collected data to find a real
+// trade -- builds one fixed, generic synthetic scenario and runs the
+// strategy's own real backtest (concepts -> microsystems -> execution ->
+// management, filter forced off, same as scan() itself) against it, so
+// the Python code decides what trade emerges, not any external claim. No
+// AI call -- but a real (if small) backtest, measured at 1-3s, so this
+// runs as a background job like the real scan does (see the server's own
+// StrategyFilterRefinementManager.start_synthetic_job).
+el("synthetic-btn").addEventListener("click", async () => {
+  const statusEl = el("synthetic-status");
+  el("synthetic-btn").disabled = true;
+  statusEl.textContent = "Génération d'un trade synthétique…";
+  try {
+    const startRes = await fetch("/api/strategy-filter-refine/synthetic", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ strategy_name: strategyName }),
+    });
+    const startData = await startRes.json();
+    if (!startRes.ok) throw new Error(startData.error || "échec du lancement de la génération");
+    let result = null;
+    while (true) {
+      const statusRes = await fetch(`/api/strategy-filter-refine/scan-status?job_id=${encodeURIComponent(startData.job_id)}`);
+      const status = await statusRes.json();
+      if (!statusRes.ok) throw new Error(status.error || "échec de la génération");
+      statusEl.textContent = `Génération d'un trade synthétique… ${Math.round(status.elapsed_seconds)}s`;
+      if (status.done) {
+        if (status.error) throw new Error(status.error);
+        result = status.result;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    statusEl.textContent = "";
+    showInstance(result);
+  } catch (error) {
+    statusEl.textContent = "Échec : " + error.message + " -- réessaie, ou collecte de vraies données.";
+  } finally {
+    el("synthetic-btn").disabled = false;
+  }
+});
 
 async function submitLabel(labelValue, note) {
   const body = {

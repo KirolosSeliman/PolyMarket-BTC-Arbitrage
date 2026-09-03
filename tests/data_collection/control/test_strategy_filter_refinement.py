@@ -410,5 +410,73 @@ class AutoRefineJobTests(_RefinementTestBase, unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(retry_status["error"])
 
 
+class SyntheticExampleTests(_RefinementTestBase, unittest.IsolatedAsyncioTestCase):
+    # generate_synthetic_instance calls run_backtest (~1-3s even on this
+    # small fixed scenario -- confirmed by hand, well past "instant"), so
+    # unlike concept/microsystem's own synchronous synthetic route, this
+    # one always runs as a background job -- IsolatedAsyncioTestCase,
+    # same pattern this file's other job-based tests already use.
+
+    async def _wait_for_done(self, manager: StrategyFilterRefinementManager, job) -> dict[str, object]:
+        for _ in range(300):
+            status = refinement.scan_job_status(manager.jobs, job.job_id)
+            if status["done"]:
+                return status
+            await asyncio.sleep(0.05)
+        self.fail("job never completed")
+
+    async def test_enter_once_strategy_produces_a_synthetic_trade(self) -> None:
+        # The exact fixture this file's other tests already establish
+        # (enter_once + fixed_sltp) reliably takes one long entry near the
+        # start of build_synthetic_candle_set's range and rides it through
+        # the breakout -- confirmed by hand to close as a "win" by the end
+        # of the fixed synthetic window even without hitting the 5% TP.
+        manager, _root = self._setup(with_filter=False)
+        job = manager.start_synthetic_job(strategy_name="test_strategy")
+        status = await self._wait_for_done(manager, job)
+        self.assertIsNone(status["error"])
+        result = status["result"]
+        self.assertEqual(result["shape"], "trade")
+        self.assertEqual(result["node"]["direction"], "long")
+        self.assertEqual(result["window"]["key"], "binance_futures_kline")
+        self.assertTrue(result["window"]["candles"])
+        self.assertIsNotNone(result["window"]["replay"])
+        self.assertTrue(result["synthetic"])
+
+    async def test_missing_execution_or_management_raises_clearly(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        (root / "concepts").mkdir(parents=True)
+        (root / "concepts" / "kline_reader.py").write_text(_KLINE_READER_CONCEPT, encoding="utf-8")
+        (root / "microsystems").mkdir(parents=True)
+        (root / "execution_profiles").mkdir(parents=True)
+        (root / "management_profiles").mkdir(parents=True)
+        (root / "filter_profiles").mkdir(parents=True)
+        runs = CollectionRunManager(
+            config_path=REPOSITORY_ROOT / "config" / "market_data.toml",
+            collections_dir=root / "collections",
+            plugins_dir=root / "plugins", concepts_dir=root / "concepts",
+            microsystems_dir=root / "microsystems", execution_dir=root / "execution_profiles",
+            management_dir=root / "management_profiles", filter_dir=root / "filter_profiles",
+        )
+        strategies = StrategyManager(strategies_dir=root / "strategies", runs=runs)
+        strategies.save_strategy(
+            name="incomplete_strategy",
+            concepts=[{"instance_id": "c1", "concept_id": "kline_reader", "config": {}, "data_bindings": {}}],
+            microsystems=[], execution=None, management=None, filter=None,
+        )
+        manager = StrategyFilterRefinementManager(feedback_dir=root / "filter_feedback", runs=runs, strategies=strategies)
+        job = manager.start_synthetic_job(strategy_name="incomplete_strategy")
+        status = await self._wait_for_done(manager, job)
+        self.assertIn("profil d'exécution et de gestion", status["error"])
+
+    async def test_unknown_strategy_raises_clearly(self) -> None:
+        manager, _root = self._setup(with_filter=False)
+        job = manager.start_synthetic_job(strategy_name="no_such_strategy")
+        status = await self._wait_for_done(manager, job)
+        self.assertIn("unknown strategy", status["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
