@@ -474,5 +474,70 @@ class AutoRefineJobTests(_RefinementTestBase, unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(retry_status["error"])
 
 
+class SyntheticExampleTests(_RefinementTestBase):
+    # generate_synthetic_instance is pure/synchronous (no AI call, no job)
+    # -- no real collected data needed, it reads the microsystem's own
+    # source (and its wired concepts') directly and runs compute() itself.
+
+    def test_setup_microsystem_detects_the_synthetic_breakout(self) -> None:
+        # The two-stage path: zone_concept fires on build_synthetic_
+        # candle_set's up-candles, then the microsystem combines each into
+        # a whole "setup" -- the exact scenario that motivated this feature.
+        manager = self._setup(_SETUP_MICROSYSTEM)
+        result = manager.generate_synthetic_instance(microsystem_id="test_micro")
+        self.assertEqual(result["shape"], "setup")
+        self.assertIn("entry_zone", result["node"])
+        self.assertIn("confirmation_level", result["node"])
+        self.assertEqual(result["window"]["key"], "binance_futures_kline")
+        self.assertTrue(result["window"]["candles"])
+        self.assertTrue(result["synthetic"])
+
+    def test_data_only_microsystem_with_no_concept_inputs_works_too(self) -> None:
+        manager = self._setup(_DATA_ONLY_MICROSYSTEM, concept_source=None, microsystem_filename="data_only.py")
+        result = manager.generate_synthetic_instance(microsystem_id="data_only")
+        self.assertEqual(result["shape"], "setup")
+
+    def test_no_data_sources_at_all_raises_clearly(self) -> None:
+        manager = self._setup(_ORPHAN_MICROSYSTEM, concept_source=None, microsystem_filename="orphan.py")
+        with self.assertRaises(ValueError) as ctx:
+            manager.generate_synthetic_instance(microsystem_id="orphan")
+        self.assertIn("aucune source de données câblée", str(ctx.exception))
+
+    def test_nothing_detected_raises_clear_error(self) -> None:
+        never_fires = (
+            'MICROSYSTEM_INFO = {"label": "x", "description": "d", "data_inputs": ["binance_futures_kline"]}\n'
+            "def compute(context):\n    return {}\n"
+        )
+        manager = self._setup(never_fires, concept_source=None, microsystem_filename="never_fires.py")
+        with self.assertRaises(ValueError) as ctx:
+            manager.generate_synthetic_instance(microsystem_id="never_fires")
+        self.assertIn("rien déclenché", str(ctx.exception))
+
+    def test_compute_exception_surfaces_clearly(self) -> None:
+        crashing = (
+            'MICROSYSTEM_INFO = {"label": "x", "description": "d", "data_inputs": ["binance_futures_kline"]}\n'
+            "def compute(context):\n    raise RuntimeError(\"boom\")\n"
+        )
+        manager = self._setup(crashing, concept_source=None, microsystem_filename="crashing.py")
+        with self.assertRaises(ValueError) as ctx:
+            manager.generate_synthetic_instance(microsystem_id="crashing")
+        self.assertIn("boom", str(ctx.exception))
+
+    def test_a_wired_concept_raising_only_loses_its_own_output(self) -> None:
+        crashing_concept = (
+            'CONCEPT_INFO = {"label": "x", "description": "d", "data_sources": ["binance_futures_kline"]}\n'
+            "def compute(context):\n    raise RuntimeError(\"concept boom\")\n"
+        )
+        tolerant_microsystem = (
+            'MICROSYSTEM_INFO = {"label": "x", "description": "d", "concept_inputs": ["zone_concept"]}\n'
+            "def compute(context):\n"
+            "    return {\"setups\": [{\"a\": {\"direction\": \"bullish\", \"high\": 2, \"low\": 1, \"formed_at\": 0.0}, "
+            "\"b\": {\"level\": 1, \"formed_at\": 0.0}}]}\n"
+        )
+        manager = self._setup(tolerant_microsystem, concept_source=crashing_concept)
+        result = manager.generate_synthetic_instance(microsystem_id="test_micro")
+        self.assertEqual(result["shape"], "setup")
+
+
 if __name__ == "__main__":
     unittest.main()

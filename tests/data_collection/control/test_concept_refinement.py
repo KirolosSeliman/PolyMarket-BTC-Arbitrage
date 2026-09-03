@@ -9,10 +9,8 @@ import unittest
 from unittest.mock import patch
 
 from polymarket_btc.data_collection.control import refinement
-from polymarket_btc.data_collection.control.concept_refinement import (
-    ConceptRefinementManager,
-    build_synthetic_candle_set,
-)
+from polymarket_btc.data_collection.control.concept_refinement import ConceptRefinementManager
+from polymarket_btc.data_collection.control.refinement import build_synthetic_candle_set
 from polymarket_btc.data_collection.control.refinement import MIN_NO_FOR_PROMPT, MIN_TOTAL_FOR_PROMPT
 from polymarket_btc.data_collection.control.runs import CollectionRunManager
 from polymarket_btc.data_collection.market_data.models import (

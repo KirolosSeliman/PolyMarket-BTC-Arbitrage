@@ -274,5 +274,52 @@ class MicrosystemRefinementManager:
 
         return refinement.run_scan_job(self.jobs, _run, name_prefix="microsystem-auto-refine-job")
 
+    def generate_synthetic_instance(self, *, microsystem_id: str) -> dict[str, object]:
+        """See ConceptRefinementManager.generate_synthetic_instance -- same
+        fixed, generic, no-AI scenario (refinement.build_synthetic_candle_
+        set), but two-stage like scan() itself: every wired concept
+        computes first (a concept that raises loses only its own output,
+        same tolerance scan() already has), then the microsystem's own
+        compute() runs against those concept outputs plus its own direct
+        data_inputs. A judged candidate here is always a whole "setup"
+        (refinement.find_setup_candidates), matching every real
+        microsystem candidate."""
+        info = self._microsystem_info(microsystem_id)
+        wired_concepts = self._wired_concepts(info)
+        keys = self._scan_keys(info, wired_concepts)
+        if not keys:
+            raise ValueError(f"le microsystème {microsystem_id!r} n'a plus aucune source de données câblée")
+        synthetic_data = refinement.build_synthetic_candle_set(keys)
+        resolved_config = resolve_config(info.config_schema, {})
+        concept_outputs: dict[str, object] = {}
+        for cid, cinfo in wired_concepts.items():
+            try:
+                concept_outputs[cid] = cinfo.compute(
+                    ConceptContext(
+                        data=synthetic_data, config=resolve_config(cinfo.config_schema, {}), log=refinement.noop_log,
+                    )
+                )
+            except Exception:
+                concept_outputs[cid] = None  # a wired concept that raises loses only this one output
+        try:
+            result = info.compute(MicrosystemContext(
+                concepts=concept_outputs, data=synthetic_data, config=resolved_config, log=refinement.noop_log,
+            ))
+        except Exception as exc:
+            raise ValueError(f"le microsystème a levé une erreur sur cet exemple : {exc}") from None
+        setups = refinement.find_setup_candidates(result)
+        if not setups:
+            raise ValueError(
+                "ce scénario synthétique générique (range puis cassure) n'a rien déclenché pour ce microsystème "
+                "-- certains microsystèmes ont besoin d'un motif différent, essaie avec de vraies données"
+            )
+        setup = setups[0]
+        display_key = keys[0]
+        return {
+            "shape": "setup", "node": setup, "trigger_ts": refinement.trigger_timestamp("setup", setup),
+            "window": {"key": display_key, "candles": synthetic_data.get(display_key, [])},
+            "synthetic": True,
+        }
+
 
 __all__ = ["MicrosystemRefinementManager"]

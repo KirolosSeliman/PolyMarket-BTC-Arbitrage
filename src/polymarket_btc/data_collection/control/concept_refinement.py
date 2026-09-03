@@ -52,94 +52,6 @@ from .concepts import ConceptContext, ConceptInfo, discover_concepts
 from .config_schema import resolve_config
 from .runs import CollectionRunManager
 
-# One fixed, generic scenario for generate_synthetic_instance below: a
-# tight oscillation (a "range") for _RANGE_STEPS candles, then a single
-# sharp move with much higher volume (a "breakout") -- the same textbook
-# shape validated by hand against concepts/range_breakout.py earlier this
-# session. Shaped per source per backtest_data.py's own _ACCESS_
-# EXTRACTORS/_COLLECT_EXTRACTORS (the real field names concepts actually
-# receive) -- a source this app doesn't know how to read for real is
-# simply not included in the result, matching how a concept declaring an
-# unsupported source already gets nothing for it in real scans.
-_BASE_PRICE = 100.0
-_OSCILLATION = 0.02
-_BREAKOUT_PRICE = 103.0
-_RANGE_STEPS = 60
-_STEP_SECONDS = 60.0
-
-
-def _synthetic_kline_series() -> list[dict[str, object]]:
-    candles = []
-    t = 0.0
-    for i in range(_RANGE_STEPS):
-        o = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
-        c = _BASE_PRICE + (-_OSCILLATION if i % 2 == 0 else _OSCILLATION)
-        candles.append({
-            "open": o, "high": max(o, c) + 0.01, "low": min(o, c) - 0.01, "close": c,
-            "volume": 1.0, "timestamp": t + _STEP_SECONDS, "open_time": t,
-            "close_time": t + _STEP_SECONDS, "is_closed": True,
-        })
-        t += _STEP_SECONDS
-    candles.append({
-        "open": _BASE_PRICE, "high": _BREAKOUT_PRICE + 0.5, "low": _BASE_PRICE - 0.1, "close": _BREAKOUT_PRICE,
-        "volume": 50.0, "timestamp": t + _STEP_SECONDS, "open_time": t,
-        "close_time": t + _STEP_SECONDS, "is_closed": True,
-    })
-    return candles
-
-
-def _synthetic_trade_series() -> list[dict[str, object]]:
-    trades = []
-    t = 0.0
-    for i in range(_RANGE_STEPS):
-        price = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
-        trades.append({"price": price, "quantity": 1.0, "timestamp": t, "taker_side": "buy"})
-        t += _STEP_SECONDS
-    trades.append({"price": _BREAKOUT_PRICE, "quantity": 50.0, "timestamp": t, "taker_side": "buy"})
-    return trades
-
-
-def _synthetic_mark_price_series() -> list[dict[str, object]]:
-    records = []
-    t = 0.0
-    for i in range(_RANGE_STEPS):
-        price = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
-        records.append({"mark_price": price, "index_price": price, "funding_rate": 0.0001, "timestamp": t})
-        t += _STEP_SECONDS
-    records.append({
-        "mark_price": _BREAKOUT_PRICE, "index_price": _BREAKOUT_PRICE, "funding_rate": 0.0005, "timestamp": t,
-    })
-    return records
-
-
-def _synthetic_price_series() -> list[dict[str, object]]:
-    records = []
-    t = 0.0
-    for i in range(_RANGE_STEPS):
-        price = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
-        records.append({"price": price, "timestamp": t})
-        t += _STEP_SECONDS
-    records.append({"price": _BREAKOUT_PRICE, "timestamp": t})
-    return records
-
-
-_SYNTHETIC_SERIES_BUILDERS: dict[str, object] = {
-    "binance_futures_kline": _synthetic_kline_series,
-    "binance_futures_trade": _synthetic_trade_series,
-    "binance_futures_mark_price": _synthetic_mark_price_series,
-    "chainlink": _synthetic_price_series,
-    "binance_spot": _synthetic_price_series,
-}
-
-
-def build_synthetic_candle_set(data_sources: list[str]) -> dict[str, list[dict[str, object]]]:
-    result: dict[str, list[dict[str, object]]] = {}
-    for key in data_sources:
-        builder = _SYNTHETIC_SERIES_BUILDERS.get(key.partition(":")[0])
-        if builder is not None:
-            result[key] = builder()
-    return result
-
 
 @dataclass(slots=True)
 class ConceptRefinementManager:
@@ -375,7 +287,7 @@ class ConceptRefinementManager:
     def generate_synthetic_instance(self, *, concept_id: str) -> dict[str, object]:
         """For when there's too little (or no) real collected data to find
         a real instance to review -- builds ONE fixed, generic synthetic
-        scenario (see build_synthetic_candle_set below: oscillate tightly,
+        scenario (see refinement.build_synthetic_candle_set: oscillate tightly,
         then break out sharply with much higher volume) and runs this
         concept's own real compute() against it, so the Python code
         decides what's detected, not any external claim. No AI call, no
@@ -387,7 +299,7 @@ class ConceptRefinementManager:
         next_instance() does, so the frontend renders/labels it through
         the identical existing path."""
         info = self._concept_info(concept_id)
-        synthetic_data = build_synthetic_candle_set(list(info.data_sources))
+        synthetic_data = refinement.build_synthetic_candle_set(list(info.data_sources))
         resolved_config = resolve_config(info.config_schema, {})
         try:
             result = info.compute(ConceptContext(data=synthetic_data, config=resolved_config, log=refinement.noop_log))

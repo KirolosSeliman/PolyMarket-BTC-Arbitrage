@@ -281,6 +281,96 @@ def release_auto_refine_claim(feedback_dir: Path, owner_id: str) -> None:
     auto_refine_marker_path(feedback_dir, owner_id).unlink(missing_ok=True)
 
 
+# One fixed, generic scenario shared by concept/microsystem (and later
+# filter) refinement's own "generate a synthetic instance" feature -- a
+# tight oscillation (a "range") for _RANGE_STEPS steps, then a single
+# sharp move with much higher volume (a "breakout"), the same textbook
+# shape validated by hand against concepts/range_breakout.py. Shaped per
+# source per backtest_data.py's own _ACCESS_EXTRACTORS/_COLLECT_
+# EXTRACTORS (the real field names concepts/microsystems actually
+# receive) -- a source this app doesn't know how to read for real is
+# simply not included in the result, matching how a concept declaring an
+# unsupported source already gets nothing for it in real scans.
+_BASE_PRICE = 100.0
+_OSCILLATION = 0.02
+_BREAKOUT_PRICE = 103.0
+_RANGE_STEPS = 60
+_STEP_SECONDS = 60.0
+
+
+def _synthetic_kline_series() -> list[dict[str, object]]:
+    candles = []
+    t = 0.0
+    for i in range(_RANGE_STEPS):
+        o = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
+        c = _BASE_PRICE + (-_OSCILLATION if i % 2 == 0 else _OSCILLATION)
+        candles.append({
+            "open": o, "high": max(o, c) + 0.01, "low": min(o, c) - 0.01, "close": c,
+            "volume": 1.0, "timestamp": t + _STEP_SECONDS, "open_time": t,
+            "close_time": t + _STEP_SECONDS, "is_closed": True,
+        })
+        t += _STEP_SECONDS
+    candles.append({
+        "open": _BASE_PRICE, "high": _BREAKOUT_PRICE + 0.5, "low": _BASE_PRICE - 0.1, "close": _BREAKOUT_PRICE,
+        "volume": 50.0, "timestamp": t + _STEP_SECONDS, "open_time": t,
+        "close_time": t + _STEP_SECONDS, "is_closed": True,
+    })
+    return candles
+
+
+def _synthetic_trade_series() -> list[dict[str, object]]:
+    trades = []
+    t = 0.0
+    for i in range(_RANGE_STEPS):
+        price = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
+        trades.append({"price": price, "quantity": 1.0, "timestamp": t, "taker_side": "buy"})
+        t += _STEP_SECONDS
+    trades.append({"price": _BREAKOUT_PRICE, "quantity": 50.0, "timestamp": t, "taker_side": "buy"})
+    return trades
+
+
+def _synthetic_mark_price_series() -> list[dict[str, object]]:
+    records = []
+    t = 0.0
+    for i in range(_RANGE_STEPS):
+        price = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
+        records.append({"mark_price": price, "index_price": price, "funding_rate": 0.0001, "timestamp": t})
+        t += _STEP_SECONDS
+    records.append({
+        "mark_price": _BREAKOUT_PRICE, "index_price": _BREAKOUT_PRICE, "funding_rate": 0.0005, "timestamp": t,
+    })
+    return records
+
+
+def _synthetic_price_series() -> list[dict[str, object]]:
+    records = []
+    t = 0.0
+    for i in range(_RANGE_STEPS):
+        price = _BASE_PRICE + (_OSCILLATION if i % 2 == 0 else -_OSCILLATION)
+        records.append({"price": price, "timestamp": t})
+        t += _STEP_SECONDS
+    records.append({"price": _BREAKOUT_PRICE, "timestamp": t})
+    return records
+
+
+_SYNTHETIC_SERIES_BUILDERS: dict[str, object] = {
+    "binance_futures_kline": _synthetic_kline_series,
+    "binance_futures_trade": _synthetic_trade_series,
+    "binance_futures_mark_price": _synthetic_mark_price_series,
+    "chainlink": _synthetic_price_series,
+    "binance_spot": _synthetic_price_series,
+}
+
+
+def build_synthetic_candle_set(data_sources: list[str]) -> dict[str, list[dict[str, object]]]:
+    result: dict[str, list[dict[str, object]]] = {}
+    for key in data_sources:
+        builder = _SYNTHETIC_SERIES_BUILDERS.get(key.partition(":")[0])
+        if builder is not None:
+            result[key] = builder()
+    return result
+
+
 def read_labels(feedback_dir: Path, owner_id: str) -> list[dict[str, object]]:
     path = labels_path(feedback_dir, owner_id)
     if not path.is_file():
@@ -477,8 +567,8 @@ def scan_job_status(jobs: dict[str, ScanJob], job_id: str) -> dict[str, object] 
 __all__ = [
     "MIN_NO_FOR_PROMPT", "MIN_TOTAL_FOR_PROMPT", "NEXT_WINDOW_AFTER_SECONDS",
     "NEXT_WINDOW_BEFORE_SECONDS", "NEXT_WINDOW_MAX_RECORDS", "SCAN_WINDOW_RECORDS",
-    "ScanJob", "append_label", "auto_refine_marker_path", "build_prompt", "empty_pool_cache",
-    "find_setup_candidates", "instance_key", "iso_to_ts", "key_instrument", "labels_path",
+    "ScanJob", "append_label", "auto_refine_marker_path", "build_prompt", "build_synthetic_candle_set",
+    "empty_pool_cache", "find_setup_candidates", "instance_key", "iso_to_ts", "key_instrument", "labels_path",
     "load_pool_cache", "looks_like_level", "looks_like_setup_entry", "looks_like_zone", "noop_log",
     "pool_cache_path", "progress", "read_labels", "release_auto_refine_claim", "round_value",
     "run_scan_job", "scan_job_status", "trigger_timestamp", "try_claim_auto_refine",

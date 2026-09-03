@@ -112,6 +112,7 @@ button.critical { background: var(--critical); }
 
   <div class="panel" id="instance-panel" style="display:none">
     <h2>Est-ce un bon setup ?</h2>
+    <p class="empty" id="synthetic-badge" style="display:none;color:var(--warning)">🎲 Exemple synthétique générique -- pas une vraie détection sur des données réelles.</p>
     <svg class="refine-chart" id="refine-chart" viewBox="0 0 760 220"></svg>
     <div class="refine-legend" id="refine-legend"></div>
     <div class="row judge-row">
@@ -130,6 +131,10 @@ button.critical { background: var(--critical); }
 
   <div class="panel" id="empty-panel" style="display:none">
     <p class="empty" id="empty-message"></p>
+    <div class="row" style="margin-top:8px">
+      <button type="button" class="secondary" id="synthetic-btn">🎲 Générer un exemple synthétique</button>
+      <span id="synthetic-status" class="progress-line"></span>
+    </div>
   </div>
 
   <div class="panel">
@@ -422,6 +427,42 @@ async function startScanThenNext() {
   await loadNext();
 }
 
+// For when there's too little (or no) real collected data to find a real
+// setup -- builds one fixed, generic synthetic scenario and runs this
+// microsystem's own real compute() (two-stage, like scan()) against it,
+// so the Python code decides what's found, not any external claim. No AI
+// call, instant.
+el("synthetic-btn").addEventListener("click", async () => {
+  const statusEl = el("synthetic-status");
+  el("synthetic-btn").disabled = true;
+  statusEl.textContent = "Génération d'un exemple synthétique…";
+  try {
+    const res = await fetch("/api/microsystem-refine/synthetic", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ microsystem_id: microsystemId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "échec de la génération");
+    statusEl.textContent = "";
+    showInstance(data);
+  } catch (error) {
+    statusEl.textContent = "Échec : " + error.message + " -- réessaie, ou collecte de vraies données.";
+  } finally {
+    el("synthetic-btn").disabled = false;
+  }
+});
+
+function showInstance(instance) {
+  currentInstance = instance;
+  el("empty-panel").style.display = "none";
+  el("instance-panel").style.display = "block";
+  el("non-note-box").classList.remove("open");
+  el("non-note-text").value = "";
+  el("synthetic-badge").style.display = instance.synthetic ? "block" : "none";
+  el("refine-chart").innerHTML = renderChart(currentInstance);
+  el("refine-legend").innerHTML = renderLegend(currentInstance);
+}
+
 async function loadNext() {
   const res = await fetch("/api/microsystem-refine/next", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -451,13 +492,7 @@ async function loadNext() {
       + "Collecte plus de données, ou reviens plus tard, pour continuer.";
     return;
   }
-  currentInstance = data.instance;
-  el("empty-panel").style.display = "none";
-  el("instance-panel").style.display = "block";
-  el("non-note-box").classList.remove("open");
-  el("non-note-text").value = "";
-  el("refine-chart").innerHTML = renderChart(currentInstance);
-  el("refine-legend").innerHTML = renderLegend(currentInstance);
+  showInstance(data.instance);
 }
 
 async function submitLabel(labelValue, note) {

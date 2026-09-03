@@ -381,6 +381,25 @@ class ControlPanelServer:
         job = self.microsystem_feedback.start_scan_job(microsystem_id=microsystem_id)
         return self._json({"job_id": job.job_id})
 
+    def _microsystem_refine_synthetic(self, body: bytes) -> bytes:
+        """Mirrors _concept_refine_synthetic -- see
+        MicrosystemRefinementManager.generate_synthetic_instance. Pure and
+        fast, answered synchronously."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return self._error("400 Bad Request", "invalid JSON body")
+        if not isinstance(payload, dict):
+            return self._error("400 Bad Request", "body must be a JSON object")
+        microsystem_id = payload.get("microsystem_id")
+        if not isinstance(microsystem_id, str) or not microsystem_id:
+            return self._error("400 Bad Request", "microsystem_id must be a non-empty string")
+        try:
+            result = self.microsystem_feedback.generate_synthetic_instance(microsystem_id=microsystem_id)
+        except ValueError as exc:
+            return self._error("400 Bad Request", str(exc))
+        return self._json(result)
+
     def _microsystem_refine_next(self, body: bytes) -> bytes:
         try:
             payload = json.loads(body or b"{}")
@@ -681,6 +700,8 @@ class ControlPanelServer:
             return self._concept_refine_prompt(body)
         if path == "/api/microsystem-refine/scan":
             return self._microsystem_refine_scan(body)
+        if path == "/api/microsystem-refine/synthetic":
+            return self._microsystem_refine_synthetic(body)
         if path == "/api/microsystem-refine/next":
             return self._microsystem_refine_next(body)
         if path == "/api/microsystem-refine/label":

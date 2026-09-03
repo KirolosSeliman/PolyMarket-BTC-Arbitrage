@@ -1403,6 +1403,29 @@ class PluginImportAndPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("200 OK", head)
         self.assertIn("il manque la nuance Y", prompt_body["content"])
 
+    async def test_microsystem_refine_synthetic_missing_microsystem_id_is_400(self) -> None:
+        head, _body = await self._request("POST", "/api/microsystem-refine/synthetic", json_body={})
+        self.assertIn("400 Bad Request", head)
+
+    async def test_microsystem_refine_synthetic_full_round_trip(self) -> None:
+        self._write_setup_microsystem_fixture(up_candle_count=1)
+        head, result = await self._request(
+            "POST", "/api/microsystem-refine/synthetic", json_body={"microsystem_id": "setup_route_test"},
+        )
+        self.assertIn("200 OK", head)
+        self.assertEqual(result["shape"], "setup")
+        self.assertTrue(result["synthetic"])
+
+        head, label_body = await self._request(
+            "POST", "/api/microsystem-refine/label",
+            json_body={
+                "microsystem_id": "setup_route_test", "shape": result["shape"], "node": result["node"],
+                "trigger_ts": result["trigger_ts"], "label": "oui",
+            },
+        )
+        self.assertIn("200 OK", head)
+        self.assertEqual(label_body["total"], 1)
+
     async def test_microsystem_refine_label_triggers_auto_refine_job(self) -> None:
         # Lighter than the concept version above -- the underlying manager
         # logic is fully covered in test_microsystem_refinement.py; this
